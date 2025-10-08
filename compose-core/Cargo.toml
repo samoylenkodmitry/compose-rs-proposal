@@ -1,0 +1,12 @@
+[package]
+name = "compose-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Core runtime for a Jetpack Compose inspired UI framework in Rust"
+
+[dependencies]
+anyhow = "1.0"
+
+[features]
+default = []

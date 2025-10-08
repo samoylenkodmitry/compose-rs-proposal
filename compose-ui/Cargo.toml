@@ -1,0 +1,13 @@
+[package]
+name = "compose-ui"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "UI primitives for Compose-RS"
+
+[dependencies]
+compose-core = { path = "../compose-core" }
+compose-macros = { path = "../compose-macros" }
+
+[features]
+default = []

@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "compose-core",
+    "compose-macros",
+    "compose-ui",
+]
+resolver = "2"
