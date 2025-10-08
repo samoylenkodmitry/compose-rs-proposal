@@ -1,0 +1,8 @@
+[package]
+name = "compose_ui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+compose_core = { path = "../compose_core" }
+compose_macros = { path = "../compose_macros" }

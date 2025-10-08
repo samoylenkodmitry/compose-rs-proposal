@@ -1,0 +1,20 @@
+[workspace]
+members = [
+    "compose_core",
+    "compose_macros",
+    "compose_ui",
+    "compose_platform",
+    "compose_skia",
+]
+
+[package]
+name = "compose-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+compose_core = { path = "compose_core" }
+compose_macros = { path = "compose_macros" }
+compose_ui = { path = "compose_ui" }
+compose_platform = { path = "compose_platform" }
+compose_skia = { path = "compose_skia" }

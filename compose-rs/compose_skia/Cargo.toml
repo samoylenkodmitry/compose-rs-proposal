@@ -1,0 +1,8 @@
+[package]
+name = "compose_skia"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+compose_core = { path = "../compose_core" }
+skia-safe = { version = "0.77.0", features = ["gl"] }
