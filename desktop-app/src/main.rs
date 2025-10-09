@@ -18,7 +18,8 @@ const INITIAL_HEIGHT: u32 = 600;
 const TEXT_SIZE: f32 = 24.0;
 
 static FONT: Lazy<Font<'static>> = Lazy::new(|| {
-    Font::try_from_bytes(include_bytes!("../assets/Roboto-Regular.ttf") as &[u8]).expect("font")
+    let f = Font::try_from_bytes(include_bytes!("../assets/Roboto-Light.ttf") as &[u8]);
+    f.expect("font")
 });
 
 fn main() {
@@ -189,6 +190,9 @@ fn counter_app() {
         Modifier::padding(32.0).then(Modifier::background(Color(0.12, 0.12, 0.16, 1.0))),
         || {
             Text(format!("COUNT: {}", counter.get()), Modifier::padding(12.0));
+            Text(format!("COUNT: {}", counter.get()), Modifier::padding(12.0));
+            Text(format!("COUNT: {}", counter.get()), Modifier::padding(12.0));
+            Text(format!("COUNT: {}", counter.get()), Modifier::padding(12.0).then(Modifier::size(Size { width:100.0, height: 40.0})));
             Spacer(Size {
                 width: 0.0,
                 height: 16.0,
@@ -201,6 +205,16 @@ fn counter_app() {
                 },
                 || {
                     Text("INCREMENT", Modifier::padding(6.0));
+                },
+            );
+            Button(
+                Modifier::background(Color(0.22, 0.45, 0.85, 1.0)).then(Modifier::padding(12.0)),
+                {
+                    let counter = counter.clone();
+                    move || counter.set(counter.get() - 1)
+                },
+                || {
+                    Text("DEC", Modifier::padding(3.0));
                 },
             );
         },
