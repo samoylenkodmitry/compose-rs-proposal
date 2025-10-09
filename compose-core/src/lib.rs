@@ -44,6 +44,10 @@ pub fn use_state<T: 'static>(init: impl FnOnce() -> T) -> State<T> {
     with_current_composer(|composer| composer.use_state(init))
 }
 
+pub fn animate_float_as_state(target: f32, label: &str) -> State<f32> {
+    with_current_composer(|composer| composer.animate_float_as_state(target, label))
+}
+
 #[derive(Default)]
 struct GroupEntry {
     key: Key,
@@ -343,6 +347,15 @@ impl<'a> Composer<'a> {
         state.clone()
     }
 
+    pub fn animate_float_as_state(&mut self, target: f32, label: &str) -> State<f32> {
+        let runtime = self.runtime.clone();
+        let animated = self
+            .slots
+            .remember(|| AnimatedFloatState::new(target, runtime));
+        animated.update(target, label);
+        animated.state.clone()
+    }
+
     pub fn emit_node<N: Node + 'static>(&mut self, init: impl FnOnce() -> N) -> NodeId {
         if let Some(id) = self.slots.read_node() {
             {
@@ -404,6 +417,27 @@ impl<'a> Composer<'a> {
 pub struct State<T> {
     inner: Rc<RefCell<T>>,
     runtime: RuntimeHandle,
+}
+
+struct AnimatedFloatState {
+    state: State<f32>,
+    current: f32,
+}
+
+impl AnimatedFloatState {
+    fn new(initial: f32, runtime: RuntimeHandle) -> Self {
+        Self {
+            state: State::new(initial, runtime),
+            current: initial,
+        }
+    }
+
+    fn update(&mut self, target: f32, _label: &str) {
+        if self.current != target {
+            self.current = target;
+            *self.state.inner.borrow_mut() = target;
+        }
+    }
 }
 
 impl<T> State<T> {
@@ -554,5 +588,35 @@ mod tests {
         assert!(!composition.should_render());
         state.set(11);
         assert!(composition.should_render());
+    }
+
+    #[test]
+    fn animate_float_as_state_updates_immediately() {
+        let mut composition = Composition::new(MemoryApplier::new());
+        let root_key = location_key(file!(), line!(), column!());
+        let group_key = location_key(file!(), line!(), column!());
+        let mut values = Vec::new();
+
+        composition.render(root_key, || {
+            with_current_composer(|composer| {
+                composer.with_group(group_key, |composer| {
+                    let state = composer.animate_float_as_state(0.0, "alpha");
+                    values.push(state.get());
+                });
+            });
+        });
+        assert_eq!(values, vec![0.0]);
+        assert!(!composition.should_render());
+
+        composition.render(root_key, || {
+            with_current_composer(|composer| {
+                composer.with_group(group_key, |composer| {
+                    let state = composer.animate_float_as_state(1.0, "alpha");
+                    values.push(state.get());
+                });
+            });
+        });
+        assert_eq!(values, vec![0.0, 1.0]);
+        assert!(!composition.should_render());
     }
 }
