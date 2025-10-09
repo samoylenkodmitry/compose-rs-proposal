@@ -192,7 +192,13 @@ fn counter_app() {
             Text(format!("COUNT: {}", counter.get()), Modifier::padding(12.0));
             Text(format!("COUNT: {}", counter.get()), Modifier::padding(12.0));
             Text(format!("COUNT: {}", counter.get()), Modifier::padding(12.0));
-            Text(format!("COUNT: {}", counter.get()), Modifier::padding(12.0).then(Modifier::size(Size { width:100.0, height: 40.0})));
+            Text(
+                format!("COUNT: {}", counter.get()),
+                Modifier::padding(12.0).then(Modifier::size(Size {
+                    width: 100.0,
+                    height: 40.0,
+                })),
+            );
             Spacer(Size {
                 width: 0.0,
                 height: 16.0,
@@ -709,7 +715,8 @@ fn draw_text(frame: &mut [u8], width: u32, height: u32, draw: TextDraw) {
                 for i in 0..3 {
                     let dst = existing[i] as f32 / 255.0;
                     let src = color[i] as f32 / 255.0;
-                    existing[i] = ((src * alpha) + dst * (1.0 - alpha)) as u8;
+                    let blended = (src * alpha) + dst * (1.0 - alpha);
+                    existing[i] = (blended.clamp(0.0, 1.0) * 255.0).round() as u8;
                 }
                 existing[3] = 255;
             });
