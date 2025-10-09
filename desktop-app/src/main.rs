@@ -2,8 +2,8 @@ use std::rc::Rc;
 
 use compose_core::{self, location_key, Composition, Key, MemoryApplier, NodeId};
 use compose_ui::{
-    composable, Button, ButtonNode, Color, Column, ColumnNode, Modifier, Point, RowNode, Size,
-    Spacer, SpacerNode, Text, TextNode,
+    composable, Button, ButtonNode, Color, Column, ColumnNode, CornerRadii, Modifier, Point,
+    RoundedCornerShape, RowNode, Size, Spacer, SpacerNode, Text, TextNode,
 };
 use once_cell::sync::Lazy;
 use pixels::{Pixels, SurfaceTexture};
@@ -187,7 +187,9 @@ impl ComposeDesktopApp {
 fn counter_app() {
     let counter = compose_core::use_state(|| 0);
     Column(
-        Modifier::padding(32.0).then(Modifier::background(Color(0.12, 0.12, 0.16, 1.0))),
+        Modifier::padding(32.0)
+            .then(Modifier::rounded_corners(24.0))
+            .then(Modifier::background(Color(0.12, 0.12, 0.16, 1.0))),
         || {
             Text(format!("COUNT: {}", counter.get()), Modifier::padding(12.0));
             Text(format!("COUNT: {}", counter.get()), Modifier::padding(12.0));
@@ -204,7 +206,9 @@ fn counter_app() {
                 height: 16.0,
             });
             Button(
-                Modifier::background(Color(0.22, 0.45, 0.85, 1.0)).then(Modifier::padding(12.0)),
+                Modifier::rounded_corners(16.0)
+                    .then(Modifier::background(Color(0.22, 0.45, 0.85, 1.0)))
+                    .then(Modifier::padding(12.0)),
                 {
                     let counter = counter.clone();
                     move || counter.set(counter.get() + 1)
@@ -214,7 +218,9 @@ fn counter_app() {
                 },
             );
             Button(
-                Modifier::background(Color(0.22, 0.45, 0.85, 1.0)).then(Modifier::padding(12.0)),
+                Modifier::rounded_corners(16.0)
+                    .then(Modifier::background(Color(0.22, 0.45, 0.85, 1.0)))
+                    .then(Modifier::padding(12.0)),
                 {
                     let counter = counter.clone();
                     move || counter.set(counter.get() - 1)
@@ -246,6 +252,7 @@ struct DrawRect {
     rect: Rect,
     color: Color,
     depth: usize,
+    shape: Option<RoundedCornerShape>,
 }
 
 #[derive(Clone)]
@@ -277,11 +284,20 @@ impl ClickAction {
 #[derive(Clone)]
 struct HitRegion {
     rect: Rect,
+    shape: Option<RoundedCornerShape>,
     action: ClickAction,
     depth: usize,
 }
 
 impl HitRegion {
+    fn contains(&self, x: f32, y: f32) -> bool {
+        if let Some(shape) = self.shape {
+            point_in_rounded_rect(x, y, self.rect, shape)
+        } else {
+            self.rect.contains(x, y)
+        }
+    }
+
     fn invoke(&self, x: f32, y: f32) {
         self.action.invoke(self.rect, x, y);
     }
@@ -311,7 +327,7 @@ impl Scene {
     fn hit_test(&self, x: f32, y: f32) -> Option<HitRegion> {
         self.hits
             .iter()
-            .filter(|hit| hit.rect.contains(x, y))
+            .filter(|hit| hit.contains(x, y))
             .max_by(|a, b| a.depth.cmp(&b.depth))
             .cloned()
     }
@@ -322,6 +338,7 @@ struct NodeStyle {
     background: Option<Color>,
     size: Option<Size>,
     clickable: Option<Rc<dyn Fn(Point)>>,
+    shape: Option<RoundedCornerShape>,
 }
 
 impl NodeStyle {
@@ -331,6 +348,7 @@ impl NodeStyle {
             background: modifier.background_color(),
             size: modifier.explicit_size(),
             clickable: modifier.click_handler(),
+            shape: modifier.corner_shape(),
         }
     }
 }
@@ -416,11 +434,17 @@ fn layout_column(
         height,
     };
     if let Some(color) = style.background {
-        scene.rects.push(DrawRect { rect, color, depth });
+        scene.rects.push(DrawRect {
+            rect,
+            color,
+            depth,
+            shape: style.shape,
+        });
     }
     if let Some(handler) = style.clickable {
         scene.hits.push(HitRegion {
             rect,
+            shape: style.shape,
             action: ClickAction::WithPoint(handler),
             depth,
         });
@@ -479,11 +503,17 @@ fn layout_row(
         height,
     };
     if let Some(color) = style.background {
-        scene.rects.push(DrawRect { rect, color, depth });
+        scene.rects.push(DrawRect {
+            rect,
+            color,
+            depth,
+            shape: style.shape,
+        });
     }
     if let Some(handler) = style.clickable {
         scene.hits.push(HitRegion {
             rect,
+            shape: style.shape,
             action: ClickAction::WithPoint(handler),
             depth,
         });
@@ -517,7 +547,12 @@ fn layout_text(
         height,
     };
     if let Some(color) = style.background {
-        scene.rects.push(DrawRect { rect, color, depth });
+        scene.rects.push(DrawRect {
+            rect,
+            color,
+            depth,
+            shape: style.shape,
+        });
     }
     scene.texts.push(TextDraw {
         rect: Rect {
@@ -533,6 +568,7 @@ fn layout_text(
     if let Some(handler) = style.clickable {
         scene.hits.push(HitRegion {
             rect,
+            shape: style.shape,
             action: ClickAction::WithPoint(handler),
             depth,
         });
@@ -605,16 +641,23 @@ fn layout_button(
         height,
     };
     if let Some(color) = style.background {
-        scene.rects.push(DrawRect { rect, color, depth });
+        scene.rects.push(DrawRect {
+            rect,
+            color,
+            depth,
+            shape: style.shape,
+        });
     }
     scene.hits.push(HitRegion {
         rect,
+        shape: style.shape,
         action: ClickAction::Simple(node.on_click.clone()),
         depth,
     });
     if let Some(handler) = style.clickable {
         scene.hits.push(HitRegion {
             rect,
+            shape: style.shape,
             action: ClickAction::WithPoint(handler),
             depth,
         });
@@ -681,6 +724,9 @@ fn fill_rect(frame: &mut [u8], width: u32, height: u32, draw: DrawRect) {
     let end_x = (x + rect_width).min(width as f32) as i32;
     let end_y = (y + rect_height).min(height as f32) as i32;
     let rgba = color_to_rgba(draw.color);
+    let resolved_shape = draw
+        .shape
+        .map(|shape| shape.resolve(rect_width, rect_height));
     for py in start_y.max(0)..end_y.max(start_y) {
         if py < 0 || py >= height as i32 {
             continue;
@@ -688,6 +734,13 @@ fn fill_rect(frame: &mut [u8], width: u32, height: u32, draw: DrawRect) {
         for px in start_x.max(0)..end_x.max(start_x) {
             if px < 0 || px >= width as i32 {
                 continue;
+            }
+            if let Some(ref radii) = resolved_shape {
+                let px_center = px as f32 + 0.5;
+                let py_center = py as f32 + 0.5;
+                if !point_in_resolved_rounded_rect(px_center, py_center, draw.rect, radii) {
+                    continue;
+                }
             }
             let idx = ((py as u32 * width + px as u32) * 4) as usize;
             frame[idx..idx + 4].copy_from_slice(&rgba);
@@ -731,4 +784,50 @@ fn color_to_rgba(color: Color) -> [u8; 4] {
         (color.2.clamp(0.0, 1.0) * 255.0) as u8,
         (color.3.clamp(0.0, 1.0) * 255.0) as u8,
     ]
+}
+
+fn point_in_rounded_rect(x: f32, y: f32, rect: Rect, shape: RoundedCornerShape) -> bool {
+    let radii = shape.resolve(rect.width, rect.height);
+    point_in_resolved_rounded_rect(x, y, rect, &radii)
+}
+
+fn point_in_resolved_rounded_rect(x: f32, y: f32, rect: Rect, radii: &CornerRadii) -> bool {
+    if !rect.contains(x, y) {
+        return false;
+    }
+    let left = rect.x;
+    let right = rect.x + rect.width;
+    let top = rect.y;
+    let bottom = rect.y + rect.height;
+
+    if radii.top_left > 0.0 && x < left + radii.top_left && y < top + radii.top_left {
+        let cx = left + radii.top_left;
+        let cy = top + radii.top_left;
+        if (x - cx).powi(2) + (y - cy).powi(2) > radii.top_left.powi(2) {
+            return false;
+        }
+    }
+    if radii.top_right > 0.0 && x > right - radii.top_right && y < top + radii.top_right {
+        let cx = right - radii.top_right;
+        let cy = top + radii.top_right;
+        if (x - cx).powi(2) + (y - cy).powi(2) > radii.top_right.powi(2) {
+            return false;
+        }
+    }
+    if radii.bottom_right > 0.0 && x > right - radii.bottom_right && y > bottom - radii.bottom_right
+    {
+        let cx = right - radii.bottom_right;
+        let cy = bottom - radii.bottom_right;
+        if (x - cx).powi(2) + (y - cy).powi(2) > radii.bottom_right.powi(2) {
+            return false;
+        }
+    }
+    if radii.bottom_left > 0.0 && x < left + radii.bottom_left && y > bottom - radii.bottom_left {
+        let cx = left + radii.bottom_left;
+        let cy = bottom - radii.bottom_left;
+        if (x - cx).powi(2) + (y - cy).powi(2) > radii.bottom_left.powi(2) {
+            return false;
+        }
+    }
+    true
 }

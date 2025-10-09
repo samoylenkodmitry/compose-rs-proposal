@@ -7,7 +7,7 @@ pub use compose_macros::composable;
 mod modifier;
 mod primitives;
 
-pub use modifier::{Color, Modifier, Point, Size};
+pub use modifier::{Color, CornerRadii, Modifier, Point, RoundedCornerShape, Size};
 pub use primitives::{
     Button, ButtonNode, Column, ColumnNode, Row, RowNode, Spacer, SpacerNode, Text, TextNode,
 };
