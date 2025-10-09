@@ -15,12 +15,75 @@ pub struct Size {
     pub height: f32,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CornerRadii {
+    pub top_left: f32,
+    pub top_right: f32,
+    pub bottom_right: f32,
+    pub bottom_left: f32,
+}
+
+impl CornerRadii {
+    pub fn uniform(radius: f32) -> Self {
+        Self {
+            top_left: radius,
+            top_right: radius,
+            bottom_right: radius,
+            bottom_left: radius,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RoundedCornerShape {
+    radii: CornerRadii,
+}
+
+impl RoundedCornerShape {
+    pub fn new(top_left: f32, top_right: f32, bottom_right: f32, bottom_left: f32) -> Self {
+        Self {
+            radii: CornerRadii {
+                top_left,
+                top_right,
+                bottom_right,
+                bottom_left,
+            },
+        }
+    }
+
+    pub fn uniform(radius: f32) -> Self {
+        Self {
+            radii: CornerRadii::uniform(radius),
+        }
+    }
+
+    pub fn with_radii(radii: CornerRadii) -> Self {
+        Self { radii }
+    }
+
+    pub fn resolve(&self, width: f32, height: f32) -> CornerRadii {
+        let mut resolved = self.radii;
+        let max_width = (width / 2.0).max(0.0);
+        let max_height = (height / 2.0).max(0.0);
+        resolved.top_left = resolved.top_left.clamp(0.0, max_width).min(max_height);
+        resolved.top_right = resolved.top_right.clamp(0.0, max_width).min(max_height);
+        resolved.bottom_right = resolved.bottom_right.clamp(0.0, max_width).min(max_height);
+        resolved.bottom_left = resolved.bottom_left.clamp(0.0, max_width).min(max_height);
+        resolved
+    }
+
+    pub fn radii(&self) -> CornerRadii {
+        self.radii
+    }
+}
+
 #[derive(Clone)]
 pub enum ModOp {
     Padding(f32),
     Background(Color),
     Clickable(Rc<dyn Fn(Point)>),
     Size(Size),
+    RoundedCorners(RoundedCornerShape),
 }
 
 #[derive(Clone, Default)]
@@ -49,6 +112,14 @@ impl Modifier {
 
     pub fn size(size: Size) -> Self {
         Self::with_op(ModOp::Size(size))
+    }
+
+    pub fn rounded_corners(radius: f32) -> Self {
+        Self::with_op(ModOp::RoundedCorners(RoundedCornerShape::uniform(radius)))
+    }
+
+    pub fn rounded_corner_shape(shape: RoundedCornerShape) -> Self {
+        Self::with_op(ModOp::RoundedCorners(shape))
     }
 
     pub fn then(&self, next: Modifier) -> Modifier {
@@ -90,6 +161,13 @@ impl Modifier {
     pub fn click_handler(&self) -> Option<Rc<dyn Fn(Point)>> {
         self.0.iter().rev().find_map(|op| match op {
             ModOp::Clickable(handler) => Some(handler.clone()),
+            _ => None,
+        })
+    }
+
+    pub fn corner_shape(&self) -> Option<RoundedCornerShape> {
+        self.0.iter().rev().find_map(|op| match op {
+            ModOp::RoundedCorners(shape) => Some(*shape),
             _ => None,
         })
     }
