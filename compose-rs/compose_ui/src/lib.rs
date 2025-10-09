@@ -69,32 +69,26 @@ impl Modifier {
     }
 
     pub fn then(self, other: Modifier) -> Self {
-        match self.0 {
-            None => other,
-            Some(self_head) => {
-                if other.0.is_none() {
-                    return Self(Some(self_head));
+        match (self.0, other.0) {
+            (None, o) => Modifier(o),
+            (s, None) => Modifier(s),
+            (Some(self_h), Some(other_h)) => {
+                let mut ops = Vec::new();
+                let mut current = Some(self_h);
+                while let Some(node) = current {
+                    ops.push(node.op.clone());
+                    current = node.next.clone();
                 }
 
-                let mut new_head = None;
-                let mut new_tail = &mut new_head;
-
-                let mut current_old = Some(self_head);
-                while let Some(old_node) = current_old {
-                    let new_node = Rc::new(NodeMod {
-                        op: old_node.op.clone(),
-                        next: None,
-                    });
-
-                    *new_tail = Some(new_node.clone());
-                    new_tail = &mut Rc::get_mut(new_tail.as_mut().unwrap()).unwrap().next;
-
-                    current_old = old_node.next.clone();
+                let mut new_chain = Some(other_h);
+                for op in ops.into_iter().rev() {
+                    new_chain = Some(Rc::new(NodeMod {
+                        op,
+                        next: new_chain,
+                    }));
                 }
 
-                *new_tail = other.0;
-
-                Self(new_head)
+                Modifier(new_chain)
             }
         }
     }

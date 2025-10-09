@@ -23,7 +23,7 @@ impl RedrawRequester for WinitRedrawRequester {
 
 pub fn run<F>(mut on_draw: F)
 where
-    F: FnMut(Rc<dyn RedrawRequester>) + 'static,
+    F: FnMut(Rc<dyn RedrawRequester>),
 {
     let event_loop = EventLoop::with_user_event().unwrap();
     let window = Window::new(&event_loop).unwrap();
