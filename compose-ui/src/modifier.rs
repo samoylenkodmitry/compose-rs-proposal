@@ -63,7 +63,34 @@ impl Modifier {
         Modifier(Rc::new(ops))
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &ModOp> {
-        self.0.iter()
+    pub fn total_padding(&self) -> f32 {
+        self.0
+            .iter()
+            .filter_map(|op| match op {
+                ModOp::Padding(p) => Some(*p),
+                _ => None,
+            })
+            .sum()
+    }
+
+    pub fn background_color(&self) -> Option<Color> {
+        self.0.iter().rev().find_map(|op| match op {
+            ModOp::Background(color) => Some(*color),
+            _ => None,
+        })
+    }
+
+    pub fn explicit_size(&self) -> Option<Size> {
+        self.0.iter().rev().find_map(|op| match op {
+            ModOp::Size(size) => Some(*size),
+            _ => None,
+        })
+    }
+
+    pub fn click_handler(&self) -> Option<Rc<dyn Fn(Point)>> {
+        self.0.iter().rev().find_map(|op| match op {
+            ModOp::Clickable(handler) => Some(handler.clone()),
+            _ => None,
+        })
     }
 }

@@ -3,10 +3,46 @@
 use std::any::Any;
 use std::cell::{Ref, RefCell, RefMut};
 use std::fmt;
+use std::mem;
 use std::rc::{Rc, Weak};
+use std::thread_local;
 
 pub type Key = u64;
 pub type NodeId = usize;
+
+thread_local! {
+    static CURRENT_COMPOSER: RefCell<Vec<*mut ()>> = RefCell::new(Vec::new());
+}
+
+pub fn with_current_composer<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
+    CURRENT_COMPOSER.with(|stack| {
+        let ptr = *stack.borrow().last().expect("no composer installed");
+        let composer = unsafe { &mut *(ptr as *mut Composer<'static>) };
+        let composer: &mut Composer<'_> =
+            unsafe { mem::transmute::<&mut Composer<'static>, &mut Composer<'_>>(composer) };
+        f(composer)
+    })
+}
+
+pub fn emit_node<N: Node + 'static>(init: impl FnOnce() -> N) -> NodeId {
+    with_current_composer(|composer| composer.emit_node(init))
+}
+
+pub fn with_node_mut<N: Node + 'static, R>(id: NodeId, f: impl FnOnce(&mut N) -> R) -> R {
+    with_current_composer(|composer| composer.with_node_mut(id, f))
+}
+
+pub fn push_parent(id: NodeId) {
+    with_current_composer(|composer| composer.push_parent(id));
+}
+
+pub fn pop_parent() {
+    with_current_composer(|composer| composer.pop_parent());
+}
+
+pub fn use_state<T: 'static>(init: impl FnOnce() -> T) -> State<T> {
+    with_current_composer(|composer| composer.use_state(init))
+}
 
 #[derive(Default)]
 struct GroupEntry {
@@ -61,7 +97,11 @@ impl SlotTable {
             self.slots.truncate(cursor);
         }
         let index = self.groups.len();
-        self.groups.push(GroupEntry { key, end_slot: cursor, ..Default::default() });
+        self.groups.push(GroupEntry {
+            key,
+            end_slot: cursor,
+            ..Default::default()
+        });
         if cursor == self.slots.len() {
             self.slots.push(Slot::Group { index });
         } else {
@@ -190,7 +230,11 @@ impl MemoryApplier {
         Self { nodes: Vec::new() }
     }
 
-    pub fn with_node<N: Node + 'static, R>(&mut self, id: NodeId, f: impl FnOnce(&mut N) -> R) -> Option<R> {
+    pub fn with_node<N: Node + 'static, R>(
+        &mut self,
+        id: NodeId,
+        f: impl FnOnce(&mut N) -> R,
+    ) -> Option<R> {
         self.nodes.get_mut(id).and_then(|slot| {
             let node = slot.as_deref_mut()?;
             node.as_any_mut().downcast_mut::<N>().map(f)
@@ -251,8 +295,35 @@ pub struct Composer<'a> {
 }
 
 impl<'a> Composer<'a> {
-    pub fn new(slots: &'a mut SlotTable, applier: &'a mut dyn Applier, runtime: RuntimeHandle, root: Option<NodeId>) -> Self {
-        Self { slots, applier, runtime, parent_stack: Vec::new(), root }
+    pub fn new(
+        slots: &'a mut SlotTable,
+        applier: &'a mut dyn Applier,
+        runtime: RuntimeHandle,
+        root: Option<NodeId>,
+    ) -> Self {
+        Self {
+            slots,
+            applier,
+            runtime,
+            parent_stack: Vec::new(),
+            root,
+        }
+    }
+
+    pub fn install<R>(&'a mut self, f: impl FnOnce(&mut Composer<'a>) -> R) -> R {
+        CURRENT_COMPOSER.with(|stack| stack.borrow_mut().push(self as *mut _ as *mut ()));
+        struct Guard;
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                CURRENT_COMPOSER.with(|stack| {
+                    stack.borrow_mut().pop();
+                });
+            }
+        }
+        let guard = Guard;
+        let result = f(self);
+        drop(guard);
+        result
     }
 
     pub fn with_group<R>(&mut self, key: Key, f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
@@ -276,7 +347,10 @@ impl<'a> Composer<'a> {
         if let Some(id) = self.slots.read_node() {
             {
                 let node = self.applier.get_mut(id);
-                let typed = node.as_any_mut().downcast_mut::<N>().expect("node type mismatch");
+                let typed = node
+                    .as_any_mut()
+                    .downcast_mut::<N>()
+                    .expect("node type mismatch");
                 typed.update();
             }
             self.attach_to_parent(id);
@@ -301,9 +375,16 @@ impl<'a> Composer<'a> {
         }
     }
 
-    pub fn with_node_mut<N: Node + 'static, R>(&mut self, id: NodeId, f: impl FnOnce(&mut N) -> R) -> R {
+    pub fn with_node_mut<N: Node + 'static, R>(
+        &mut self,
+        id: NodeId,
+        f: impl FnOnce(&mut N) -> R,
+    ) -> R {
         let node = self.applier.get_mut(id);
-        let typed = node.as_any_mut().downcast_mut::<N>().expect("node type mismatch");
+        let typed = node
+            .as_any_mut()
+            .downcast_mut::<N>()
+            .expect("node type mismatch");
         f(typed)
     }
 
@@ -320,7 +401,6 @@ impl<'a> Composer<'a> {
     }
 }
 
-
 pub struct State<T> {
     inner: Rc<RefCell<T>>,
     runtime: RuntimeHandle,
@@ -328,7 +408,10 @@ pub struct State<T> {
 
 impl<T> State<T> {
     pub fn new(value: T, runtime: RuntimeHandle) -> Self {
-        Self { inner: Rc::new(RefCell::new(value)), runtime }
+        Self {
+            inner: Rc::new(RefCell::new(value)),
+            runtime,
+        }
     }
 
     pub fn get(&self) -> T
@@ -354,13 +437,18 @@ impl<T> State<T> {
 
 impl<T> Clone for State<T> {
     fn clone(&self) -> Self {
-        Self { inner: Rc::clone(&self.inner), runtime: self.runtime.clone() }
+        Self {
+            inner: Rc::clone(&self.inner),
+            runtime: self.runtime.clone(),
+        }
     }
 }
 
 impl<T: fmt::Debug> fmt::Debug for State<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("State").field("value", &*self.inner.borrow()).finish()
+        f.debug_struct("State")
+            .field("value", &*self.inner.borrow())
+            .finish()
     }
 }
 
@@ -373,15 +461,23 @@ pub struct Composition<A: Applier> {
 
 impl<A: Applier> Composition<A> {
     pub fn new(applier: A) -> Self {
-        Self { slots: SlotTable::new(), applier, runtime: Rc::new(RuntimeInner::default()), root: None }
+        Self {
+            slots: SlotTable::new(),
+            applier,
+            runtime: Rc::new(RuntimeInner::default()),
+            root: None,
+        }
     }
 
-    pub fn render(&mut self, key: Key, mut content: impl FnMut(&mut Composer<'_>)) {
+    pub fn render(&mut self, key: Key, mut content: impl FnMut()) {
         self.slots.reset();
         let runtime = RuntimeHandle(Rc::downgrade(&self.runtime));
         let mut composer = Composer::new(&mut self.slots, &mut self.applier, runtime, self.root);
-        composer.with_group(key, |composer| content(composer));
-        self.root = composer.root;
+        let root = composer.install(|composer| {
+            composer.with_group(key, |_| content());
+            composer.root
+        });
+        self.root = root;
         self.slots.trim_to_cursor();
         *self.runtime.needs_frame.borrow_mut() = false;
     }
@@ -429,14 +525,16 @@ mod tests {
         let mut text_seen = String::new();
 
         for _ in 0..2 {
-            composition.render(location_key(file!(), line!(), column!()), |composer| {
-                composer.with_group(location_key(file!(), line!(), column!()), |composer| {
-                    let count = composer.use_state(|| 0);
-                    let node_id = composer.emit_node(|| TextNode::default());
-                    composer.with_node_mut(node_id, |node: &mut TextNode| {
-                        node.text = format!("{}", count.get());
+            composition.render(location_key(file!(), line!(), column!()), || {
+                with_current_composer(|composer| {
+                    composer.with_group(location_key(file!(), line!(), column!()), |composer| {
+                        let count = composer.use_state(|| 0);
+                        let node_id = composer.emit_node(|| TextNode::default());
+                        composer.with_node_mut(node_id, |node: &mut TextNode| {
+                            node.text = format!("{}", count.get());
+                        });
+                        text_seen = count.get().to_string();
                     });
-                    text_seen = count.get().to_string();
                 });
             });
         }
@@ -448,8 +546,8 @@ mod tests {
     fn state_update_schedules_render() {
         let mut composition = Composition::new(MemoryApplier::new());
         let mut stored = None;
-        composition.render(location_key(file!(), line!(), column!()), |composer| {
-            let state = composer.use_state(|| 10);
+        composition.render(location_key(file!(), line!(), column!()), || {
+            let state = use_state(|| 10);
             stored = Some(state);
         });
         let state = stored.expect("state stored");
