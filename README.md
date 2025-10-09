@@ -1,3 +1,6 @@
+[compose-rs.webm](https://github.com/user-attachments/assets/854bd254-e02a-4310-8c6c-f58e5e68866e)
+
+
 # Compose-RS Proposal
 
 Compose-RS is an experimental Rust workspace that sketches out a Jetpack Compose–inspired declarative UI framework. The repository accompanies the architectural proposal documented in [`proposal.md`](proposal.md) and provides crate scaffolding for the core runtime, procedural macros, UI primitives, and example applications.
