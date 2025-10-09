@@ -1,0 +1,17 @@
+[package]
+name = "compose-macros"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Procedural macros for Compose-RS"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
+
+[dependencies.compose-core]
+path = "../compose-core"

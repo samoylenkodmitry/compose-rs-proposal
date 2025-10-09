@@ -1,0 +1,558 @@
+#![doc = r"Core runtime pieces for the Compose-RS experiment."]
+
+use std::any::Any;
+use std::cell::{Ref, RefCell, RefMut};
+use std::fmt;
+use std::mem;
+use std::rc::{Rc, Weak};
+use std::thread_local;
+
+pub type Key = u64;
+pub type NodeId = usize;
+
+thread_local! {
+    static CURRENT_COMPOSER: RefCell<Vec<*mut ()>> = RefCell::new(Vec::new());
+}
+
+pub fn with_current_composer<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
+    CURRENT_COMPOSER.with(|stack| {
+        let ptr = *stack.borrow().last().expect("no composer installed");
+        let composer = unsafe { &mut *(ptr as *mut Composer<'static>) };
+        let composer: &mut Composer<'_> =
+            unsafe { mem::transmute::<&mut Composer<'static>, &mut Composer<'_>>(composer) };
+        f(composer)
+    })
+}
+
+pub fn emit_node<N: Node + 'static>(init: impl FnOnce() -> N) -> NodeId {
+    with_current_composer(|composer| composer.emit_node(init))
+}
+
+pub fn with_node_mut<N: Node + 'static, R>(id: NodeId, f: impl FnOnce(&mut N) -> R) -> R {
+    with_current_composer(|composer| composer.with_node_mut(id, f))
+}
+
+pub fn push_parent(id: NodeId) {
+    with_current_composer(|composer| composer.push_parent(id));
+}
+
+pub fn pop_parent() {
+    with_current_composer(|composer| composer.pop_parent());
+}
+
+pub fn use_state<T: 'static>(init: impl FnOnce() -> T) -> State<T> {
+    with_current_composer(|composer| composer.use_state(init))
+}
+
+#[derive(Default)]
+struct GroupEntry {
+    key: Key,
+    end_slot: usize,
+}
+
+#[derive(Default)]
+struct GroupFrame {
+    index: usize,
+}
+
+#[derive(Default)]
+pub struct SlotTable {
+    slots: Vec<Slot>,
+    groups: Vec<GroupEntry>,
+    cursor: usize,
+    group_stack: Vec<GroupFrame>,
+}
+
+enum Slot {
+    Group { index: usize },
+    Value(Box<dyn Any>),
+    Node(NodeId),
+}
+
+impl Default for Slot {
+    fn default() -> Self {
+        Slot::Group { index: 0 }
+    }
+}
+
+impl SlotTable {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn start(&mut self, key: Key) -> usize {
+        let cursor = self.cursor;
+        if let Some(slot) = self.slots.get(cursor) {
+            match slot {
+                Slot::Group { index } => {
+                    let entry = &self.groups[*index];
+                    if entry.key == key {
+                        self.cursor += 1;
+                        self.group_stack.push(GroupFrame { index: *index });
+                        return *index;
+                    }
+                }
+                _ => {}
+            }
+            self.slots.truncate(cursor);
+        }
+        let index = self.groups.len();
+        self.groups.push(GroupEntry {
+            key,
+            end_slot: cursor,
+            ..Default::default()
+        });
+        if cursor == self.slots.len() {
+            self.slots.push(Slot::Group { index });
+        } else {
+            self.slots[cursor] = Slot::Group { index };
+        }
+        self.cursor += 1;
+        self.group_stack.push(GroupFrame { index });
+        index
+    }
+
+    pub fn end(&mut self) {
+        if let Some(frame) = self.group_stack.pop() {
+            if let Some(entry) = self.groups.get_mut(frame.index) {
+                entry.end_slot = self.cursor;
+            }
+        }
+    }
+
+    pub fn remember<T: 'static>(&mut self, init: impl FnOnce() -> T) -> &mut T {
+        let cursor = self.cursor;
+        if cursor < self.slots.len() {
+            if matches!(self.slots.get(cursor), Some(Slot::Value(_))) {
+                if let Some(ptr) = unsafe { self.reuse_value_ptr::<T>(cursor) } {
+                    self.cursor += 1;
+                    return unsafe { &mut *ptr };
+                } else {
+                    panic!("type mismatch in remember");
+                }
+            }
+            self.slots.truncate(cursor);
+        }
+        let boxed: Box<dyn Any> = Box::new(init());
+        if cursor == self.slots.len() {
+            self.slots.push(Slot::Value(boxed));
+        } else {
+            self.slots[cursor] = Slot::Value(boxed);
+        }
+        self.cursor += 1;
+        let index = self.cursor - 1;
+        match self.slots.get_mut(index) {
+            Some(Slot::Value(value)) => value.downcast_mut::<T>().unwrap(),
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn record_node(&mut self, id: NodeId) {
+        let cursor = self.cursor;
+        if cursor < self.slots.len() {
+            if let Some(Slot::Node(existing)) = self.slots.get(cursor) {
+                if *existing == id {
+                    self.cursor += 1;
+                    return;
+                }
+            }
+            self.slots.truncate(cursor);
+        }
+        if cursor == self.slots.len() {
+            self.slots.push(Slot::Node(id));
+        } else {
+            self.slots[cursor] = Slot::Node(id);
+        }
+        self.cursor += 1;
+    }
+
+    unsafe fn reuse_value_ptr<T: 'static>(&mut self, cursor: usize) -> Option<*mut T> {
+        let slot = self.slots.get_mut(cursor)?;
+        match slot {
+            Slot::Value(existing) => existing.downcast_mut::<T>().map(|value| value as *mut T),
+            _ => None,
+        }
+    }
+
+    pub fn read_node(&mut self) -> Option<NodeId> {
+        let cursor = self.cursor;
+        match self.slots.get(cursor) {
+            Some(Slot::Node(id)) => {
+                self.cursor += 1;
+                Some(*id)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.cursor = 0;
+        self.group_stack.clear();
+    }
+
+    pub fn trim_to_cursor(&mut self) {
+        self.slots.truncate(self.cursor);
+        if let Some(frame) = self.group_stack.last() {
+            if let Some(entry) = self.groups.get_mut(frame.index) {
+                entry.end_slot = self.cursor;
+            }
+        }
+    }
+}
+
+pub trait Node: Any {
+    fn mount(&mut self) {}
+    fn update(&mut self) {}
+    fn unmount(&mut self) {}
+    fn insert_child(&mut self, _child: NodeId) {}
+    fn remove_child(&mut self, _child: NodeId) {}
+}
+
+impl dyn Node {
+    pub fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+pub trait Applier {
+    fn create(&mut self, node: Box<dyn Node>) -> NodeId;
+    fn get_mut(&mut self, id: NodeId) -> &mut dyn Node;
+    fn remove(&mut self, id: NodeId);
+}
+
+#[derive(Default)]
+pub struct MemoryApplier {
+    nodes: Vec<Option<Box<dyn Node>>>,
+}
+
+impl MemoryApplier {
+    pub fn new() -> Self {
+        Self { nodes: Vec::new() }
+    }
+
+    pub fn with_node<N: Node + 'static, R>(
+        &mut self,
+        id: NodeId,
+        f: impl FnOnce(&mut N) -> R,
+    ) -> Option<R> {
+        self.nodes.get_mut(id).and_then(|slot| {
+            let node = slot.as_deref_mut()?;
+            node.as_any_mut().downcast_mut::<N>().map(f)
+        })
+    }
+
+    pub fn len(&self) -> usize {
+        self.nodes.iter().filter(|n| n.is_some()).count()
+    }
+}
+
+impl Applier for MemoryApplier {
+    fn create(&mut self, node: Box<dyn Node>) -> NodeId {
+        let id = self.nodes.len();
+        self.nodes.push(Some(node));
+        id
+    }
+
+    fn get_mut(&mut self, id: NodeId) -> &mut dyn Node {
+        self.nodes[id].as_deref_mut().expect("node missing")
+    }
+
+    fn remove(&mut self, id: NodeId) {
+        if let Some(node) = self.nodes.get_mut(id) {
+            node.take();
+        }
+    }
+}
+
+#[derive(Default)]
+struct RuntimeInner {
+    needs_frame: RefCell<bool>,
+}
+
+impl RuntimeInner {
+    fn schedule(&self) {
+        *self.needs_frame.borrow_mut() = true;
+    }
+}
+
+#[derive(Clone)]
+pub struct RuntimeHandle(Weak<RuntimeInner>);
+
+impl RuntimeHandle {
+    pub fn schedule(&self) {
+        if let Some(inner) = self.0.upgrade() {
+            inner.schedule();
+        }
+    }
+}
+
+pub struct Composer<'a> {
+    slots: &'a mut SlotTable,
+    applier: &'a mut dyn Applier,
+    runtime: RuntimeHandle,
+    parent_stack: Vec<NodeId>,
+    pub(crate) root: Option<NodeId>,
+}
+
+impl<'a> Composer<'a> {
+    pub fn new(
+        slots: &'a mut SlotTable,
+        applier: &'a mut dyn Applier,
+        runtime: RuntimeHandle,
+        root: Option<NodeId>,
+    ) -> Self {
+        Self {
+            slots,
+            applier,
+            runtime,
+            parent_stack: Vec::new(),
+            root,
+        }
+    }
+
+    pub fn install<R>(&'a mut self, f: impl FnOnce(&mut Composer<'a>) -> R) -> R {
+        CURRENT_COMPOSER.with(|stack| stack.borrow_mut().push(self as *mut _ as *mut ()));
+        struct Guard;
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                CURRENT_COMPOSER.with(|stack| {
+                    stack.borrow_mut().pop();
+                });
+            }
+        }
+        let guard = Guard;
+        let result = f(self);
+        drop(guard);
+        result
+    }
+
+    pub fn with_group<R>(&mut self, key: Key, f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
+        self.slots.start(key);
+        let result = f(self);
+        self.slots.end();
+        result
+    }
+
+    pub fn remember<T: 'static>(&mut self, init: impl FnOnce() -> T) -> &mut T {
+        self.slots.remember(init)
+    }
+
+    pub fn use_state<T: 'static>(&mut self, init: impl FnOnce() -> T) -> State<T> {
+        let runtime = self.runtime.clone();
+        let state = self.slots.remember(|| State::new(init(), runtime));
+        state.clone()
+    }
+
+    pub fn emit_node<N: Node + 'static>(&mut self, init: impl FnOnce() -> N) -> NodeId {
+        if let Some(id) = self.slots.read_node() {
+            {
+                let node = self.applier.get_mut(id);
+                let typed = node
+                    .as_any_mut()
+                    .downcast_mut::<N>()
+                    .expect("node type mismatch");
+                typed.update();
+            }
+            self.attach_to_parent(id);
+            return id;
+        }
+        let id = self.applier.create(Box::new(init()));
+        self.slots.record_node(id);
+        {
+            let node = self.applier.get_mut(id);
+            node.mount();
+        }
+        self.attach_to_parent(id);
+        id
+    }
+
+    fn attach_to_parent(&mut self, id: NodeId) {
+        if let Some(&parent) = self.parent_stack.last() {
+            let parent_node = self.applier.get_mut(parent);
+            parent_node.insert_child(id);
+        } else {
+            self.root = Some(id);
+        }
+    }
+
+    pub fn with_node_mut<N: Node + 'static, R>(
+        &mut self,
+        id: NodeId,
+        f: impl FnOnce(&mut N) -> R,
+    ) -> R {
+        let node = self.applier.get_mut(id);
+        let typed = node
+            .as_any_mut()
+            .downcast_mut::<N>()
+            .expect("node type mismatch");
+        f(typed)
+    }
+
+    pub fn push_parent(&mut self, id: NodeId) {
+        self.parent_stack.push(id);
+    }
+
+    pub fn pop_parent(&mut self) {
+        self.parent_stack.pop();
+    }
+
+    pub fn runtime(&self) -> &RuntimeHandle {
+        &self.runtime
+    }
+}
+
+pub struct State<T> {
+    inner: Rc<RefCell<T>>,
+    runtime: RuntimeHandle,
+}
+
+impl<T> State<T> {
+    pub fn new(value: T, runtime: RuntimeHandle) -> Self {
+        Self {
+            inner: Rc::new(RefCell::new(value)),
+            runtime,
+        }
+    }
+
+    pub fn get(&self) -> T
+    where
+        T: Clone,
+    {
+        self.inner.borrow().clone()
+    }
+
+    pub fn set(&self, value: T) {
+        *self.inner.borrow_mut() = value;
+        self.runtime.schedule();
+    }
+
+    pub fn borrow(&self) -> Ref<'_, T> {
+        self.inner.borrow()
+    }
+
+    pub fn borrow_mut(&self) -> RefMut<'_, T> {
+        self.inner.borrow_mut()
+    }
+}
+
+impl<T> Clone for State<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Rc::clone(&self.inner),
+            runtime: self.runtime.clone(),
+        }
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for State<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("State")
+            .field("value", &*self.inner.borrow())
+            .finish()
+    }
+}
+
+pub struct Composition<A: Applier> {
+    slots: SlotTable,
+    applier: A,
+    runtime: Rc<RuntimeInner>,
+    root: Option<NodeId>,
+}
+
+impl<A: Applier> Composition<A> {
+    pub fn new(applier: A) -> Self {
+        Self {
+            slots: SlotTable::new(),
+            applier,
+            runtime: Rc::new(RuntimeInner::default()),
+            root: None,
+        }
+    }
+
+    pub fn render(&mut self, key: Key, mut content: impl FnMut()) {
+        self.slots.reset();
+        let runtime = RuntimeHandle(Rc::downgrade(&self.runtime));
+        let mut composer = Composer::new(&mut self.slots, &mut self.applier, runtime, self.root);
+        let root = composer.install(|composer| {
+            composer.with_group(key, |_| content());
+            composer.root
+        });
+        self.root = root;
+        self.slots.trim_to_cursor();
+        *self.runtime.needs_frame.borrow_mut() = false;
+    }
+
+    pub fn should_render(&self) -> bool {
+        *self.runtime.needs_frame.borrow()
+    }
+
+    pub fn runtime_handle(&self) -> RuntimeHandle {
+        RuntimeHandle(Rc::downgrade(&self.runtime))
+    }
+
+    pub fn applier_mut(&mut self) -> &mut A {
+        &mut self.applier
+    }
+
+    pub fn root(&self) -> Option<NodeId> {
+        self.root
+    }
+}
+
+pub fn location_key(file: &str, line: u32, column: u32) -> Key {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    file.hash(&mut hasher);
+    line.hash(&mut hasher);
+    column.hash(&mut hasher);
+    hasher.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct TextNode {
+        text: String,
+    }
+
+    impl Node for TextNode {}
+
+    #[test]
+    fn remember_state_roundtrip() {
+        let mut composition = Composition::new(MemoryApplier::new());
+        let mut text_seen = String::new();
+
+        for _ in 0..2 {
+            composition.render(location_key(file!(), line!(), column!()), || {
+                with_current_composer(|composer| {
+                    composer.with_group(location_key(file!(), line!(), column!()), |composer| {
+                        let count = composer.use_state(|| 0);
+                        let node_id = composer.emit_node(|| TextNode::default());
+                        composer.with_node_mut(node_id, |node: &mut TextNode| {
+                            node.text = format!("{}", count.get());
+                        });
+                        text_seen = count.get().to_string();
+                    });
+                });
+            });
+        }
+
+        assert_eq!(text_seen, "0");
+    }
+
+    #[test]
+    fn state_update_schedules_render() {
+        let mut composition = Composition::new(MemoryApplier::new());
+        let mut stored = None;
+        composition.render(location_key(file!(), line!(), column!()), || {
+            let state = use_state(|| 10);
+            stored = Some(state);
+        });
+        let state = stored.expect("state stored");
+        assert!(!composition.should_render());
+        state.set(11);
+        assert!(composition.should_render());
+    }
+}
