@@ -15,12 +15,32 @@ pub struct Size {
     pub height: f32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GraphicsLayer {
+    pub alpha: f32,
+    pub scale: f32,
+    pub translation_x: f32,
+    pub translation_y: f32,
+}
+
+impl Default for GraphicsLayer {
+    fn default() -> Self {
+        Self {
+            alpha: 1.0,
+            scale: 1.0,
+            translation_x: 0.0,
+            translation_y: 0.0,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub enum ModOp {
     Padding(f32),
     Background(Color),
     Clickable(Rc<dyn Fn(Point)>),
     Size(Size),
+    GraphicsLayer(GraphicsLayer),
 }
 
 #[derive(Clone, Default)]
@@ -49,6 +69,10 @@ impl Modifier {
 
     pub fn size(size: Size) -> Self {
         Self::with_op(ModOp::Size(size))
+    }
+
+    pub fn graphics_layer(layer: GraphicsLayer) -> Self {
+        Self::with_op(ModOp::GraphicsLayer(layer))
     }
 
     pub fn then(&self, next: Modifier) -> Modifier {
@@ -90,6 +114,13 @@ impl Modifier {
     pub fn click_handler(&self) -> Option<Rc<dyn Fn(Point)>> {
         self.0.iter().rev().find_map(|op| match op {
             ModOp::Clickable(handler) => Some(handler.clone()),
+            _ => None,
+        })
+    }
+
+    pub fn graphics_layer_values(&self) -> Option<GraphicsLayer> {
+        self.0.iter().rev().find_map(|op| match op {
+            ModOp::GraphicsLayer(layer) => Some(*layer),
             _ => None,
         })
     }

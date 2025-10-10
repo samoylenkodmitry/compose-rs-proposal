@@ -2,8 +2,8 @@ use std::rc::Rc;
 
 use compose_core::{self, location_key, Composition, Key, MemoryApplier, NodeId};
 use compose_ui::{
-    composable, Button, ButtonNode, Color, Column, ColumnNode, Modifier, Point, RowNode, Size,
-    Spacer, SpacerNode, Text, TextNode,
+    composable, Button, ButtonNode, Color, Column, ColumnNode, GraphicsLayer, Modifier, Point,
+    RowNode, Size, Spacer, SpacerNode, Text, TextNode,
 };
 use once_cell::sync::Lazy;
 use pixels::{Pixels, SurfaceTexture};
@@ -178,7 +178,16 @@ impl ComposeDesktopApp {
                 height: self.viewport.1,
             };
             let applier = self.composition.applier_mut();
-            layout_node(applier, root, 0.0, 0.0, viewport_size, 0, &mut self.scene);
+            layout_node(
+                applier,
+                root,
+                0.0,
+                0.0,
+                viewport_size,
+                0,
+                GraphicsLayer::default(),
+                &mut self.scene,
+            );
         }
     }
 }
@@ -253,6 +262,7 @@ struct TextDraw {
     rect: Rect,
     text: String,
     color: Color,
+    scale: f32,
     depth: usize,
 }
 
@@ -322,6 +332,7 @@ struct NodeStyle {
     background: Option<Color>,
     size: Option<Size>,
     clickable: Option<Rc<dyn Fn(Point)>>,
+    graphics_layer: Option<GraphicsLayer>,
 }
 
 impl NodeStyle {
@@ -331,8 +342,42 @@ impl NodeStyle {
             background: modifier.background_color(),
             size: modifier.explicit_size(),
             clickable: modifier.click_handler(),
+            graphics_layer: modifier.graphics_layer_values(),
         }
     }
+}
+
+fn combine_layers(current: GraphicsLayer, modifier_layer: Option<GraphicsLayer>) -> GraphicsLayer {
+    if let Some(layer) = modifier_layer {
+        GraphicsLayer {
+            alpha: (current.alpha * layer.alpha).clamp(0.0, 1.0),
+            scale: current.scale * layer.scale,
+            translation_x: current.translation_x + layer.translation_x,
+            translation_y: current.translation_y + layer.translation_y,
+        }
+    } else {
+        current
+    }
+}
+
+fn apply_layer_to_rect(rect: Rect, origin: (f32, f32), layer: GraphicsLayer) -> Rect {
+    let offset_x = rect.x - origin.0;
+    let offset_y = rect.y - origin.1;
+    Rect {
+        x: origin.0 + offset_x * layer.scale + layer.translation_x,
+        y: origin.1 + offset_y * layer.scale + layer.translation_y,
+        width: rect.width * layer.scale,
+        height: rect.height * layer.scale,
+    }
+}
+
+fn apply_layer_to_color(color: Color, layer: GraphicsLayer) -> Color {
+    Color(
+        color.0,
+        color.1,
+        color.2,
+        (color.3 * layer.alpha).clamp(0.0, 1.0),
+    )
 }
 
 fn layout_node(
@@ -342,22 +387,29 @@ fn layout_node(
     origin_y: f32,
     max_size: Size,
     depth: usize,
+    layer: GraphicsLayer,
     scene: &mut Scene,
 ) -> Size {
     if let Some(column) = applier.with_node(node_id, |node: &mut ColumnNode| node.clone()) {
-        return layout_column(applier, column, origin_x, origin_y, max_size, depth, scene);
+        return layout_column(
+            applier, column, origin_x, origin_y, max_size, depth, layer, scene,
+        );
     }
     if let Some(row) = applier.with_node(node_id, |node: &mut RowNode| node.clone()) {
-        return layout_row(applier, row, origin_x, origin_y, max_size, depth, scene);
+        return layout_row(
+            applier, row, origin_x, origin_y, max_size, depth, layer, scene,
+        );
     }
     if let Some(text) = applier.with_node(node_id, |node: &mut TextNode| node.clone()) {
-        return layout_text(text, origin_x, origin_y, depth, scene);
+        return layout_text(text, origin_x, origin_y, depth, layer, scene);
     }
     if let Some(spacer) = applier.with_node(node_id, |node: &mut SpacerNode| node.clone()) {
-        return layout_spacer(spacer, origin_x, origin_y, depth, scene);
+        return layout_spacer(spacer, origin_x, origin_y, depth, layer, scene);
     }
     if let Some(button) = applier.with_node(node_id, |node: &mut ButtonNode| node.clone()) {
-        return layout_button(applier, button, origin_x, origin_y, max_size, depth, scene);
+        return layout_button(
+            applier, button, origin_x, origin_y, max_size, depth, layer, scene,
+        );
     }
     Size {
         width: 0.0,
@@ -372,9 +424,11 @@ fn layout_column(
     origin_y: f32,
     max_size: Size,
     depth: usize,
+    layer: GraphicsLayer,
     scene: &mut Scene,
 ) -> Size {
     let style = NodeStyle::from_modifier(&node.modifier);
+    let node_layer = combine_layers(layer, style.graphics_layer);
     let inner_x = origin_x + style.padding;
     let inner_y = origin_y + style.padding;
     let mut total_height: f32 = 0.0;
@@ -394,6 +448,7 @@ fn layout_column(
                 height: available_height,
             },
             depth + 1,
+            node_layer,
             scene,
         );
         total_height += size.height;
@@ -416,11 +471,15 @@ fn layout_column(
         height,
     };
     if let Some(color) = style.background {
-        scene.rects.push(DrawRect { rect, color, depth });
+        scene.rects.push(DrawRect {
+            rect: apply_layer_to_rect(rect, (origin_x, origin_y), node_layer),
+            color: apply_layer_to_color(color, node_layer),
+            depth,
+        });
     }
     if let Some(handler) = style.clickable {
         scene.hits.push(HitRegion {
-            rect,
+            rect: apply_layer_to_rect(rect, (origin_x, origin_y), node_layer),
             action: ClickAction::WithPoint(handler),
             depth,
         });
@@ -435,9 +494,11 @@ fn layout_row(
     origin_y: f32,
     max_size: Size,
     depth: usize,
+    layer: GraphicsLayer,
     scene: &mut Scene,
 ) -> Size {
     let style = NodeStyle::from_modifier(&node.modifier);
+    let node_layer = combine_layers(layer, style.graphics_layer);
     let mut total_width: f32 = 0.0;
     let mut max_child_height: f32 = 0.0;
     let inner_x = origin_x + style.padding;
@@ -457,6 +518,7 @@ fn layout_row(
                 height: available_height,
             },
             depth + 1,
+            node_layer,
             scene,
         );
         total_width += size.width;
@@ -479,11 +541,15 @@ fn layout_row(
         height,
     };
     if let Some(color) = style.background {
-        scene.rects.push(DrawRect { rect, color, depth });
+        scene.rects.push(DrawRect {
+            rect: apply_layer_to_rect(rect, (origin_x, origin_y), node_layer),
+            color: apply_layer_to_color(color, node_layer),
+            depth,
+        });
     }
     if let Some(handler) = style.clickable {
         scene.hits.push(HitRegion {
-            rect,
+            rect: apply_layer_to_rect(rect, (origin_x, origin_y), node_layer),
             action: ClickAction::WithPoint(handler),
             depth,
         });
@@ -496,9 +562,11 @@ fn layout_text(
     origin_x: f32,
     origin_y: f32,
     depth: usize,
+    layer: GraphicsLayer,
     scene: &mut Scene,
 ) -> Size {
     let style = NodeStyle::from_modifier(&node.modifier);
+    let node_layer = combine_layers(layer, style.graphics_layer);
     let metrics = measure_text(&node.text);
     let mut width = metrics.width + style.padding * 2.0;
     let mut height = metrics.height + style.padding * 2.0;
@@ -517,22 +585,31 @@ fn layout_text(
         height,
     };
     if let Some(color) = style.background {
-        scene.rects.push(DrawRect { rect, color, depth });
+        scene.rects.push(DrawRect {
+            rect: apply_layer_to_rect(rect, (origin_x, origin_y), node_layer),
+            color: apply_layer_to_color(color, node_layer),
+            depth,
+        });
     }
     scene.texts.push(TextDraw {
-        rect: Rect {
-            x: origin_x + style.padding,
-            y: origin_y + style.padding,
-            width: metrics.width,
-            height: metrics.height,
-        },
+        rect: apply_layer_to_rect(
+            Rect {
+                x: origin_x + style.padding,
+                y: origin_y + style.padding,
+                width: metrics.width,
+                height: metrics.height,
+            },
+            (origin_x, origin_y),
+            node_layer,
+        ),
         text: node.text,
-        color: Color(1.0, 1.0, 1.0, 1.0),
+        color: apply_layer_to_color(Color(1.0, 1.0, 1.0, 1.0), node_layer),
+        scale: node_layer.scale,
         depth,
     });
     if let Some(handler) = style.clickable {
         scene.hits.push(HitRegion {
-            rect,
+            rect: apply_layer_to_rect(rect, (origin_x, origin_y), node_layer),
             action: ClickAction::WithPoint(handler),
             depth,
         });
@@ -545,9 +622,10 @@ fn layout_spacer(
     origin_x: f32,
     origin_y: f32,
     _depth: usize,
+    _layer: GraphicsLayer,
     _scene: &mut Scene,
 ) -> Size {
-    let _ = (origin_x, origin_y);
+    let _ = (origin_x, origin_y, _layer);
     Size {
         width: node.size.width,
         height: node.size.height,
@@ -561,9 +639,11 @@ fn layout_button(
     origin_y: f32,
     max_size: Size,
     depth: usize,
+    layer: GraphicsLayer,
     scene: &mut Scene,
 ) -> Size {
     let style = NodeStyle::from_modifier(&node.modifier);
+    let node_layer = combine_layers(layer, style.graphics_layer);
     let inner_x = origin_x + style.padding;
     let inner_y = origin_y + style.padding;
     let available_width =
@@ -583,6 +663,7 @@ fn layout_button(
                 height: available_height,
             },
             depth + 1,
+            node_layer,
             scene,
         );
         total_height += size.height;
@@ -605,16 +686,20 @@ fn layout_button(
         height,
     };
     if let Some(color) = style.background {
-        scene.rects.push(DrawRect { rect, color, depth });
+        scene.rects.push(DrawRect {
+            rect: apply_layer_to_rect(rect, (origin_x, origin_y), node_layer),
+            color: apply_layer_to_color(color, node_layer),
+            depth,
+        });
     }
     scene.hits.push(HitRegion {
-        rect,
+        rect: apply_layer_to_rect(rect, (origin_x, origin_y), node_layer),
         action: ClickAction::Simple(node.on_click.clone()),
         depth,
     });
     if let Some(handler) = style.clickable {
         scene.hits.push(HitRegion {
-            rect,
+            rect: apply_layer_to_rect(rect, (origin_x, origin_y), node_layer),
             action: ClickAction::WithPoint(handler),
             depth,
         });
@@ -681,6 +766,13 @@ fn fill_rect(frame: &mut [u8], width: u32, height: u32, draw: DrawRect) {
     let end_x = (x + rect_width).min(width as f32) as i32;
     let end_y = (y + rect_height).min(height as f32) as i32;
     let rgba = color_to_rgba(draw.color);
+    let src_r = rgba[0] as f32 / 255.0;
+    let src_g = rgba[1] as f32 / 255.0;
+    let src_b = rgba[2] as f32 / 255.0;
+    let src_a = rgba[3] as f32 / 255.0;
+    if src_a <= 0.0 {
+        return;
+    }
     for py in start_y.max(0)..end_y.max(start_y) {
         if py < 0 || py >= height as i32 {
             continue;
@@ -690,14 +782,30 @@ fn fill_rect(frame: &mut [u8], width: u32, height: u32, draw: DrawRect) {
                 continue;
             }
             let idx = ((py as u32 * width + px as u32) * 4) as usize;
-            frame[idx..idx + 4].copy_from_slice(&rgba);
+            let existing = &mut frame[idx..idx + 4];
+            let dst_r = existing[0] as f32 / 255.0;
+            let dst_g = existing[1] as f32 / 255.0;
+            let dst_b = existing[2] as f32 / 255.0;
+            let dst_a = existing[3] as f32 / 255.0;
+            let out_a = src_a + dst_a * (1.0 - src_a);
+            let blended_r = src_r * src_a + dst_r * (1.0 - src_a);
+            let blended_g = src_g * src_a + dst_g * (1.0 - src_a);
+            let blended_b = src_b * src_a + dst_b * (1.0 - src_a);
+            existing[0] = (blended_r.clamp(0.0, 1.0) * 255.0).round() as u8;
+            existing[1] = (blended_g.clamp(0.0, 1.0) * 255.0).round() as u8;
+            existing[2] = (blended_b.clamp(0.0, 1.0) * 255.0).round() as u8;
+            existing[3] = (out_a.clamp(0.0, 1.0) * 255.0).round() as u8;
         }
     }
 }
 
 fn draw_text(frame: &mut [u8], width: u32, height: u32, draw: TextDraw) {
     let color = color_to_rgba(draw.color);
-    let scale = Scale::uniform(TEXT_SIZE);
+    let text_scale = (draw.scale).max(0.0);
+    if text_scale == 0.0 {
+        return;
+    }
+    let scale = Scale::uniform(TEXT_SIZE * text_scale);
     let font = &*FONT;
     let v_metrics = font.v_metrics(scale);
     let offset = point(draw.rect.x, draw.rect.y + v_metrics.ascent);
