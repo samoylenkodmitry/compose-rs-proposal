@@ -206,7 +206,7 @@ fn counter_app() {
                 Modifier::padding(12.0).then(Modifier::size(Size {
                     width: 100.0,
                     height: 40.0,
-                })),
+                })).then(Modifier::graphics_layer(GraphicsLayer { alpha : counter.get() as f32 / 100.0, scale : 0.5 + counter.get() as f32 / 10.0, translation_x : 0.0 + counter.get() as f32, translation_y : 0.0+ counter.get() as f32})),
             );
             Spacer(Size {
                 width: 0.0,
