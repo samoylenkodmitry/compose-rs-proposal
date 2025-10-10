@@ -2,9 +2,10 @@ use std::rc::Rc;
 
 use compose_core::{self, location_key, Composition, Key, MemoryApplier, NodeId};
 use compose_ui::{
-    composable, Button, ButtonNode, Color, Column, ColumnNode, Modifier, Point, RowNode, Size,
-    Spacer, SpacerNode, Text, TextNode,
+    composable, Brush, Button, ButtonNode, Color, Column, ColumnNode, Modifier, Point, Rect,
+    RowNode, Size, Spacer, SpacerNode, Text, TextNode,
 };
+use compose_ui::{DrawCommand, DrawPrimitive};
 use once_cell::sync::Lazy;
 use pixels::{Pixels, SurfaceTexture};
 use rusttype::{point, Font, Scale};
@@ -227,25 +228,12 @@ fn counter_app() {
     );
 }
 
-#[derive(Clone, Copy)]
-struct Rect {
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-}
-
-impl Rect {
-    fn contains(&self, x: f32, y: f32) -> bool {
-        x >= self.x && y >= self.y && x <= self.x + self.width && y <= self.y + self.height
-    }
-}
-
 #[derive(Clone)]
-struct DrawRect {
+struct DrawShape {
     rect: Rect,
-    color: Color,
-    depth: usize,
+    brush: Brush,
+    corner_radius: f32,
+    z_index: usize,
 }
 
 #[derive(Clone)]
@@ -253,7 +241,7 @@ struct TextDraw {
     rect: Rect,
     text: String,
     color: Color,
-    depth: usize,
+    z_index: usize,
 }
 
 #[derive(Clone)]
@@ -278,7 +266,7 @@ impl ClickAction {
 struct HitRegion {
     rect: Rect,
     action: ClickAction,
-    depth: usize,
+    z_index: usize,
 }
 
 impl HitRegion {
@@ -288,9 +276,10 @@ impl HitRegion {
 }
 
 struct Scene {
-    rects: Vec<DrawRect>,
+    rects: Vec<DrawShape>,
     texts: Vec<TextDraw>,
     hits: Vec<HitRegion>,
+    next_z: usize,
 }
 
 impl Scene {
@@ -299,6 +288,7 @@ impl Scene {
             rects: Vec::new(),
             texts: Vec::new(),
             hits: Vec::new(),
+            next_z: 0,
         }
     }
 
@@ -306,14 +296,47 @@ impl Scene {
         self.rects.clear();
         self.texts.clear();
         self.hits.clear();
+        self.next_z = 0;
     }
 
     fn hit_test(&self, x: f32, y: f32) -> Option<HitRegion> {
         self.hits
             .iter()
             .filter(|hit| hit.rect.contains(x, y))
-            .max_by(|a, b| a.depth.cmp(&b.depth))
+            .max_by(|a, b| a.z_index.cmp(&b.z_index))
             .cloned()
+    }
+
+    fn push_shape(&mut self, rect: Rect, brush: Brush, corner_radius: f32) {
+        let z_index = self.next_z;
+        self.next_z += 1;
+        self.rects.push(DrawShape {
+            rect,
+            brush,
+            corner_radius,
+            z_index,
+        });
+    }
+
+    fn push_text(&mut self, rect: Rect, text: String, color: Color) {
+        let z_index = self.next_z;
+        self.next_z += 1;
+        self.texts.push(TextDraw {
+            rect,
+            text,
+            color,
+            z_index,
+        });
+    }
+
+    fn push_hit(&mut self, rect: Rect, action: ClickAction) {
+        let z_index = self.next_z;
+        self.next_z += 1;
+        self.hits.push(HitRegion {
+            rect,
+            action,
+            z_index,
+        });
     }
 }
 
@@ -322,6 +345,7 @@ struct NodeStyle {
     background: Option<Color>,
     size: Option<Size>,
     clickable: Option<Rc<dyn Fn(Point)>>,
+    draw_commands: Vec<DrawCommand>,
 }
 
 impl NodeStyle {
@@ -331,6 +355,48 @@ impl NodeStyle {
             background: modifier.background_color(),
             size: modifier.explicit_size(),
             clickable: modifier.click_handler(),
+            draw_commands: modifier.draw_commands(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum DrawPlacement {
+    Behind,
+    Overlay,
+}
+
+fn apply_draw_commands(
+    commands: &[DrawCommand],
+    placement: DrawPlacement,
+    rect: Rect,
+    size: Size,
+    scene: &mut Scene,
+) {
+    for command in commands {
+        let primitives = match (placement, command) {
+            (DrawPlacement::Behind, DrawCommand::Behind(func)) => func(size),
+            (DrawPlacement::Overlay, DrawCommand::Overlay(func)) => func(size),
+            _ => continue,
+        };
+        for primitive in primitives {
+            match primitive {
+                DrawPrimitive::Rect {
+                    rect: local_rect,
+                    brush,
+                } => {
+                    let draw_rect = local_rect.translate(rect.x, rect.y);
+                    scene.push_shape(draw_rect, brush, 0.0);
+                }
+                DrawPrimitive::RoundRect {
+                    rect: local_rect,
+                    brush,
+                    corner_radius,
+                } => {
+                    let draw_rect = local_rect.translate(rect.x, rect.y);
+                    scene.push_shape(draw_rect, brush, corner_radius);
+                }
+            }
         }
     }
 }
@@ -415,16 +481,27 @@ fn layout_column(
         width,
         height,
     };
+    let node_size = Size { width, height };
     if let Some(color) = style.background {
-        scene.rects.push(DrawRect { rect, color, depth });
+        scene.push_shape(rect, Brush::solid(color), 0.0);
     }
+    apply_draw_commands(
+        &style.draw_commands,
+        DrawPlacement::Behind,
+        rect,
+        node_size,
+        scene,
+    );
     if let Some(handler) = style.clickable {
-        scene.hits.push(HitRegion {
-            rect,
-            action: ClickAction::WithPoint(handler),
-            depth,
-        });
+        scene.push_hit(rect, ClickAction::WithPoint(handler));
     }
+    apply_draw_commands(
+        &style.draw_commands,
+        DrawPlacement::Overlay,
+        rect,
+        node_size,
+        scene,
+    );
     Size { width, height }
 }
 
@@ -478,16 +555,27 @@ fn layout_row(
         width,
         height,
     };
+    let node_size = Size { width, height };
     if let Some(color) = style.background {
-        scene.rects.push(DrawRect { rect, color, depth });
+        scene.push_shape(rect, Brush::solid(color), 0.0);
     }
+    apply_draw_commands(
+        &style.draw_commands,
+        DrawPlacement::Behind,
+        rect,
+        node_size,
+        scene,
+    );
     if let Some(handler) = style.clickable {
-        scene.hits.push(HitRegion {
-            rect,
-            action: ClickAction::WithPoint(handler),
-            depth,
-        });
+        scene.push_hit(rect, ClickAction::WithPoint(handler));
     }
+    apply_draw_commands(
+        &style.draw_commands,
+        DrawPlacement::Overlay,
+        rect,
+        node_size,
+        scene,
+    );
     Size { width, height }
 }
 
@@ -495,7 +583,7 @@ fn layout_text(
     node: TextNode,
     origin_x: f32,
     origin_y: f32,
-    depth: usize,
+    _depth: usize,
     scene: &mut Scene,
 ) -> Size {
     let style = NodeStyle::from_modifier(&node.modifier);
@@ -516,27 +604,34 @@ fn layout_text(
         width,
         height,
     };
+    let node_size = Size { width, height };
     if let Some(color) = style.background {
-        scene.rects.push(DrawRect { rect, color, depth });
+        scene.push_shape(rect, Brush::solid(color), 0.0);
     }
-    scene.texts.push(TextDraw {
-        rect: Rect {
-            x: origin_x + style.padding,
-            y: origin_y + style.padding,
-            width: metrics.width,
-            height: metrics.height,
-        },
-        text: node.text,
-        color: Color(1.0, 1.0, 1.0, 1.0),
-        depth,
-    });
+    apply_draw_commands(
+        &style.draw_commands,
+        DrawPlacement::Behind,
+        rect,
+        node_size,
+        scene,
+    );
+    let text_rect = Rect {
+        x: origin_x + style.padding,
+        y: origin_y + style.padding,
+        width: metrics.width,
+        height: metrics.height,
+    };
+    scene.push_text(text_rect, node.text, Color(1.0, 1.0, 1.0, 1.0));
     if let Some(handler) = style.clickable {
-        scene.hits.push(HitRegion {
-            rect,
-            action: ClickAction::WithPoint(handler),
-            depth,
-        });
+        scene.push_hit(rect, ClickAction::WithPoint(handler));
     }
+    apply_draw_commands(
+        &style.draw_commands,
+        DrawPlacement::Overlay,
+        rect,
+        node_size,
+        scene,
+    );
     Size { width, height }
 }
 
@@ -604,21 +699,28 @@ fn layout_button(
         width,
         height,
     };
+    let node_size = Size { width, height };
     if let Some(color) = style.background {
-        scene.rects.push(DrawRect { rect, color, depth });
+        scene.push_shape(rect, Brush::solid(color), 0.0);
     }
-    scene.hits.push(HitRegion {
+    apply_draw_commands(
+        &style.draw_commands,
+        DrawPlacement::Behind,
         rect,
-        action: ClickAction::Simple(node.on_click.clone()),
-        depth,
-    });
+        node_size,
+        scene,
+    );
+    scene.push_hit(rect, ClickAction::Simple(node.on_click.clone()));
     if let Some(handler) = style.clickable {
-        scene.hits.push(HitRegion {
-            rect,
-            action: ClickAction::WithPoint(handler),
-            depth,
-        });
+        scene.push_hit(rect, ClickAction::WithPoint(handler));
     }
+    apply_draw_commands(
+        &style.draw_commands,
+        DrawPlacement::Overlay,
+        rect,
+        node_size,
+        scene,
+    );
     Size { width, height }
 }
 
@@ -657,19 +759,19 @@ fn draw_scene(frame: &mut [u8], width: u32, height: u32, scene: &Scene) {
     }
 
     let mut rects = scene.rects.clone();
-    rects.sort_by(|a, b| a.depth.cmp(&b.depth));
+    rects.sort_by(|a, b| a.z_index.cmp(&b.z_index));
     for rect in rects {
-        fill_rect(frame, width, height, rect);
+        draw_shape(frame, width, height, rect);
     }
 
     let mut texts = scene.texts.clone();
-    texts.sort_by(|a, b| a.depth.cmp(&b.depth));
+    texts.sort_by(|a, b| a.z_index.cmp(&b.z_index));
     for text in texts {
         draw_text(frame, width, height, text);
     }
 }
 
-fn fill_rect(frame: &mut [u8], width: u32, height: u32, draw: DrawRect) {
+fn draw_shape(frame: &mut [u8], width: u32, height: u32, draw: DrawShape) {
     let Rect {
         x,
         y,
@@ -680,7 +782,6 @@ fn fill_rect(frame: &mut [u8], width: u32, height: u32, draw: DrawRect) {
     let start_y = y.max(0.0) as i32;
     let end_x = (x + rect_width).min(width as f32) as i32;
     let end_y = (y + rect_height).min(height as f32) as i32;
-    let rgba = color_to_rgba(draw.color);
     for py in start_y.max(0)..end_y.max(start_y) {
         if py < 0 || py >= height as i32 {
             continue;
@@ -689,8 +790,26 @@ fn fill_rect(frame: &mut [u8], width: u32, height: u32, draw: DrawRect) {
             if px < 0 || px >= width as i32 {
                 continue;
             }
+            let point_x = px as f32 + 0.5;
+            let point_y = py as f32 + 0.5;
+            if !point_in_round_rect(draw.rect, draw.corner_radius, point_x, point_y) {
+                continue;
+            }
+            let color = sample_brush(&draw.brush, draw.rect, point_x, point_y);
+            let alpha = color[3];
+            if alpha <= 0.0 {
+                continue;
+            }
             let idx = ((py as u32 * width + px as u32) * 4) as usize;
-            frame[idx..idx + 4].copy_from_slice(&rgba);
+            let existing = &mut frame[idx..idx + 4];
+            for i in 0..3 {
+                let dst = existing[i] as f32 / 255.0;
+                let blended = color[i] * alpha + dst * (1.0 - alpha);
+                existing[i] = (blended.clamp(0.0, 1.0) * 255.0).round() as u8;
+            }
+            let dst_alpha = existing[3] as f32 / 255.0;
+            let out_alpha = alpha + dst_alpha * (1.0 - alpha);
+            existing[3] = (out_alpha.clamp(0.0, 1.0) * 255.0).round() as u8;
         }
     }
 }
@@ -714,8 +833,7 @@ fn draw_text(frame: &mut [u8], width: u32, height: u32, draw: TextDraw) {
                 let existing = &mut frame[idx..idx + 4];
                 for i in 0..3 {
                     let dst = existing[i] as f32 / 255.0;
-                    let src = color[i] as f32 / 255.0;
-                    let blended = (src * alpha) + dst * (1.0 - alpha);
+                    let blended = (color[i] * alpha) + dst * (1.0 - alpha);
                     existing[i] = (blended.clamp(0.0, 1.0) * 255.0).round() as u8;
                 }
                 existing[3] = 255;
@@ -724,11 +842,100 @@ fn draw_text(frame: &mut [u8], width: u32, height: u32, draw: TextDraw) {
     }
 }
 
-fn color_to_rgba(color: Color) -> [u8; 4] {
+fn color_to_rgba(color: Color) -> [f32; 4] {
     [
-        (color.0.clamp(0.0, 1.0) * 255.0) as u8,
-        (color.1.clamp(0.0, 1.0) * 255.0) as u8,
-        (color.2.clamp(0.0, 1.0) * 255.0) as u8,
-        (color.3.clamp(0.0, 1.0) * 255.0) as u8,
+        color.0.clamp(0.0, 1.0),
+        color.1.clamp(0.0, 1.0),
+        color.2.clamp(0.0, 1.0),
+        color.3.clamp(0.0, 1.0),
     ]
+}
+
+fn point_in_round_rect(rect: Rect, radius: f32, x: f32, y: f32) -> bool {
+    if !rect.contains(x, y) {
+        return false;
+    }
+    let radius = radius.max(0.0).min(rect.width / 2.0).min(rect.height / 2.0);
+    if radius <= 0.0 {
+        return true;
+    }
+    let inner = Rect {
+        x: rect.x + radius,
+        y: rect.y + radius,
+        width: (rect.width - radius * 2.0).max(0.0),
+        height: (rect.height - radius * 2.0).max(0.0),
+    };
+    if inner.width >= 0.0 && inner.height >= 0.0 && inner.contains(x, y) {
+        return true;
+    }
+    let corners = [
+        (rect.x + radius, rect.y + radius),
+        (rect.x + rect.width - radius, rect.y + radius),
+        (rect.x + radius, rect.y + rect.height - radius),
+        (rect.x + rect.width - radius, rect.y + rect.height - radius),
+    ];
+    for (cx, cy) in corners {
+        let dx = x - cx;
+        let dy = y - cy;
+        if dx * dx + dy * dy <= radius * radius {
+            return true;
+        }
+    }
+    false
+}
+
+fn sample_brush(brush: &Brush, rect: Rect, x: f32, y: f32) -> [f32; 4] {
+    match brush {
+        Brush::Solid(color) => color_to_rgba(*color),
+        Brush::LinearGradient(colors) => {
+            let t = if rect.height.abs() <= f32::EPSILON {
+                0.0
+            } else {
+                ((y - rect.y) / rect.height).clamp(0.0, 1.0)
+            };
+            color_to_rgba(interpolate_colors(colors, t))
+        }
+        Brush::RadialGradient {
+            colors,
+            center,
+            radius,
+        } => {
+            let cx = rect.x + center.x;
+            let cy = rect.y + center.y;
+            let radius = (*radius).max(f32::EPSILON);
+            let dx = x - cx;
+            let dy = y - cy;
+            let distance = (dx * dx + dy * dy).sqrt();
+            let t = (distance / radius).clamp(0.0, 1.0);
+            color_to_rgba(interpolate_colors(colors, t))
+        }
+    }
+}
+
+fn interpolate_colors(colors: &[Color], t: f32) -> Color {
+    if colors.is_empty() {
+        return Color(0.0, 0.0, 0.0, 0.0);
+    }
+    if colors.len() == 1 {
+        return colors[0];
+    }
+    let clamped = t.clamp(0.0, 1.0);
+    let segments = (colors.len() - 1) as f32;
+    let scaled = clamped * segments;
+    let index = scaled.floor() as usize;
+    if index >= colors.len() - 1 {
+        return *colors.last().unwrap();
+    }
+    let frac = scaled - index as f32;
+    lerp_color(colors[index], colors[index + 1], frac)
+}
+
+fn lerp_color(a: Color, b: Color, t: f32) -> Color {
+    let lerp = |start: f32, end: f32| start + (end - start) * t;
+    Color(
+        lerp(a.0, b.0),
+        lerp(a.1, b.1),
+        lerp(a.2, b.2),
+        lerp(a.3, b.3),
+    )
 }
