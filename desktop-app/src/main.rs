@@ -3,7 +3,8 @@ use std::rc::Rc;
 use compose_core::{self, location_key, Composition, Key, MemoryApplier, NodeId};
 use compose_ui::{
     composable, Button, ButtonNode, Color, Column, ColumnNode, CornerRadii, Modifier, Point,
-    RoundedCornerShape, RowNode, Size, Spacer, SpacerNode, Text, TextNode,
+    PointerEvent, PointerEventKind, RoundedCornerShape, RowNode, Size, Spacer, SpacerNode, Text,
+    TextNode,
 };
 use once_cell::sync::Lazy;
 use pixels::{Pixels, SurfaceTexture};
@@ -83,12 +84,11 @@ fn main() {
                 WindowEvent::CursorMoved { position, .. } => {
                     app.set_cursor(position.x as f32, position.y as f32);
                 }
-                WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                    ..
-                } => {
-                    app.pointer_pressed();
+                WindowEvent::MouseInput { state, button, .. } if button == MouseButton::Left => {
+                    match state {
+                        ElementState::Pressed => app.pointer_pressed(),
+                        ElementState::Released => app.pointer_released(),
+                    }
                 }
                 _ => {}
             },
@@ -146,11 +146,20 @@ impl ComposeDesktopApp {
 
     fn set_cursor(&mut self, x: f32, y: f32) {
         self.cursor = (x, y);
+        if let Some(hit) = self.scene.hit_test(x, y) {
+            hit.dispatch(PointerEventKind::Move, x, y);
+        }
     }
 
     fn pointer_pressed(&mut self) {
         if let Some(hit) = self.scene.hit_test(self.cursor.0, self.cursor.1) {
-            hit.invoke(self.cursor.0, self.cursor.1);
+            hit.dispatch(PointerEventKind::Down, self.cursor.0, self.cursor.1);
+        }
+    }
+
+    fn pointer_released(&mut self) {
+        if let Some(hit) = self.scene.hit_test(self.cursor.0, self.cursor.1) {
+            hit.dispatch(PointerEventKind::Up, self.cursor.0, self.cursor.1);
         }
     }
 
@@ -285,7 +294,8 @@ impl ClickAction {
 struct HitRegion {
     rect: Rect,
     shape: Option<RoundedCornerShape>,
-    action: ClickAction,
+    click_actions: Vec<ClickAction>,
+    pointer_inputs: Vec<Rc<dyn Fn(PointerEvent)>>,
     depth: usize,
 }
 
@@ -298,8 +308,25 @@ impl HitRegion {
         }
     }
 
-    fn invoke(&self, x: f32, y: f32) {
-        self.action.invoke(self.rect, x, y);
+    fn dispatch(&self, kind: PointerEventKind, x: f32, y: f32) {
+        let local = Point {
+            x: x - self.rect.x,
+            y: y - self.rect.y,
+        };
+        let global = Point { x, y };
+        let event = PointerEvent {
+            kind,
+            position: local,
+            global_position: global,
+        };
+        for handler in &self.pointer_inputs {
+            handler(event);
+        }
+        if kind == PointerEventKind::Down {
+            for action in &self.click_actions {
+                action.invoke(self.rect, x, y);
+            }
+        }
     }
 }
 
@@ -339,6 +366,7 @@ struct NodeStyle {
     size: Option<Size>,
     clickable: Option<Rc<dyn Fn(Point)>>,
     shape: Option<RoundedCornerShape>,
+    pointer_inputs: Vec<Rc<dyn Fn(PointerEvent)>>,
 }
 
 impl NodeStyle {
@@ -349,6 +377,7 @@ impl NodeStyle {
             size: modifier.explicit_size(),
             clickable: modifier.click_handler(),
             shape: modifier.corner_shape(),
+            pointer_inputs: modifier.pointer_inputs(),
         }
     }
 }
@@ -441,11 +470,16 @@ fn layout_column(
             shape: style.shape,
         });
     }
+    let mut click_actions = Vec::new();
     if let Some(handler) = style.clickable {
+        click_actions.push(ClickAction::WithPoint(handler));
+    }
+    if !click_actions.is_empty() || !style.pointer_inputs.is_empty() {
         scene.hits.push(HitRegion {
             rect,
             shape: style.shape,
-            action: ClickAction::WithPoint(handler),
+            click_actions,
+            pointer_inputs: style.pointer_inputs.clone(),
             depth,
         });
     }
@@ -510,11 +544,16 @@ fn layout_row(
             shape: style.shape,
         });
     }
+    let mut click_actions = Vec::new();
     if let Some(handler) = style.clickable {
+        click_actions.push(ClickAction::WithPoint(handler));
+    }
+    if !click_actions.is_empty() || !style.pointer_inputs.is_empty() {
         scene.hits.push(HitRegion {
             rect,
             shape: style.shape,
-            action: ClickAction::WithPoint(handler),
+            click_actions,
+            pointer_inputs: style.pointer_inputs.clone(),
             depth,
         });
     }
@@ -565,11 +604,16 @@ fn layout_text(
         color: Color(1.0, 1.0, 1.0, 1.0),
         depth,
     });
+    let mut click_actions = Vec::new();
     if let Some(handler) = style.clickable {
+        click_actions.push(ClickAction::WithPoint(handler));
+    }
+    if !click_actions.is_empty() || !style.pointer_inputs.is_empty() {
         scene.hits.push(HitRegion {
             rect,
             shape: style.shape,
-            action: ClickAction::WithPoint(handler),
+            click_actions,
+            pointer_inputs: style.pointer_inputs.clone(),
             depth,
         });
     }
@@ -648,17 +692,16 @@ fn layout_button(
             shape: style.shape,
         });
     }
-    scene.hits.push(HitRegion {
-        rect,
-        shape: style.shape,
-        action: ClickAction::Simple(node.on_click.clone()),
-        depth,
-    });
+    let mut click_actions = vec![ClickAction::Simple(node.on_click.clone())];
     if let Some(handler) = style.clickable {
+        click_actions.push(ClickAction::WithPoint(handler));
+    }
+    if !click_actions.is_empty() || !style.pointer_inputs.is_empty() {
         scene.hits.push(HitRegion {
             rect,
             shape: style.shape,
-            action: ClickAction::WithPoint(handler),
+            click_actions,
+            pointer_inputs: style.pointer_inputs.clone(),
             depth,
         });
     }
