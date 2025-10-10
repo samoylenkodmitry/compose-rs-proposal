@@ -1,5 +1,19 @@
 use std::rc::Rc;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PointerEventKind {
+    Down,
+    Move,
+    Up,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PointerEvent {
+    pub kind: PointerEventKind,
+    pub position: Point,
+    pub global_position: Point,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Color(pub f32, pub f32, pub f32, pub f32);
 
@@ -84,6 +98,7 @@ pub enum ModOp {
     Clickable(Rc<dyn Fn(Point)>),
     Size(Size),
     RoundedCorners(RoundedCornerShape),
+    PointerInput(Rc<dyn Fn(PointerEvent)>),
 }
 
 #[derive(Clone, Default)]
@@ -120,6 +135,10 @@ impl Modifier {
 
     pub fn rounded_corner_shape(shape: RoundedCornerShape) -> Self {
         Self::with_op(ModOp::RoundedCorners(shape))
+    }
+
+    pub fn pointer_input(handler: impl Fn(PointerEvent) + 'static) -> Self {
+        Self::with_op(ModOp::PointerInput(Rc::new(handler)))
     }
 
     pub fn then(&self, next: Modifier) -> Modifier {
@@ -170,5 +189,15 @@ impl Modifier {
             ModOp::RoundedCorners(shape) => Some(*shape),
             _ => None,
         })
+    }
+
+    pub fn pointer_inputs(&self) -> Vec<Rc<dyn Fn(PointerEvent)>> {
+        self.0
+            .iter()
+            .filter_map(|op| match op {
+                ModOp::PointerInput(handler) => Some(handler.clone()),
+                _ => None,
+            })
+            .collect()
     }
 }
