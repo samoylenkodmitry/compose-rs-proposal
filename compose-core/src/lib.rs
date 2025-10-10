@@ -224,6 +224,8 @@ pub trait Applier {
     fn remove(&mut self, id: NodeId);
 }
 
+type Command = Box<dyn FnMut(&mut dyn Applier) + 'static>;
+
 #[derive(Default)]
 pub struct MemoryApplier {
     nodes: Vec<Option<Box<dyn Node>>>,
@@ -296,6 +298,7 @@ pub struct Composer<'a> {
     runtime: RuntimeHandle,
     parent_stack: Vec<NodeId>,
     pub(crate) root: Option<NodeId>,
+    commands: Vec<Command>,
 }
 
 impl<'a> Composer<'a> {
@@ -311,6 +314,7 @@ impl<'a> Composer<'a> {
             runtime,
             parent_stack: Vec::new(),
             root,
+            commands: Vec::new(),
         }
     }
 
@@ -358,31 +362,36 @@ impl<'a> Composer<'a> {
 
     pub fn emit_node<N: Node + 'static>(&mut self, init: impl FnOnce() -> N) -> NodeId {
         if let Some(id) = self.slots.read_node() {
-            {
-                let node = self.applier.get_mut(id);
-                let typed = node
-                    .as_any_mut()
-                    .downcast_mut::<N>()
-                    .expect("node type mismatch");
-                typed.update();
-            }
+            self.commands
+                .push(Box::new(move |applier: &mut dyn Applier| {
+                    let node = applier.get_mut(id);
+                    let typed = node
+                        .as_any_mut()
+                        .downcast_mut::<N>()
+                        .expect("node type mismatch");
+                    typed.update();
+                }));
             self.attach_to_parent(id);
             return id;
         }
         let id = self.applier.create(Box::new(init()));
         self.slots.record_node(id);
-        {
-            let node = self.applier.get_mut(id);
-            node.mount();
-        }
+        self.commands
+            .push(Box::new(move |applier: &mut dyn Applier| {
+                let node = applier.get_mut(id);
+                node.mount();
+            }));
         self.attach_to_parent(id);
         id
     }
 
     fn attach_to_parent(&mut self, id: NodeId) {
         if let Some(&parent) = self.parent_stack.last() {
-            let parent_node = self.applier.get_mut(parent);
-            parent_node.insert_child(id);
+            self.commands
+                .push(Box::new(move |applier: &mut dyn Applier| {
+                    let parent_node = applier.get_mut(parent);
+                    parent_node.insert_child(id);
+                }));
         } else {
             self.root = Some(id);
         }
@@ -411,6 +420,10 @@ impl<'a> Composer<'a> {
 
     pub fn runtime(&self) -> &RuntimeHandle {
         &self.runtime
+    }
+
+    pub fn take_commands(&mut self) -> Vec<Command> {
+        std::mem::take(&mut self.commands)
     }
 }
 
@@ -505,12 +518,20 @@ impl<A: Applier> Composition<A> {
 
     pub fn render(&mut self, key: Key, mut content: impl FnMut()) {
         self.slots.reset();
-        let runtime = RuntimeHandle(Rc::downgrade(&self.runtime));
-        let mut composer = Composer::new(&mut self.slots, &mut self.applier, runtime, self.root);
-        let root = composer.install(|composer| {
-            composer.with_group(key, |_| content());
-            composer.root
-        });
+        let (root, mut commands) = {
+            let runtime = RuntimeHandle(Rc::downgrade(&self.runtime));
+            let mut composer =
+                Composer::new(&mut self.slots, &mut self.applier, runtime, self.root);
+            composer.install(|composer| {
+                composer.with_group(key, |_| content());
+                let root = composer.root;
+                let commands = composer.take_commands();
+                (root, commands)
+            })
+        };
+        for command in commands.iter_mut() {
+            command(&mut self.applier);
+        }
         self.root = root;
         self.slots.trim_to_cursor();
         *self.runtime.needs_frame.borrow_mut() = false;
