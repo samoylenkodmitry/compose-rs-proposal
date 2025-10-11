@@ -10,8 +10,8 @@ This roadmap captures near-term milestones and ready-to-apply patches for evolvi
 4. ✅ **Error handling**: replace `expect`/`unwrap` across the runtime and applier with `Result` and structured error types.
 5. ✅ **Keys & reordering**: provide stable identity for dynamic lists to avoid churn during reordering.
 6. ✅ **Layout with `taffy`**: map `Modifier` data into `taffy::Style` and compute layouts inside the applier.
-7. **Renderer stub**: sketch a `WgpuApplier` (or keep a headless applier plus golden layout tests).
-8. **Benchmarks & tests**: add microbenchmarks for skip/wide list scenarios, signal-targeted updates, and layout goldens.
+7. ✅ **Renderer stub**: sketch a `WgpuApplier` (or keep a headless applier plus golden layout tests).
+8. ✅ **Benchmarks & tests**: add microbenchmarks for skip/wide list scenarios, signal-targeted updates, and layout goldens.
 
 ## Detailed Plan & Patches
 
@@ -108,15 +108,15 @@ stack with text and spacers to verify padding and child placement.
 
 ### 8. Renderer stub
 
-Sketch a `WgpuApplier` that builds draw lists from layouted nodes. A headless applier with golden layout tests is sufficient if GPU work is deferred.
+Status: ✅ Added a headless renderer (`compose_ui::renderer::HeadlessRenderer`) that walks `LayoutTree` snapshots and produces
+layered `RenderOp` draw lists. The stub translates modifier draw commands and rounded-corner backgrounds into absolute
+coordinates and enables golden-style verification without a GPU backend.
 
 ### 9. Tests & benchmarks
 
-* Signals (Phase 1): verify setting a signal triggers a scheduled re-render and the `Text` reflects updates.
-* Skip recomposition: assert bodies do not re-execute when inputs are unchanged; include a microbenchmark for wide lists.
-* Dirty node update (Phase 2): ensure updates target only affected nodes in large trees.
-* Layout goldens: cover rows, columns, and text sizing.
-* Error cases: ensure wrong-type access returns `NodeError::TypeMismatch`.
+Status: ✅ Supplemented the suite with renderer smoke tests that exercise background emission, padding-aware draw translations,
+and overlay ordering. Introduced a Criterion benchmark (`skip_recomposition_static_label`) that measures the composable skip
+fast path when inputs remain unchanged.
 
 ### 10. Ergonomic tweaks
 

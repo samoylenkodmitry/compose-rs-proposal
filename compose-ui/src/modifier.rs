@@ -151,7 +151,7 @@ impl Default for GraphicsLayer {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Brush {
     Solid(Color),
     LinearGradient(Vec<Color>),
@@ -180,7 +180,7 @@ impl Brush {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum DrawPrimitive {
     Rect {
         rect: Rect,

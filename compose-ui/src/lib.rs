@@ -7,6 +7,7 @@ pub use compose_macros::composable;
 mod layout;
 mod modifier;
 mod primitives;
+mod renderer;
 
 pub use layout::{LayoutBox, LayoutEngine, LayoutTree};
 pub use modifier::{
@@ -17,6 +18,7 @@ pub use primitives::{
     Button, ButtonNode, Column, ColumnNode, ForEach, Row, RowNode, Spacer, SpacerNode, Text,
     TextNode,
 };
+pub use renderer::{HeadlessRenderer, PaintLayer, RenderOp, RenderScene};
 
 /// Convenience alias used in examples and tests.
 pub type TestComposition = Composition<MemoryApplier>;
