@@ -264,6 +264,7 @@ name = "compose-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "compose-macros",
 ]
 
 [[package]]

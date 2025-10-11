@@ -10,3 +10,6 @@ anyhow = "1.0"
 
 [features]
 default = []
+
+[dev-dependencies]
+compose-macros = { path = "../compose-macros" }

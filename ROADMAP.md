@@ -4,8 +4,8 @@ This roadmap captures near-term milestones and ready-to-apply patches for evolvi
 
 ## Milestones (Short)
 
-1. **Fine-grained reactivity – Signals (Phase 1)**: introduce `create_signal`, allow `Text` to accept signals, and continue to trigger whole-frame renders (no node-targeted updates yet).
-2. **Skip recomposition when inputs unchanged**: extend `#[composable]` to persist prior parameters in slots and early-return when all implement `PartialEq` and remain unchanged.
+1. ✅ **Fine-grained reactivity – Signals (Phase 1)**: introduce `create_signal`, allow `Text` to accept signals, and continue to trigger whole-frame renders (no node-targeted updates yet).
+2. ✅ **Skip recomposition when inputs unchanged**: extend `#[composable]` to persist prior parameters in slots and early-return when all implement `PartialEq` and remain unchanged.
 3. **Fine-grained updates – Signals (Phase 2)**: add a `DirtyNodes` queue plus `schedule_node_update(NodeId)` fast path; have `Text` subscribe and update itself via the applier.
 4. **Error handling**: replace `expect`/`unwrap` across the runtime and applier with `Result` and structured error types.
 5. **Keys & reordering**: provide stable identity for dynamic lists to avoid churn during reordering.
@@ -119,28 +119,12 @@ impl<T> ReadSignal<T> {
 
 Teach the `#[composable]` macro to store prior arguments in slots and short-circuit when all comparable inputs stay equal.
 
-```rust
-let __key = compose_core::location_key(file!(), line!(), column!());
-let mut __composer = compose_core::with_group(__key);
+Status: ✅ Implemented with new runtime helpers:
 
-let __changed = {
-    let mut any = false;
-    if let Some(old) = __composer.read_slot::<ParamI>(i) {
-        if &old != &param_i { any = true; }
-    } else {
-        any = true;
-    }
-    __composer.write_slot(i, &param_i);
-    any
-};
+* `ParamState<T>` clones and stores each parameter, reporting whether the latest value differs (`PartialEq + Clone`).
+* `ReturnSlot<T>` caches the most recent return value so a skipped recomposition can immediately hand the prior result back to callers.
 
-if !__changed {
-    __composer.skip_group();
-    return __composer.end_group();
-}
-```
-
-Provide an opt-out attribute such as `#[composable(no_skip)]` for edge cases.
+During code generation the macro records parameter/return slots with `remember`. When nothing changed it calls `Composer::skip_current_group()` and returns the cached value. Functions with non-comparable arguments can opt out via `#[composable(no_skip)]`.
 
 ### 4. Signals (Phase 2: targeted node updates)
 
