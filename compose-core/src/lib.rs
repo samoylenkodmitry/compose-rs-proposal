@@ -10,6 +10,25 @@ use std::thread_local;
 pub type Key = u64;
 pub type NodeId = usize;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NodeError {
+    Missing { id: NodeId },
+    TypeMismatch { id: NodeId, expected: &'static str },
+}
+
+impl std::fmt::Display for NodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NodeError::Missing { id } => write!(f, "node {id} missing"),
+            NodeError::TypeMismatch { id, expected } => {
+                write!(f, "node {id} type mismatch; expected {expected}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for NodeError {}
+
 thread_local! {
     static CURRENT_COMPOSER: RefCell<Vec<*mut ()>> = RefCell::new(Vec::new());
 }
@@ -32,7 +51,10 @@ pub fn emit_node<N: Node + 'static>(init: impl FnOnce() -> N) -> NodeId {
     with_current_composer(|composer| composer.emit_node(init))
 }
 
-pub fn with_node_mut<N: Node + 'static, R>(id: NodeId, f: impl FnOnce(&mut N) -> R) -> R {
+pub fn with_node_mut<N: Node + 'static, R>(
+    id: NodeId,
+    f: impl FnOnce(&mut N) -> R,
+) -> Result<R, NodeError> {
     with_current_composer(|composer| composer.with_node_mut(id, f))
 }
 
@@ -232,11 +254,11 @@ impl dyn Node {
 
 pub trait Applier {
     fn create(&mut self, node: Box<dyn Node>) -> NodeId;
-    fn get_mut(&mut self, id: NodeId) -> &mut dyn Node;
-    fn remove(&mut self, id: NodeId);
+    fn get_mut(&mut self, id: NodeId) -> Result<&mut dyn Node, NodeError>;
+    fn remove(&mut self, id: NodeId) -> Result<(), NodeError>;
 }
 
-type Command = Box<dyn FnMut(&mut dyn Applier) + 'static>;
+type Command = Box<dyn FnMut(&mut dyn Applier) -> Result<(), NodeError> + 'static>;
 
 #[derive(Default)]
 pub struct MemoryApplier {
@@ -252,11 +274,21 @@ impl MemoryApplier {
         &mut self,
         id: NodeId,
         f: impl FnOnce(&mut N) -> R,
-    ) -> Option<R> {
-        self.nodes.get_mut(id).and_then(|slot| {
-            let node = slot.as_deref_mut()?;
-            node.as_any_mut().downcast_mut::<N>().map(f)
-        })
+    ) -> Result<R, NodeError> {
+        let slot = self
+            .nodes
+            .get_mut(id)
+            .ok_or(NodeError::Missing { id })?
+            .as_deref_mut()
+            .ok_or(NodeError::Missing { id })?;
+        let typed = slot
+            .as_any_mut()
+            .downcast_mut::<N>()
+            .ok_or(NodeError::TypeMismatch {
+                id,
+                expected: std::any::type_name::<N>(),
+            })?;
+        Ok(f(typed))
     }
 
     pub fn len(&self) -> usize {
@@ -271,14 +303,20 @@ impl Applier for MemoryApplier {
         id
     }
 
-    fn get_mut(&mut self, id: NodeId) -> &mut dyn Node {
-        self.nodes[id].as_deref_mut().expect("node missing")
+    fn get_mut(&mut self, id: NodeId) -> Result<&mut dyn Node, NodeError> {
+        let slot = self
+            .nodes
+            .get_mut(id)
+            .ok_or(NodeError::Missing { id })?
+            .as_deref_mut()
+            .ok_or(NodeError::Missing { id })?;
+        Ok(slot)
     }
 
-    fn remove(&mut self, id: NodeId) {
-        if let Some(node) = self.nodes.get_mut(id) {
-            node.take();
-        }
+    fn remove(&mut self, id: NodeId) -> Result<(), NodeError> {
+        let slot = self.nodes.get_mut(id).ok_or(NodeError::Missing { id })?;
+        slot.take();
+        Ok(())
     }
 }
 
@@ -355,13 +393,16 @@ pub fn schedule_frame() {
 }
 
 /// Schedule an in-place node update using the most recently active runtime.
-pub fn schedule_node_update(update: impl FnOnce(&mut dyn Applier) + 'static) {
+pub fn schedule_node_update(
+    update: impl FnOnce(&mut dyn Applier) -> Result<(), NodeError> + 'static,
+) {
     let handle = current_runtime_handle().expect("no runtime available to schedule node update");
     let mut update_opt = Some(update);
     handle.enqueue_node_update(Box::new(move |applier: &mut dyn Applier| {
         if let Some(update) = update_opt.take() {
-            update(applier);
+            return update(applier);
         }
+        Ok(())
     }));
 }
 
@@ -442,12 +483,16 @@ impl<'a> Composer<'a> {
         if let Some(id) = self.slots.read_node() {
             self.commands
                 .push(Box::new(move |applier: &mut dyn Applier| {
-                    let node = applier.get_mut(id);
-                    let typed = node
-                        .as_any_mut()
-                        .downcast_mut::<N>()
-                        .expect("node type mismatch");
+                    let node = applier.get_mut(id)?;
+                    let typed =
+                        node.as_any_mut()
+                            .downcast_mut::<N>()
+                            .ok_or(NodeError::TypeMismatch {
+                                id,
+                                expected: std::any::type_name::<N>(),
+                            })?;
                     typed.update();
+                    Ok(())
                 }));
             self.attach_to_parent(id);
             return id;
@@ -456,8 +501,9 @@ impl<'a> Composer<'a> {
         self.slots.record_node(id);
         self.commands
             .push(Box::new(move |applier: &mut dyn Applier| {
-                let node = applier.get_mut(id);
+                let node = applier.get_mut(id)?;
                 node.mount();
+                Ok(())
             }));
         self.attach_to_parent(id);
         id
@@ -467,8 +513,9 @@ impl<'a> Composer<'a> {
         if let Some(&parent) = self.parent_stack.last() {
             self.commands
                 .push(Box::new(move |applier: &mut dyn Applier| {
-                    let parent_node = applier.get_mut(parent);
+                    let parent_node = applier.get_mut(parent)?;
                     parent_node.insert_child(id);
+                    Ok(())
                 }));
         } else {
             self.root = Some(id);
@@ -479,13 +526,16 @@ impl<'a> Composer<'a> {
         &mut self,
         id: NodeId,
         f: impl FnOnce(&mut N) -> R,
-    ) -> R {
-        let node = self.applier.get_mut(id);
+    ) -> Result<R, NodeError> {
+        let node = self.applier.get_mut(id)?;
         let typed = node
             .as_any_mut()
             .downcast_mut::<N>()
-            .expect("node type mismatch");
-        f(typed)
+            .ok_or(NodeError::TypeMismatch {
+                id,
+                expected: std::any::type_name::<N>(),
+            })?;
+        Ok(f(typed))
     }
 
     pub fn push_parent(&mut self, id: NodeId) {
@@ -633,7 +683,7 @@ impl<A: Applier> Composition<A> {
         }
     }
 
-    pub fn render(&mut self, key: Key, mut content: impl FnMut()) {
+    pub fn render(&mut self, key: Key, mut content: impl FnMut()) -> Result<(), NodeError> {
         self.slots.reset();
         let (root, mut commands) = {
             let runtime = RuntimeHandle(Rc::downgrade(&self.runtime));
@@ -647,14 +697,15 @@ impl<A: Applier> Composition<A> {
             })
         };
         for command in commands.iter_mut() {
-            command(&mut self.applier);
+            command(&mut self.applier)?;
         }
         for mut command in RuntimeHandle(Rc::downgrade(&self.runtime)).take_updates() {
-            command(&mut self.applier);
+            command(&mut self.applier)?;
         }
         self.root = root;
         self.slots.trim_to_cursor();
         *self.runtime.needs_frame.borrow_mut() = false;
+        Ok(())
     }
 
     pub fn should_render(&self) -> bool {
@@ -673,11 +724,12 @@ impl<A: Applier> Composition<A> {
         self.root
     }
 
-    pub fn flush_pending_node_updates(&mut self) {
+    pub fn flush_pending_node_updates(&mut self) -> Result<(), NodeError> {
         let updates = self.runtime_handle().take_updates();
         for mut update in updates {
-            update(&mut self.applier);
+            update(&mut self.applier)?;
         }
+        Ok(())
     }
 }
 
@@ -715,7 +767,8 @@ mod tests {
         let id = emit_node(|| TextNode::default());
         with_node_mut(id, |node: &mut TextNode| {
             node.text = format!("{}", value);
-        });
+        })
+        .expect("update text node");
         id
     }
 
@@ -725,18 +778,25 @@ mod tests {
         let mut text_seen = String::new();
 
         for _ in 0..2 {
-            composition.render(location_key(file!(), line!(), column!()), || {
-                with_current_composer(|composer| {
-                    composer.with_group(location_key(file!(), line!(), column!()), |composer| {
-                        let count = composer.use_state(|| 0);
-                        let node_id = composer.emit_node(|| TextNode::default());
-                        composer.with_node_mut(node_id, |node: &mut TextNode| {
-                            node.text = format!("{}", count.get());
-                        });
-                        text_seen = count.get().to_string();
+            composition
+                .render(location_key(file!(), line!(), column!()), || {
+                    with_current_composer(|composer| {
+                        composer.with_group(
+                            location_key(file!(), line!(), column!()),
+                            |composer| {
+                                let count = composer.use_state(|| 0);
+                                let node_id = composer.emit_node(|| TextNode::default());
+                                composer
+                                    .with_node_mut(node_id, |node: &mut TextNode| {
+                                        node.text = format!("{}", count.get());
+                                    })
+                                    .expect("update text node");
+                                text_seen = count.get().to_string();
+                            },
+                        );
                     });
-                });
-            });
+                })
+                .expect("render succeeds");
         }
 
         assert_eq!(text_seen, "0");
@@ -746,10 +806,12 @@ mod tests {
     fn state_update_schedules_render() {
         let mut composition = Composition::new(MemoryApplier::new());
         let mut stored = None;
-        composition.render(location_key(file!(), line!(), column!()), || {
-            let state = use_state(|| 10);
-            stored = Some(state);
-        });
+        composition
+            .render(location_key(file!(), line!(), column!()), || {
+                let state = use_state(|| 10);
+                stored = Some(state);
+            })
+            .expect("render succeeds");
         let state = stored.expect("state stored");
         assert!(!composition.should_render());
         state.set(11);
@@ -763,25 +825,29 @@ mod tests {
         let group_key = location_key(file!(), line!(), column!());
         let mut values = Vec::new();
 
-        composition.render(root_key, || {
-            with_current_composer(|composer| {
-                composer.with_group(group_key, |composer| {
-                    let state = composer.animate_float_as_state(0.0, "alpha");
-                    values.push(state.get());
+        composition
+            .render(root_key, || {
+                with_current_composer(|composer| {
+                    composer.with_group(group_key, |composer| {
+                        let state = composer.animate_float_as_state(0.0, "alpha");
+                        values.push(state.get());
+                    });
                 });
-            });
-        });
+            })
+            .expect("render succeeds");
         assert_eq!(values, vec![0.0]);
         assert!(!composition.should_render());
 
-        composition.render(root_key, || {
-            with_current_composer(|composer| {
-                composer.with_group(group_key, |composer| {
-                    let state = composer.animate_float_as_state(1.0, "alpha");
-                    values.push(state.get());
+        composition
+            .render(root_key, || {
+                with_current_composer(|composer| {
+                    composer.with_group(group_key, |composer| {
+                        let state = composer.animate_float_as_state(1.0, "alpha");
+                        values.push(state.get());
+                    });
                 });
-            });
-        });
+            })
+            .expect("render succeeds");
         assert_eq!(values, vec![0.0, 1.0]);
         assert!(!composition.should_render());
     }
@@ -815,19 +881,25 @@ mod tests {
         let mut composition = Composition::new(MemoryApplier::new());
         let key = location_key(file!(), line!(), column!());
 
-        composition.render(key, || {
-            counted_text(1);
-        });
+        composition
+            .render(key, || {
+                counted_text(1);
+            })
+            .expect("render succeeds");
         INVOCATIONS.with(|calls| assert_eq!(calls.get(), 1));
 
-        composition.render(key, || {
-            counted_text(1);
-        });
+        composition
+            .render(key, || {
+                counted_text(1);
+            })
+            .expect("render succeeds");
         INVOCATIONS.with(|calls| assert_eq!(calls.get(), 1));
 
-        composition.render(key, || {
-            counted_text(2);
-        });
+        composition
+            .render(key, || {
+                counted_text(2);
+            })
+            .expect("render succeeds");
         INVOCATIONS.with(|calls| assert_eq!(calls.get(), 2));
     }
 }

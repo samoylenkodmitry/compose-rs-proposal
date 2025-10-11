@@ -7,7 +7,7 @@ This roadmap captures near-term milestones and ready-to-apply patches for evolvi
 1. ✅ **Fine-grained reactivity – Signals (Phase 1)**: introduce `create_signal`, allow `Text` to accept signals, and continue to trigger whole-frame renders (no node-targeted updates yet).
 2. ✅ **Skip recomposition when inputs unchanged**: extend `#[composable]` to persist prior parameters in slots and early-return when all implement `PartialEq` and remain unchanged.
 3. ✅ **Fine-grained updates – Signals (Phase 2)**: route signal writes through a dirty-node queue, expose `schedule_node_update`/`flush_pending_node_updates`, and let `Text` subscribe so it can patch its own node without a full recomposition.
-4. **Error handling**: replace `expect`/`unwrap` across the runtime and applier with `Result` and structured error types.
+4. ✅ **Error handling**: replace `expect`/`unwrap` across the runtime and applier with `Result` and structured error types.
 5. **Keys & reordering**: provide stable identity for dynamic lists to avoid churn during reordering.
 6. **Layout with `taffy`**: map `Modifier` data into `taffy::Style` and compute layouts inside the applier.
 7. **Renderer stub**: sketch a `WgpuApplier` (or keep a headless applier plus golden layout tests).
@@ -70,22 +70,13 @@ The applier gains an `update_node(NodeId)` entry point. `Text` subscribes to its
 
 ### 5. Error handling overhaul
 
-Replace `expect`/`unwrap` calls with structured error handling.
-
-```rust
-pub fn with_node_mut<T, R, F: FnOnce(&mut T) -> R>(id: NodeId, f: F) -> Result<R, NodeError> {
-    match downcast_mut::<T>(id) {
-        Some(node) => Ok(f(node)),
-        None => Err(NodeError::TypeMismatch { id, expected: type_name::<T>() }),
-    }
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum NodeError {
-    #[error("node {id:?} type mismatch; expected {expected}")]
-    TypeMismatch { id: NodeId, expected: &'static str },
-}
-```
+Status: ✅ `compose_core` exposes a `NodeError` enum with `Missing` and
+`TypeMismatch` variants. Runtime APIs (`Composition::render`,
+`flush_pending_node_updates`, `with_node_mut`, `schedule_node_update`, and the
+`Applier` trait) now return `Result`, ensuring node access failures no longer
+panic. Callers either propagate these errors or log them while continuing to
+render, and the desktop demo provides a helper that treats type mismatches as a
+non-fatal miss while still debug-asserting on unexpected missing nodes.
 
 ### 6. Keys & reordering
 
