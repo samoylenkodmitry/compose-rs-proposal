@@ -285,11 +285,24 @@ impl Applier for MemoryApplier {
 #[derive(Default)]
 struct RuntimeInner {
     needs_frame: RefCell<bool>,
+    node_updates: RefCell<Vec<Command>>,
 }
 
 impl RuntimeInner {
     fn schedule(&self) {
         *self.needs_frame.borrow_mut() = true;
+    }
+
+    fn enqueue_update(&self, command: Command) {
+        self.node_updates.borrow_mut().push(command);
+    }
+
+    fn take_updates(&self) -> Vec<Command> {
+        self.node_updates.borrow_mut().drain(..).collect()
+    }
+
+    fn has_updates(&self) -> bool {
+        !self.node_updates.borrow().is_empty()
     }
 }
 
@@ -302,6 +315,19 @@ impl RuntimeHandle {
             inner.schedule();
         }
     }
+
+    pub fn enqueue_node_update(&self, command: Command) {
+        if let Some(inner) = self.0.upgrade() {
+            inner.enqueue_update(command);
+        }
+    }
+
+    fn take_updates(&self) -> Vec<Command> {
+        self.0
+            .upgrade()
+            .map(|inner| inner.take_updates())
+            .unwrap_or_default()
+    }
 }
 
 thread_local! {
@@ -309,20 +335,34 @@ thread_local! {
     static LAST_RUNTIME: RefCell<Option<RuntimeHandle>> = RefCell::new(None);
 }
 
+fn current_runtime_handle() -> Option<RuntimeHandle> {
+    if let Some(handle) = ACTIVE_RUNTIMES.with(|stack| stack.borrow().last().cloned()) {
+        return Some(handle);
+    }
+    LAST_RUNTIME.with(|slot| slot.borrow().clone())
+}
+
 /// Schedule a new frame render using the most recently active runtime handle.
 ///
 /// Signal writers call into this helper to enqueue another frame even after the
 /// `Composer` has returned.
 pub fn schedule_frame() {
-    if let Some(handle) = ACTIVE_RUNTIMES.with(|stack| stack.borrow().last().cloned()) {
-        handle.schedule();
-        return;
-    }
-    if let Some(handle) = LAST_RUNTIME.with(|slot| slot.borrow().clone()) {
+    if let Some(handle) = current_runtime_handle() {
         handle.schedule();
         return;
     }
     panic!("no runtime available to schedule frame");
+}
+
+/// Schedule an in-place node update using the most recently active runtime.
+pub fn schedule_node_update(update: impl FnOnce(&mut dyn Applier) + 'static) {
+    let handle = current_runtime_handle().expect("no runtime available to schedule node update");
+    let mut update_opt = Some(update);
+    handle.enqueue_node_update(Box::new(move |applier: &mut dyn Applier| {
+        if let Some(update) = update_opt.take() {
+            update(applier);
+        }
+    }));
 }
 
 pub struct Composer<'a> {
@@ -609,13 +649,16 @@ impl<A: Applier> Composition<A> {
         for command in commands.iter_mut() {
             command(&mut self.applier);
         }
+        for mut command in RuntimeHandle(Rc::downgrade(&self.runtime)).take_updates() {
+            command(&mut self.applier);
+        }
         self.root = root;
         self.slots.trim_to_cursor();
         *self.runtime.needs_frame.borrow_mut() = false;
     }
 
     pub fn should_render(&self) -> bool {
-        *self.runtime.needs_frame.borrow()
+        *self.runtime.needs_frame.borrow() || self.runtime.has_updates()
     }
 
     pub fn runtime_handle(&self) -> RuntimeHandle {
@@ -628,6 +671,13 @@ impl<A: Applier> Composition<A> {
 
     pub fn root(&self) -> Option<NodeId> {
         self.root
+    }
+
+    pub fn flush_pending_node_updates(&mut self) {
+        let updates = self.runtime_handle().take_updates();
+        for mut update in updates {
+            update(&mut self.applier);
+        }
     }
 }
 

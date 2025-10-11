@@ -6,7 +6,7 @@ This roadmap captures near-term milestones and ready-to-apply patches for evolvi
 
 1. ✅ **Fine-grained reactivity – Signals (Phase 1)**: introduce `create_signal`, allow `Text` to accept signals, and continue to trigger whole-frame renders (no node-targeted updates yet).
 2. ✅ **Skip recomposition when inputs unchanged**: extend `#[composable]` to persist prior parameters in slots and early-return when all implement `PartialEq` and remain unchanged.
-3. **Fine-grained updates – Signals (Phase 2)**: add a `DirtyNodes` queue plus `schedule_node_update(NodeId)` fast path; have `Text` subscribe and update itself via the applier.
+3. ✅ **Fine-grained updates – Signals (Phase 2)**: route signal writes through a dirty-node queue, expose `schedule_node_update`/`flush_pending_node_updates`, and let `Text` subscribe so it can patch its own node without a full recomposition.
 4. **Error handling**: replace `expect`/`unwrap` across the runtime and applier with `Result` and structured error types.
 5. **Keys & reordering**: provide stable identity for dynamic lists to avoid churn during reordering.
 6. **Layout with `taffy`**: map `Modifier` data into `taffy::Style` and compute layouts inside the applier.
@@ -17,107 +17,25 @@ This roadmap captures near-term milestones and ready-to-apply patches for evolvi
 
 ### 1. Signals (Phase 1: API + whole-frame scheduling)
 
-Add a lightweight signals module to `compose_core` (or a new crate). The API mirrors classic Read/Write signal handles and integrates with the existing scheduler by scheduling a new frame on writes.
-
-```rust
-// compose_core/src/signals.rs
-use std::cell::RefCell;
-use std::rc::Rc;
-
-pub struct ReadSignal<T>(Rc<RefCell<T>>);
-pub struct WriteSignal<T> {
-    inner: Rc<RefCell<T>>,
-    on_write: Rc<dyn Fn()>,
-}
-
-pub fn create_signal<T>(initial: T, on_write: Rc<dyn Fn()>) -> (ReadSignal<T>, WriteSignal<T>) {
-    let cell = Rc::new(RefCell::new(initial));
-    (ReadSignal(cell.clone()), WriteSignal { inner: cell, on_write })
-}
-
-impl<T: Clone> ReadSignal<T> {
-    pub fn get(&self) -> T { self.0.borrow().clone() }
-}
-
-impl<T: PartialEq> WriteSignal<T> {
-    pub fn set(&self, new_val: T) {
-        let mut b = self.inner.borrow_mut();
-        if *b != new_val {
-            *b = new_val;
-            (self.on_write)();
-        }
-    }
-}
-
-pub trait IntoSignal<T> { fn into_signal(self) -> ReadSignal<T>; }
-
-impl<T: Clone> IntoSignal<T> for T {
-    fn into_signal(self) -> ReadSignal<T> {
-        ReadSignal(Rc::new(RefCell::new(self)))
-    }
-}
-
-impl<T> IntoSignal<T> for ReadSignal<T> { fn into_signal(self) -> ReadSignal<T> { self } }
-```
-
-Expose a runtime helper to schedule a frame and wire `create_signal` calls to it.
-
-```rust
-// compose_core/src/lib.rs
-pub fn schedule_frame() {
-    RuntimeHandle::with(|h| h.schedule());
-}
-```
-
-Example usage:
-
-```rust
-use compose_core::signals::{create_signal, ReadSignal, WriteSignal};
-
-let (count, set_count) = create_signal(0, Rc::new(|| compose_core::schedule_frame()));
-```
+`compose_core::signals` now exposes ergonomic `create_signal`, `ReadSignal`, and `WriteSignal` handles. Writers still accept a scheduling callback so existing compositions can trigger frame renders. `ReadSignal::map` builds derived signals that stay wired to their sources by storing the subscription token alongside the derived core.
 
 ### 2. `Text` accepts signals (Phase 1)
 
-Update `compose_ui` so `Text` works with both constant values and signals via `IntoSignal<String>`. The signal still schedules whole-frame recomposition; Phase 2 introduces node-level updates.
-
-```rust
-// compose_ui/src/primitives.rs
-use compose_core::signals::{IntoSignal, ReadSignal};
-
-#[composable]
-pub fn Text(value: impl IntoSignal<String>, modifier: Modifier) -> NodeId {
-    let signal: ReadSignal<String> = value.into_signal();
-    let current = signal.get();
-
-    let id = compose_core::emit_node(|| TextNode {
-        modifier: modifier.clone(),
-        text: current.clone(),
-    });
-
-    compose_core::with_node_mut(id, |node: &mut TextNode| {
-        if node.text != current { node.text = current; }
-        node.modifier = modifier.clone();
-    });
-
-    id
-}
-```
-
-Add a convenience `map` helper for derived signals:
-
-```rust
-impl<T> ReadSignal<T> {
-    pub fn map<U: 'static>(&self, f: impl Fn(&T) -> U + 'static) -> ReadSignal<U> {
-        let v = f(&self.0.borrow());
-        ReadSignal(Rc::new(RefCell::new(v)))
-    }
-}
-```
+`compose_ui::primitives::Text` accepts any `IntoSignal<String>`, snapshots the current value, and keeps the underlying `ReadSignal` alive across recompositions.
 
 ### 3. Skip recomposition when inputs unchanged
 
 Teach the `#[composable]` macro to store prior arguments in slots and short-circuit when all comparable inputs stay equal.
+
+### 4. Signals (Phase 2: node-targeted updates)
+
+`compose_core` maintains a pending node-update queue (`RuntimeInner::node_updates`) with helpers:
+
+* `compose_core::schedule_node_update` enqueues closures that receive the active `Applier`.
+* `Composition::flush_pending_node_updates` runs the queue without needing a full render.
+* `Composition::render` also drains the queue after executing the frame commands so dirty-node work never goes stale.
+
+`compose_ui::Text` subscribes to its backing signal and schedules in-place text updates via the queue, allowing signal writes to update the rendered text immediately. An integration test covers this targeted update path.
 
 Status: ✅ Implemented with new runtime helpers:
 
