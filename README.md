@@ -1,4 +1,4 @@
-[compose-rs.webm](https://github.com/user-attachments/assets/854bd254-e02a-4310-8c6c-f58e5e68866e)
+[compose-rs.webm](https://github.com/user-attachments/assets/4abdddae-3646-4cd4-b79c-e76bae87cae2)
 
 
 # Compose-RS Proposal
