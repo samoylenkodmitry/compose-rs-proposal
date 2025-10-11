@@ -111,7 +111,9 @@ Sketch a `WgpuApplier` that builds draw lists from layouted nodes. A headless ap
 
 ### 10. Ergonomic tweaks
 
-* Allow `Button` to accept `FnMut` handlers via `Rc<RefCell<dyn FnMut()>>`.
+Status: ✅ `Button` now accepts `FnMut` handlers via `Rc<RefCell<dyn FnMut()>>`, and signal handles implement
+`PartialEq` so skip logic can short-circuit when callers pass the same signal instance across frames.
+
 * Add default-modifier overloads and derive `Debug + PartialEq + Clone` for modifiers to avoid redundant writes.
 
 ```rust
@@ -165,6 +167,9 @@ fn counter_signal_skips_when_label_static() {
     // Trigger button, assert only the relevant node updates after re-render.
 }
 ```
+
+Status: ✅ Added `counter_signal_skips_when_label_static` which keeps a composable cached while its `ReadSignal`
+input updates a `Text` node through the targeted node-update queue.
 
 ## Ordering
 

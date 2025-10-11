@@ -564,7 +564,6 @@ pub struct State<T> {
     runtime: RuntimeHandle,
 }
 
-#[derive(Default)]
 pub struct ParamState<T> {
     value: Option<T>,
 }
@@ -584,7 +583,6 @@ impl<T> ParamState<T> {
     }
 }
 
-#[derive(Default)]
 pub struct ReturnSlot<T> {
     value: Option<T>,
 }
@@ -596,6 +594,18 @@ impl<T: Clone> ReturnSlot<T> {
 
     pub fn get(&self) -> Option<T> {
         self.value.clone()
+    }
+}
+
+impl<T> Default for ParamState<T> {
+    fn default() -> Self {
+        Self { value: None }
+    }
+}
+
+impl<T> Default for ReturnSlot<T> {
+    fn default() -> Self {
+        Self { value: None }
     }
 }
 

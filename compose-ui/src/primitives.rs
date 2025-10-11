@@ -1,4 +1,5 @@
 #![allow(non_snake_case)]
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use compose_core::{self, IntoSignal, Node, NodeId, ReadSignal};
@@ -65,7 +66,7 @@ impl Node for SpacerNode {}
 #[derive(Clone)]
 pub struct ButtonNode {
     pub modifier: Modifier,
-    pub on_click: Rc<dyn Fn()>,
+    pub on_click: Rc<RefCell<dyn FnMut()>>,
     pub children: Vec<NodeId>,
 }
 
@@ -73,7 +74,7 @@ impl Default for ButtonNode {
     fn default() -> Self {
         Self {
             modifier: Modifier::empty(),
-            on_click: Rc::new(|| {}),
+            on_click: Rc::new(RefCell::new(|| {})),
             children: Vec::new(),
         }
     }
@@ -81,7 +82,7 @@ impl Default for ButtonNode {
 
 impl ButtonNode {
     pub fn trigger(&self) {
-        (self.on_click)();
+        (self.on_click.borrow_mut())();
     }
 }
 
@@ -197,10 +198,10 @@ pub fn Spacer(size: Size) -> NodeId {
 #[composable(no_skip)]
 pub fn Button(
     modifier: Modifier,
-    on_click: impl Fn() + 'static,
+    on_click: impl FnMut() + 'static,
     mut content: impl FnMut(),
 ) -> NodeId {
-    let on_click_rc: Rc<dyn Fn()> = Rc::new(on_click);
+    let on_click_rc: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(on_click));
     let id = compose_core::emit_node(|| ButtonNode {
         modifier: modifier.clone(),
         on_click: on_click_rc.clone(),
@@ -223,7 +224,26 @@ mod tests {
     use super::*;
     use crate::SnapshotState;
     use compose_core::{self, location_key, Composition, MemoryApplier, ReadSignal, WriteSignal};
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
+
+    thread_local! {
+        static COUNTER_ROW_INVOCATIONS: Cell<usize> = Cell::new(0);
+        static COUNTER_TEXT_ID: RefCell<Option<NodeId>> = RefCell::new(None);
+    }
+
+    #[composable]
+    fn CounterRow(label: &'static str, count: ReadSignal<i32>) -> NodeId {
+        COUNTER_ROW_INVOCATIONS.with(|calls| calls.set(calls.get() + 1));
+        Column(Modifier::empty(), || {
+            Text(label, Modifier::empty());
+            let text_id = Text(
+                count.map(|value| format!("Count = {}", value)),
+                Modifier::empty(),
+            );
+            COUNTER_TEXT_ID.with(|slot| *slot.borrow_mut() = Some(text_id));
+        })
+    }
 
     #[test]
     fn button_triggers_state_update() {
@@ -314,5 +334,59 @@ mod tests {
                 .expect("read text node");
         }
         assert!(composition.should_render());
+    }
+
+    #[test]
+    fn counter_signal_skips_when_label_static() {
+        COUNTER_ROW_INVOCATIONS.with(|calls| calls.set(0));
+        COUNTER_TEXT_ID.with(|slot| *slot.borrow_mut() = None);
+
+        let mut composition = Composition::new(MemoryApplier::new());
+        let root_key = location_key(file!(), line!(), column!());
+        let schedule = Rc::new(|| compose_core::schedule_frame());
+        let (count, set_count): (ReadSignal<i32>, WriteSignal<i32>) =
+            compose_core::create_signal(0, schedule);
+
+        composition
+            .render(root_key, || {
+                CounterRow("Counter", count.clone());
+            })
+            .expect("initial render succeeds");
+
+        COUNTER_ROW_INVOCATIONS.with(|calls| assert_eq!(calls.get(), 1));
+
+        let text_id = COUNTER_TEXT_ID.with(|slot| slot.borrow().expect("text id"));
+        {
+            let applier = composition.applier_mut();
+            applier
+                .with_node(text_id, |node: &mut TextNode| {
+                    assert_eq!(node.text, "Count = 0");
+                })
+                .expect("read text node");
+        }
+
+        set_count.set(1);
+        composition
+            .flush_pending_node_updates()
+            .expect("flush updates");
+
+        {
+            let applier = composition.applier_mut();
+            applier
+                .with_node(text_id, |node: &mut TextNode| {
+                    assert_eq!(node.text, "Count = 1");
+                })
+                .expect("read text node");
+        }
+        assert!(composition.should_render());
+
+        composition
+            .render(root_key, || {
+                CounterRow("Counter", count.clone());
+            })
+            .expect("second render succeeds");
+
+        COUNTER_ROW_INVOCATIONS.with(|calls| assert_eq!(calls.get(), 1));
+        assert!(!composition.should_render());
     }
 }
