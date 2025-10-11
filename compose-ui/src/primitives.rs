@@ -1,7 +1,7 @@
 #![allow(non_snake_case)]
 use std::rc::Rc;
 
-use compose_core::{self, Node, NodeId};
+use compose_core::{self, IntoSignal, Node, NodeId, ReadSignal};
 
 use crate::composable;
 use crate::modifier::{Modifier, Size};
@@ -123,15 +123,18 @@ pub fn Row(modifier: Modifier, mut content: impl FnMut()) -> NodeId {
 }
 
 #[composable]
-pub fn Text(value: impl Into<String>, modifier: Modifier) -> NodeId {
-    let value = value.into();
+pub fn Text(value: impl IntoSignal<String>, modifier: Modifier) -> NodeId {
+    let signal: ReadSignal<String> = value.into_signal();
+    let current = signal.get();
     let id = compose_core::emit_node(|| TextNode {
         modifier: modifier.clone(),
-        text: value.clone(),
+        text: current.clone(),
     });
     compose_core::with_node_mut(id, |node: &mut TextNode| {
-        node.text = value;
-        node.modifier = modifier;
+        if node.text != current {
+            node.text = current.clone();
+        }
+        node.modifier = modifier.clone();
     });
     id
 }
@@ -171,7 +174,8 @@ pub fn Button(
 mod tests {
     use super::*;
     use crate::SnapshotState;
-    use compose_core::{self, location_key, Composition, MemoryApplier};
+    use compose_core::{self, location_key, Composition, MemoryApplier, ReadSignal, WriteSignal};
+    use std::rc::Rc;
 
     #[test]
     fn button_triggers_state_update() {
@@ -210,5 +214,55 @@ mod tests {
             });
         }
         assert!(composition.should_render());
+    }
+
+    #[test]
+    fn text_updates_with_signal_after_write() {
+        let mut composition = Composition::new(MemoryApplier::new());
+        let root_key = location_key(file!(), line!(), column!());
+        let schedule = Rc::new(|| compose_core::schedule_frame());
+        let (count, set_count): (ReadSignal<i32>, WriteSignal<i32>) =
+            compose_core::create_signal(0, schedule);
+        let mut text_node_id = None;
+
+        composition.render(root_key, || {
+            Column(Modifier::empty(), || {
+                text_node_id = Some(Text(
+                    {
+                        let c = count.clone();
+                        c.map(|value| format!("Count = {}", value))
+                    },
+                    Modifier::empty(),
+                ));
+            });
+        });
+
+        let id = text_node_id.expect("text node id");
+        {
+            let applier = composition.applier_mut();
+            let _ = applier.with_node(id, |node: &mut TextNode| {
+                assert_eq!(node.text, "Count = 0");
+            });
+        }
+
+        set_count.set(1);
+        assert!(composition.should_render());
+
+        composition.render(root_key, || {
+            Column(Modifier::empty(), || {
+                text_node_id = Some(Text(
+                    {
+                        let c = count.clone();
+                        c.map(|value| format!("Count = {}", value))
+                    },
+                    Modifier::empty(),
+                ));
+            });
+        });
+
+        let applier = composition.applier_mut();
+        let _ = applier.with_node(id, |node: &mut TextNode| {
+            assert_eq!(node.text, "Count = 1");
+        });
     }
 }
