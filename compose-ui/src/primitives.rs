@@ -50,6 +50,11 @@ pub struct TextNode {
 
 impl Node for TextNode {}
 
+struct TextSubscription {
+    signal: ReadSignal<String>,
+    _listener: Rc<dyn Fn(&String)>,
+}
+
 #[derive(Clone, Default)]
 pub struct SpacerNode {
     pub size: Size,
@@ -135,6 +140,36 @@ pub fn Text(value: impl IntoSignal<String>, modifier: Modifier) -> NodeId {
             node.text = current.clone();
         }
         node.modifier = modifier.clone();
+    });
+    compose_core::with_current_composer(|composer| {
+        let subscription = composer.remember(|| None::<TextSubscription>);
+        let needs_subscribe = match subscription {
+            Some(existing) => !existing.signal.ptr_eq(&signal),
+            None => true,
+        };
+        if needs_subscribe {
+            let listener: Rc<dyn Fn(&String)> = {
+                let node_id = id;
+                Rc::new(move |updated: &String| {
+                    let new_text = updated.clone();
+                    compose_core::schedule_node_update(move |applier| {
+                        let node = applier.get_mut(node_id);
+                        let text_node = node
+                            .as_any_mut()
+                            .downcast_mut::<TextNode>()
+                            .expect("node type mismatch during Text update");
+                        if text_node.text != new_text {
+                            text_node.text = new_text;
+                        }
+                    });
+                })
+            };
+            signal.subscribe(listener.clone());
+            *subscription = Some(TextSubscription {
+                signal: signal.clone(),
+                _listener: listener,
+            });
+        }
     });
     id
 }
@@ -246,23 +281,13 @@ mod tests {
         }
 
         set_count.set(1);
-        assert!(composition.should_render());
-
-        composition.render(root_key, || {
-            Column(Modifier::empty(), || {
-                text_node_id = Some(Text(
-                    {
-                        let c = count.clone();
-                        c.map(|value| format!("Count = {}", value))
-                    },
-                    Modifier::empty(),
-                ));
+        composition.flush_pending_node_updates();
+        {
+            let applier = composition.applier_mut();
+            let _ = applier.with_node(id, |node: &mut TextNode| {
+                assert_eq!(node.text, "Count = 1");
             });
-        });
-
-        let applier = composition.applier_mut();
-        let _ = applier.with_node(id, |node: &mut TextNode| {
-            assert_eq!(node.text, "Count = 1");
-        });
+        }
+        assert!(composition.should_render());
     }
 }
