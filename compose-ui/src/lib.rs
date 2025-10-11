@@ -8,7 +8,8 @@ mod modifier;
 mod primitives;
 
 pub use modifier::{
-    Color, CornerRadii, Modifier, Point, PointerEvent, PointerEventKind, RoundedCornerShape, Size,
+    Brush, Color, CornerRadii, DrawCommand, DrawPrimitive, GraphicsLayer, Modifier, Point,
+    PointerEvent, PointerEventKind, Rect, RoundedCornerShape, Size,
 };
 pub use primitives::{
     Button, ButtonNode, Column, ColumnNode, Row, RowNode, Spacer, SpacerNode, Text, TextNode,
