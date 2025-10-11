@@ -92,7 +92,7 @@ impl Node for ButtonNode {
     }
 }
 
-#[composable]
+#[composable(no_skip)]
 pub fn Column(modifier: Modifier, mut content: impl FnMut()) -> NodeId {
     let id = compose_core::emit_node(|| ColumnNode {
         modifier: modifier.clone(),
@@ -107,7 +107,7 @@ pub fn Column(modifier: Modifier, mut content: impl FnMut()) -> NodeId {
     id
 }
 
-#[composable]
+#[composable(no_skip)]
 pub fn Row(modifier: Modifier, mut content: impl FnMut()) -> NodeId {
     let id = compose_core::emit_node(|| RowNode {
         modifier: modifier.clone(),
@@ -122,7 +122,7 @@ pub fn Row(modifier: Modifier, mut content: impl FnMut()) -> NodeId {
     id
 }
 
-#[composable]
+#[composable(no_skip)]
 pub fn Text(value: impl IntoSignal<String>, modifier: Modifier) -> NodeId {
     let signal: ReadSignal<String> = value.into_signal();
     let current = signal.get();
@@ -139,7 +139,7 @@ pub fn Text(value: impl IntoSignal<String>, modifier: Modifier) -> NodeId {
     id
 }
 
-#[composable]
+#[composable(no_skip)]
 pub fn Spacer(size: Size) -> NodeId {
     let id = compose_core::emit_node(|| SpacerNode { size });
     compose_core::with_node_mut(id, |node: &mut SpacerNode| {
@@ -148,7 +148,7 @@ pub fn Spacer(size: Size) -> NodeId {
     id
 }
 
-#[composable]
+#[composable(no_skip)]
 pub fn Button(
     modifier: Modifier,
     on_click: impl Fn() + 'static,

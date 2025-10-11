@@ -128,6 +128,14 @@ impl SlotTable {
         }
     }
 
+    pub fn skip_current(&mut self) {
+        if let Some(frame) = self.group_stack.last() {
+            if let Some(entry) = self.groups.get(frame.index) {
+                self.cursor = entry.end_slot;
+            }
+        }
+    }
+
     pub fn remember<T: 'static>(&mut self, init: impl FnOnce() -> T) -> &mut T {
         let cursor = self.cursor;
         if cursor < self.slots.len() {
@@ -448,6 +456,10 @@ impl<'a> Composer<'a> {
         self.parent_stack.pop();
     }
 
+    pub fn skip_current_group(&mut self) {
+        self.slots.skip_current();
+    }
+
     pub fn runtime(&self) -> &RuntimeHandle {
         &self.runtime
     }
@@ -460,6 +472,41 @@ impl<'a> Composer<'a> {
 pub struct State<T> {
     inner: Rc<RefCell<T>>,
     runtime: RuntimeHandle,
+}
+
+#[derive(Default)]
+pub struct ParamState<T> {
+    value: Option<T>,
+}
+
+impl<T> ParamState<T> {
+    pub fn update(&mut self, new_value: &T) -> bool
+    where
+        T: PartialEq + Clone,
+    {
+        match &self.value {
+            Some(old) if old == new_value => false,
+            _ => {
+                self.value = Some(new_value.clone());
+                true
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct ReturnSlot<T> {
+    value: Option<T>,
+}
+
+impl<T: Clone> ReturnSlot<T> {
+    pub fn store(&mut self, value: T) {
+        self.value = Some(value);
+    }
+
+    pub fn get(&self) -> Option<T> {
+        self.value.clone()
+    }
 }
 
 struct AnimatedFloatState {
@@ -596,6 +643,8 @@ pub fn location_key(file: &str, line: u32, column: u32) -> Key {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate as compose_core;
+    use compose_macros::composable;
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -605,6 +654,20 @@ mod tests {
     }
 
     impl Node for TextNode {}
+
+    thread_local! {
+        static INVOCATIONS: Cell<usize> = Cell::new(0);
+    }
+
+    #[composable]
+    fn counted_text(value: i32) -> NodeId {
+        INVOCATIONS.with(|calls| calls.set(calls.get() + 1));
+        let id = emit_node(|| TextNode::default());
+        with_node_mut(id, |node: &mut TextNode| {
+            node.text = format!("{}", value);
+        });
+        id
+    }
 
     #[test]
     fn remember_state_roundtrip() {
@@ -694,5 +757,27 @@ mod tests {
         let (read, _write) = create_signal(2, Rc::new(|| {}));
         let mapped = read.map(|v| v * 2);
         assert_eq!(mapped.get(), 4);
+    }
+
+    #[test]
+    fn composable_skips_when_inputs_unchanged() {
+        INVOCATIONS.with(|calls| calls.set(0));
+        let mut composition = Composition::new(MemoryApplier::new());
+        let key = location_key(file!(), line!(), column!());
+
+        composition.render(key, || {
+            counted_text(1);
+        });
+        INVOCATIONS.with(|calls| assert_eq!(calls.get(), 1));
+
+        composition.render(key, || {
+            counted_text(1);
+        });
+        INVOCATIONS.with(|calls| assert_eq!(calls.get(), 1));
+
+        composition.render(key, || {
+            counted_text(2);
+        });
+        INVOCATIONS.with(|calls| assert_eq!(calls.get(), 2));
     }
 }
