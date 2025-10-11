@@ -14,6 +14,10 @@ thread_local! {
     static CURRENT_COMPOSER: RefCell<Vec<*mut ()>> = RefCell::new(Vec::new());
 }
 
+pub mod signals;
+
+pub use signals::{create_signal, IntoSignal, ReadSignal, WriteSignal};
+
 pub fn with_current_composer<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
     CURRENT_COMPOSER.with(|stack| {
         let ptr = *stack.borrow().last().expect("no composer installed");
@@ -292,6 +296,27 @@ impl RuntimeHandle {
     }
 }
 
+thread_local! {
+    static ACTIVE_RUNTIMES: RefCell<Vec<RuntimeHandle>> = RefCell::new(Vec::new());
+    static LAST_RUNTIME: RefCell<Option<RuntimeHandle>> = RefCell::new(None);
+}
+
+/// Schedule a new frame render using the most recently active runtime handle.
+///
+/// Signal writers call into this helper to enqueue another frame even after the
+/// `Composer` has returned.
+pub fn schedule_frame() {
+    if let Some(handle) = ACTIVE_RUNTIMES.with(|stack| stack.borrow().last().cloned()) {
+        handle.schedule();
+        return;
+    }
+    if let Some(handle) = LAST_RUNTIME.with(|slot| slot.borrow().clone()) {
+        handle.schedule();
+        return;
+    }
+    panic!("no runtime available to schedule frame");
+}
+
 pub struct Composer<'a> {
     slots: &'a mut SlotTable,
     applier: &'a mut dyn Applier,
@@ -320,10 +345,15 @@ impl<'a> Composer<'a> {
 
     pub fn install<R>(&'a mut self, f: impl FnOnce(&mut Composer<'a>) -> R) -> R {
         CURRENT_COMPOSER.with(|stack| stack.borrow_mut().push(self as *mut _ as *mut ()));
+        ACTIVE_RUNTIMES.with(|stack| stack.borrow_mut().push(self.runtime.clone()));
+        LAST_RUNTIME.with(|slot| *slot.borrow_mut() = Some(self.runtime.clone()));
         struct Guard;
         impl Drop for Guard {
             fn drop(&mut self) {
                 CURRENT_COMPOSER.with(|stack| {
+                    stack.borrow_mut().pop();
+                });
+                ACTIVE_RUNTIMES.with(|stack| {
                     stack.borrow_mut().pop();
                 });
             }
@@ -566,6 +596,8 @@ pub fn location_key(file: &str, line: u32, column: u32) -> Key {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
 
     #[derive(Default)]
     struct TextNode {
@@ -639,5 +671,28 @@ mod tests {
         });
         assert_eq!(values, vec![0.0, 1.0]);
         assert!(!composition.should_render());
+    }
+
+    #[test]
+    fn signal_write_triggers_callback_on_change() {
+        let triggered = Rc::new(Cell::new(0));
+        let count = triggered.clone();
+        let (read, write) = create_signal(0, Rc::new(move || count.set(count.get() + 1)));
+        assert_eq!(read.get(), 0);
+
+        write.set(1);
+        assert_eq!(read.get(), 1);
+        assert_eq!(triggered.get(), 1);
+
+        // Setting to the same value should not re-trigger the callback.
+        write.set(1);
+        assert_eq!(triggered.get(), 1);
+    }
+
+    #[test]
+    fn signal_map_snapshots_value() {
+        let (read, _write) = create_signal(2, Rc::new(|| {}));
+        let mapped = read.map(|v| v * 2);
+        assert_eq!(mapped.get(), 4);
     }
 }
