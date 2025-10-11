@@ -1,6 +1,8 @@
-# compose-rs Roadmap
+# compose-rs Roadmap History
 
-This roadmap captures near-term milestones and ready-to-apply patches for evolving the compose-rs runtime and UI layers. Each milestone is scoped to land as a small, reviewable pull request with accompanying tests or benchmarks.
+_Archived status: all milestones below have been implemented. This document is kept for historical context and to describe the architectural work that landed._
+
+This roadmap captures the near-term milestones and ready-to-apply patches that guided the evolution of the compose-rs runtime and UI layers. Each milestone was scoped to land as a small, reviewable pull request with accompanying tests or benchmarks.
 
 ## Milestones (Short)
 
@@ -191,3 +193,9 @@ input updates a `Text` node through the targeted node-update queue.
 7. Renderer stub or headless goldens.
 
 Each milestone yields a self-contained PR that moves compose-rs closer to production-ready compositional UI with fine-grained reactivity and robust rendering.
+
+---
+
+## Archive note
+
+This roadmap was retired after verifying that the compose-core, compose-ui, compose-macros, and desktop-app crates all embody the milestones described above. Future planning should start from a fresh roadmap tailored to new goals.
