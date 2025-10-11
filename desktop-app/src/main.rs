@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
-use compose_core::{self, location_key, Composition, Key, MemoryApplier, NodeId};
+use compose_core::{self, location_key, Composition, Key, MemoryApplier, Node, NodeError, NodeId};
 use compose_ui::{
     composable, Brush, Button, ButtonNode, Color, Column, ColumnNode, CornerRadii, DrawCommand,
     DrawPrimitive, GraphicsLayer, Modifier, Point, PointerEvent, PointerEventKind, Rect,
@@ -153,9 +153,11 @@ impl ComposeDesktopApp {
         let mut composition = Composition::new(MemoryApplier::new());
         let runtime = composition.runtime_handle();
         let animation_state = compose_core::State::new(0.0, runtime.clone());
-        composition.render(root_key, || {
+        if let Err(err) = composition.render(root_key, || {
             with_animation_state(&animation_state, || counter_app())
-        });
+        }) {
+            log::error!("initial render failed: {err}");
+        }
         let scene = Scene::new();
         let mut app = Self {
             composition,
@@ -221,9 +223,11 @@ impl ComposeDesktopApp {
         self.animation_state.set(animation_value);
         if self.composition.should_render() {
             let state = self.animation_state.clone();
-            self.composition.render(self.root_key, || {
+            if let Err(err) = self.composition.render(self.root_key, || {
                 with_animation_state(&state, || counter_app())
-            });
+            }) {
+                log::error!("render failed: {err}");
+            }
             self.rebuild_scene();
         }
     }
@@ -747,6 +751,21 @@ fn apply_draw_commands(
     }
 }
 
+fn try_node<T: Node + 'static, R>(
+    applier: &mut MemoryApplier,
+    node_id: NodeId,
+    f: impl FnOnce(&mut T) -> R,
+) -> Option<R> {
+    match applier.with_node(node_id, f) {
+        Ok(value) => Some(value),
+        Err(NodeError::TypeMismatch { .. }) => None,
+        Err(err) => {
+            debug_assert!(false, "failed to access node {node_id}: {err}");
+            None
+        }
+    }
+}
+
 fn layout_node(
     applier: &mut MemoryApplier,
     node_id: NodeId,
@@ -756,19 +775,19 @@ fn layout_node(
     layer: GraphicsLayer,
     scene: &mut Scene,
 ) -> Size {
-    if let Some(column) = applier.with_node(node_id, |node: &mut ColumnNode| node.clone()) {
+    if let Some(column) = try_node(applier, node_id, |node: &mut ColumnNode| node.clone()) {
         return layout_column(applier, column, origin_x, origin_y, max_size, layer, scene);
     }
-    if let Some(row) = applier.with_node(node_id, |node: &mut RowNode| node.clone()) {
+    if let Some(row) = try_node(applier, node_id, |node: &mut RowNode| node.clone()) {
         return layout_row(applier, row, origin_x, origin_y, max_size, layer, scene);
     }
-    if let Some(text) = applier.with_node(node_id, |node: &mut TextNode| node.clone()) {
+    if let Some(text) = try_node(applier, node_id, |node: &mut TextNode| node.clone()) {
         return layout_text(text, origin_x, origin_y, layer, scene);
     }
-    if let Some(spacer) = applier.with_node(node_id, |node: &mut SpacerNode| node.clone()) {
+    if let Some(spacer) = try_node(applier, node_id, |node: &mut SpacerNode| node.clone()) {
         return layout_spacer(spacer, origin_x, origin_y, layer, scene);
     }
-    if let Some(button) = applier.with_node(node_id, |node: &mut ButtonNode| node.clone()) {
+    if let Some(button) = try_node(applier, node_id, |node: &mut ButtonNode| node.clone()) {
         return layout_button(applier, button, origin_x, origin_y, max_size, layer, scene);
     }
     Size {

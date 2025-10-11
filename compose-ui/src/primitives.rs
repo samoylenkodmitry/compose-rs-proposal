@@ -103,9 +103,11 @@ pub fn Column(modifier: Modifier, mut content: impl FnMut()) -> NodeId {
         modifier: modifier.clone(),
         children: Vec::new(),
     });
-    compose_core::with_node_mut(id, |node: &mut ColumnNode| {
+    if let Err(err) = compose_core::with_node_mut(id, |node: &mut ColumnNode| {
         node.modifier = modifier;
-    });
+    }) {
+        debug_assert!(false, "failed to update Column node: {err}");
+    }
     compose_core::push_parent(id);
     content();
     compose_core::pop_parent();
@@ -118,9 +120,11 @@ pub fn Row(modifier: Modifier, mut content: impl FnMut()) -> NodeId {
         modifier: modifier.clone(),
         children: Vec::new(),
     });
-    compose_core::with_node_mut(id, |node: &mut RowNode| {
+    if let Err(err) = compose_core::with_node_mut(id, |node: &mut RowNode| {
         node.modifier = modifier;
-    });
+    }) {
+        debug_assert!(false, "failed to update Row node: {err}");
+    }
     compose_core::push_parent(id);
     content();
     compose_core::pop_parent();
@@ -135,12 +139,14 @@ pub fn Text(value: impl IntoSignal<String>, modifier: Modifier) -> NodeId {
         modifier: modifier.clone(),
         text: current.clone(),
     });
-    compose_core::with_node_mut(id, |node: &mut TextNode| {
+    if let Err(err) = compose_core::with_node_mut(id, |node: &mut TextNode| {
         if node.text != current {
             node.text = current.clone();
         }
         node.modifier = modifier.clone();
-    });
+    }) {
+        debug_assert!(false, "failed to update Text node: {err}");
+    }
     compose_core::with_current_composer(|composer| {
         let subscription = composer.remember(|| None::<TextSubscription>);
         let needs_subscribe = match subscription {
@@ -153,14 +159,17 @@ pub fn Text(value: impl IntoSignal<String>, modifier: Modifier) -> NodeId {
                 Rc::new(move |updated: &String| {
                     let new_text = updated.clone();
                     compose_core::schedule_node_update(move |applier| {
-                        let node = applier.get_mut(node_id);
-                        let text_node = node
-                            .as_any_mut()
-                            .downcast_mut::<TextNode>()
-                            .expect("node type mismatch during Text update");
+                        let node = applier.get_mut(node_id)?;
+                        let text_node = node.as_any_mut().downcast_mut::<TextNode>().ok_or(
+                            compose_core::NodeError::TypeMismatch {
+                                id: node_id,
+                                expected: std::any::type_name::<TextNode>(),
+                            },
+                        )?;
                         if text_node.text != new_text {
                             text_node.text = new_text;
                         }
+                        Ok(())
                     });
                 })
             };
@@ -177,9 +186,11 @@ pub fn Text(value: impl IntoSignal<String>, modifier: Modifier) -> NodeId {
 #[composable(no_skip)]
 pub fn Spacer(size: Size) -> NodeId {
     let id = compose_core::emit_node(|| SpacerNode { size });
-    compose_core::with_node_mut(id, |node: &mut SpacerNode| {
+    if let Err(err) = compose_core::with_node_mut(id, |node: &mut SpacerNode| {
         node.size = size;
-    });
+    }) {
+        debug_assert!(false, "failed to update Spacer node: {err}");
+    }
     id
 }
 
@@ -195,10 +206,12 @@ pub fn Button(
         on_click: on_click_rc.clone(),
         children: Vec::new(),
     });
-    compose_core::with_node_mut(id, |node: &mut ButtonNode| {
+    if let Err(err) = compose_core::with_node_mut(id, |node: &mut ButtonNode| {
         node.modifier = modifier;
         node.on_click = on_click_rc.clone();
-    });
+    }) {
+        debug_assert!(false, "failed to update Button node: {err}");
+    }
     compose_core::push_parent(id);
     content();
     compose_core::pop_parent();
@@ -217,36 +230,40 @@ mod tests {
         let mut composition = Composition::new(MemoryApplier::new());
         let mut button_state: Option<SnapshotState<i32>> = None;
         let mut button_id = None;
-        composition.render(location_key(file!(), line!(), column!()), || {
-            let counter = compose_core::use_state(|| 0);
-            if button_state.is_none() {
-                button_state = Some(counter.clone());
-            }
-            Column(Modifier::empty(), || {
-                Text(format!("Count = {}", counter.get()), Modifier::empty());
-                button_id = Some(Button(
-                    Modifier::empty(),
-                    {
-                        let counter = counter.clone();
-                        move || {
-                            counter.set(counter.get() + 1);
-                        }
-                    },
-                    || {
-                        Text("+", Modifier::empty());
-                    },
-                ));
-            });
-        });
+        composition
+            .render(location_key(file!(), line!(), column!()), || {
+                let counter = compose_core::use_state(|| 0);
+                if button_state.is_none() {
+                    button_state = Some(counter.clone());
+                }
+                Column(Modifier::empty(), || {
+                    Text(format!("Count = {}", counter.get()), Modifier::empty());
+                    button_id = Some(Button(
+                        Modifier::empty(),
+                        {
+                            let counter = counter.clone();
+                            move || {
+                                counter.set(counter.get() + 1);
+                            }
+                        },
+                        || {
+                            Text("+", Modifier::empty());
+                        },
+                    ));
+                });
+            })
+            .expect("render succeeds");
 
         let state = button_state.expect("button state stored");
         assert_eq!(state.get(), 0);
         let button_node_id = button_id.expect("button id");
         {
             let applier = composition.applier_mut();
-            let _ = applier.with_node(button_node_id, |node: &mut ButtonNode| {
-                node.trigger();
-            });
+            applier
+                .with_node(button_node_id, |node: &mut ButtonNode| {
+                    node.trigger();
+                })
+                .expect("trigger button node");
         }
         assert!(composition.should_render());
     }
@@ -260,33 +277,41 @@ mod tests {
             compose_core::create_signal(0, schedule);
         let mut text_node_id = None;
 
-        composition.render(root_key, || {
-            Column(Modifier::empty(), || {
-                text_node_id = Some(Text(
-                    {
-                        let c = count.clone();
-                        c.map(|value| format!("Count = {}", value))
-                    },
-                    Modifier::empty(),
-                ));
-            });
-        });
+        composition
+            .render(root_key, || {
+                Column(Modifier::empty(), || {
+                    text_node_id = Some(Text(
+                        {
+                            let c = count.clone();
+                            c.map(|value| format!("Count = {}", value))
+                        },
+                        Modifier::empty(),
+                    ));
+                });
+            })
+            .expect("render succeeds");
 
         let id = text_node_id.expect("text node id");
         {
             let applier = composition.applier_mut();
-            let _ = applier.with_node(id, |node: &mut TextNode| {
-                assert_eq!(node.text, "Count = 0");
-            });
+            applier
+                .with_node(id, |node: &mut TextNode| {
+                    assert_eq!(node.text, "Count = 0");
+                })
+                .expect("read text node");
         }
 
         set_count.set(1);
-        composition.flush_pending_node_updates();
+        composition
+            .flush_pending_node_updates()
+            .expect("flush updates");
         {
             let applier = composition.applier_mut();
-            let _ = applier.with_node(id, |node: &mut TextNode| {
-                assert_eq!(node.text, "Count = 1");
-            });
+            applier
+                .with_node(id, |node: &mut TextNode| {
+                    assert_eq!(node.text, "Count = 1");
+                })
+                .expect("read text node");
         }
         assert!(composition.should_render());
     }
