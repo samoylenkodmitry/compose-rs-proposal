@@ -472,14 +472,14 @@ struct TextDraw {
 
 #[derive(Clone)]
 enum ClickAction {
-    Simple(Rc<dyn Fn()>),
+    Simple(Rc<RefCell<dyn FnMut()>>),
     WithPoint(Rc<dyn Fn(Point)>),
 }
 
 impl ClickAction {
     fn invoke(&self, rect: Rect, x: f32, y: f32) {
         match self {
-            ClickAction::Simple(handler) => handler(),
+            ClickAction::Simple(handler) => (handler.borrow_mut())(),
             ClickAction::WithPoint(handler) => handler(Point {
                 x: x - rect.x,
                 y: y - rect.y,

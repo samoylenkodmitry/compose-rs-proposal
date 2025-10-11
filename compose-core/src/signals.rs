@@ -70,6 +70,22 @@ pub struct WriteSignal<T> {
     on_write: Rc<dyn Fn()>,
 }
 
+impl<T> PartialEq for ReadSignal<T> {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl<T> Eq for ReadSignal<T> {}
+
+impl<T> PartialEq for WriteSignal<T> {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.inner, &other.inner)
+    }
+}
+
+impl<T> Eq for WriteSignal<T> {}
+
 /// Create a new signal pair with the provided initial value and callback to
 /// invoke whenever the value changes.
 pub fn create_signal<T>(initial: T, on_write: Rc<dyn Fn()>) -> (ReadSignal<T>, WriteSignal<T>) {
