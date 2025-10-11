@@ -1,8 +1,10 @@
 #![allow(non_snake_case)]
 use std::cell::RefCell;
+use std::hash::Hash;
 use std::rc::Rc;
 
 use compose_core::{self, IntoSignal, Node, NodeId, ReadSignal};
+use indexmap::IndexSet;
 
 use crate::composable;
 use crate::modifier::{Modifier, Size};
@@ -10,36 +12,46 @@ use crate::modifier::{Modifier, Size};
 #[derive(Clone, Default)]
 pub struct ColumnNode {
     pub modifier: Modifier,
-    pub children: Vec<NodeId>,
+    pub children: IndexSet<NodeId>,
 }
 
 impl Node for ColumnNode {
     fn insert_child(&mut self, child: NodeId) {
-        if !self.children.contains(&child) {
-            self.children.push(child);
-        }
+        self.children.insert(child);
     }
 
     fn remove_child(&mut self, child: NodeId) {
-        self.children.retain(|c| *c != child);
+        self.children.shift_remove(&child);
+    }
+
+    fn update_children(&mut self, children: &[NodeId]) {
+        self.children.clear();
+        for &child in children {
+            self.children.insert(child);
+        }
     }
 }
 
 #[derive(Clone, Default)]
 pub struct RowNode {
     pub modifier: Modifier,
-    pub children: Vec<NodeId>,
+    pub children: IndexSet<NodeId>,
 }
 
 impl Node for RowNode {
     fn insert_child(&mut self, child: NodeId) {
-        if !self.children.contains(&child) {
-            self.children.push(child);
-        }
+        self.children.insert(child);
     }
 
     fn remove_child(&mut self, child: NodeId) {
-        self.children.retain(|c| *c != child);
+        self.children.shift_remove(&child);
+    }
+
+    fn update_children(&mut self, children: &[NodeId]) {
+        self.children.clear();
+        for &child in children {
+            self.children.insert(child);
+        }
     }
 }
 
@@ -67,7 +79,7 @@ impl Node for SpacerNode {}
 pub struct ButtonNode {
     pub modifier: Modifier,
     pub on_click: Rc<RefCell<dyn FnMut()>>,
-    pub children: Vec<NodeId>,
+    pub children: IndexSet<NodeId>,
 }
 
 impl Default for ButtonNode {
@@ -75,7 +87,7 @@ impl Default for ButtonNode {
         Self {
             modifier: Modifier::empty(),
             on_click: Rc::new(RefCell::new(|| {})),
-            children: Vec::new(),
+            children: IndexSet::new(),
         }
     }
 }
@@ -88,13 +100,18 @@ impl ButtonNode {
 
 impl Node for ButtonNode {
     fn insert_child(&mut self, child: NodeId) {
-        if !self.children.contains(&child) {
-            self.children.push(child);
-        }
+        self.children.insert(child);
     }
 
     fn remove_child(&mut self, child: NodeId) {
-        self.children.retain(|c| *c != child);
+        self.children.shift_remove(&child);
+    }
+
+    fn update_children(&mut self, children: &[NodeId]) {
+        self.children.clear();
+        for &child in children {
+            self.children.insert(child);
+        }
     }
 }
 
@@ -102,7 +119,7 @@ impl Node for ButtonNode {
 pub fn Column(modifier: Modifier, mut content: impl FnMut()) -> NodeId {
     let id = compose_core::emit_node(|| ColumnNode {
         modifier: modifier.clone(),
-        children: Vec::new(),
+        children: IndexSet::new(),
     });
     if let Err(err) = compose_core::with_node_mut(id, |node: &mut ColumnNode| {
         node.modifier = modifier;
@@ -119,7 +136,7 @@ pub fn Column(modifier: Modifier, mut content: impl FnMut()) -> NodeId {
 pub fn Row(modifier: Modifier, mut content: impl FnMut()) -> NodeId {
     let id = compose_core::emit_node(|| RowNode {
         modifier: modifier.clone(),
-        children: Vec::new(),
+        children: IndexSet::new(),
     });
     if let Err(err) = compose_core::with_node_mut(id, |node: &mut RowNode| {
         node.modifier = modifier;
@@ -205,7 +222,7 @@ pub fn Button(
     let id = compose_core::emit_node(|| ButtonNode {
         modifier: modifier.clone(),
         on_click: on_click_rc.clone(),
-        children: Vec::new(),
+        children: IndexSet::new(),
     });
     if let Err(err) = compose_core::with_node_mut(id, |node: &mut ButtonNode| {
         node.modifier = modifier;
@@ -219,10 +236,17 @@ pub fn Button(
     id
 }
 
+#[composable(no_skip)]
+pub fn ForEach<T: Hash>(items: &[T], mut row: impl FnMut(&T)) {
+    for item in items {
+        compose_core::with_key(item, || row(item));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SnapshotState;
+    use crate::{SnapshotState, TestComposition};
     use compose_core::{self, location_key, Composition, MemoryApplier, ReadSignal, WriteSignal};
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
@@ -388,5 +412,58 @@ mod tests {
 
         COUNTER_ROW_INVOCATIONS.with(|calls| assert_eq!(calls.get(), 1));
         assert!(!composition.should_render());
+    }
+
+    fn collect_column_texts(
+        composition: &mut TestComposition,
+    ) -> Result<Vec<String>, compose_core::NodeError> {
+        let root = composition.root().expect("column root");
+        let children: Vec<NodeId> = composition
+            .applier_mut()
+            .with_node(root, |column: &mut ColumnNode| {
+                column.children.iter().copied().collect::<Vec<_>>()
+            })?;
+        let mut texts = Vec::new();
+        for child in children {
+            let text = composition
+                .applier_mut()
+                .with_node(child, |text: &mut TextNode| text.text.clone())?;
+            texts.push(text);
+        }
+        Ok(texts)
+    }
+
+    #[test]
+    fn foreach_reorders_without_losing_children() {
+        let mut composition = TestComposition::new(MemoryApplier::new());
+        let key = location_key(file!(), line!(), column!());
+
+        composition
+            .render(key, || {
+                Column(Modifier::empty(), || {
+                    let items = ["A", "B", "C"];
+                    ForEach(&items, |item| {
+                        Text(item.to_string(), Modifier::empty());
+                    });
+                });
+            })
+            .expect("initial render");
+
+        let initial_texts = collect_column_texts(&mut composition).expect("collect initial");
+        assert_eq!(initial_texts, vec!["A", "B", "C"]);
+
+        composition
+            .render(key, || {
+                Column(Modifier::empty(), || {
+                    let items = ["C", "B", "A"];
+                    ForEach(&items, |item| {
+                        Text(item.to_string(), Modifier::empty());
+                    });
+                });
+            })
+            .expect("reorder render");
+
+        let reordered_texts = collect_column_texts(&mut composition).expect("collect reorder");
+        assert_eq!(reordered_texts, vec!["C", "B", "A"]);
     }
 }
