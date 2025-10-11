@@ -283,6 +283,7 @@ version = "0.1.0"
 dependencies = [
  "compose-core",
  "compose-macros",
+ "indexmap 2.11.4",
 ]
 
 [[package]]

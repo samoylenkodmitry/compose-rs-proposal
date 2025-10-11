@@ -8,7 +8,7 @@ This roadmap captures near-term milestones and ready-to-apply patches for evolvi
 2. ✅ **Skip recomposition when inputs unchanged**: extend `#[composable]` to persist prior parameters in slots and early-return when all implement `PartialEq` and remain unchanged.
 3. ✅ **Fine-grained updates – Signals (Phase 2)**: route signal writes through a dirty-node queue, expose `schedule_node_update`/`flush_pending_node_updates`, and let `Text` subscribe so it can patch its own node without a full recomposition.
 4. ✅ **Error handling**: replace `expect`/`unwrap` across the runtime and applier with `Result` and structured error types.
-5. **Keys & reordering**: provide stable identity for dynamic lists to avoid churn during reordering.
+5. ✅ **Keys & reordering**: provide stable identity for dynamic lists to avoid churn during reordering.
 6. **Layout with `taffy`**: map `Modifier` data into `taffy::Style` and compute layouts inside the applier.
 7. **Renderer stub**: sketch a `WgpuApplier` (or keep a headless applier plus golden layout tests).
 8. **Benchmarks & tests**: add microbenchmarks for skip/wide list scenarios, signal-targeted updates, and layout goldens.
@@ -80,11 +80,15 @@ non-fatal miss while still debug-asserting on unexpected missing nodes.
 
 ### 6. Keys & reordering
 
-Add keyed groups and keyed child management to keep dynamic lists stable.
+Status: ✅ Introduced `compose_core::with_key`, container-aware child diffing, and
+`ForEach` for collections. Parents now snapshot child order, reconcile updates
+through `Node::update_children`, and Compose UI containers store children in an
+`IndexSet` for stable ordering. A regression test confirms reordering preserves
+node identity while updating display order.
 
 ```rust
 #[composable]
-pub fn ForEach<T: Hash + Eq + Clone>(items: &[T], mut row: impl FnMut(&T)) {
+pub fn ForEach<T: Hash>(items: &[T], mut row: impl FnMut(&T)) {
     for it in items {
         compose_core::with_key(it, || row(it));
     }

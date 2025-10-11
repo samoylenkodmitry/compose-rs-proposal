@@ -2,7 +2,9 @@
 
 use std::any::Any;
 use std::cell::{Ref, RefCell, RefMut};
+use std::collections::hash_map::DefaultHasher;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::mem;
 use std::rc::{Rc, Weak};
 use std::thread_local;
@@ -49,6 +51,10 @@ pub fn with_current_composer<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
 
 pub fn emit_node<N: Node + 'static>(init: impl FnOnce() -> N) -> NodeId {
     with_current_composer(|composer| composer.emit_node(init))
+}
+
+pub fn with_key<K: Hash>(key: &K, content: impl FnOnce()) {
+    with_current_composer(|composer| composer.with_key(key, |_| content()));
 }
 
 pub fn with_node_mut<N: Node + 'static, R>(
@@ -244,6 +250,7 @@ pub trait Node: Any {
     fn unmount(&mut self) {}
     fn insert_child(&mut self, _child: NodeId) {}
     fn remove_child(&mut self, _child: NodeId) {}
+    fn update_children(&mut self, _children: &[NodeId]) {}
 }
 
 impl dyn Node {
@@ -410,9 +417,21 @@ pub struct Composer<'a> {
     slots: &'a mut SlotTable,
     applier: &'a mut dyn Applier,
     runtime: RuntimeHandle,
-    parent_stack: Vec<NodeId>,
+    parent_stack: Vec<ParentFrame>,
     pub(crate) root: Option<NodeId>,
     commands: Vec<Command>,
+}
+
+#[derive(Default, Clone)]
+struct ParentChildren {
+    children: Vec<NodeId>,
+}
+
+struct ParentFrame {
+    id: NodeId,
+    remembered: *mut ParentChildren,
+    previous: Vec<NodeId>,
+    new_children: Vec<NodeId>,
 }
 
 impl<'a> Composer<'a> {
@@ -458,6 +477,11 @@ impl<'a> Composer<'a> {
         let result = f(self);
         self.slots.end();
         result
+    }
+
+    pub fn with_key<K: Hash, R>(&mut self, key: &K, f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
+        let hashed = hash_key(key);
+        self.with_group(hashed, f)
     }
 
     pub fn remember<T: 'static>(&mut self, init: impl FnOnce() -> T) -> &mut T {
@@ -510,13 +534,8 @@ impl<'a> Composer<'a> {
     }
 
     fn attach_to_parent(&mut self, id: NodeId) {
-        if let Some(&parent) = self.parent_stack.last() {
-            self.commands
-                .push(Box::new(move |applier: &mut dyn Applier| {
-                    let parent_node = applier.get_mut(parent)?;
-                    parent_node.insert_child(id);
-                    Ok(())
-                }));
+        if let Some(frame) = self.parent_stack.last_mut() {
+            frame.new_children.push(id);
         } else {
             self.root = Some(id);
         }
@@ -539,11 +558,38 @@ impl<'a> Composer<'a> {
     }
 
     pub fn push_parent(&mut self, id: NodeId) {
-        self.parent_stack.push(id);
+        let remembered = self.slots.remember(|| ParentChildren::default()) as *mut ParentChildren;
+        let previous = unsafe { (*remembered).children.clone() };
+        self.parent_stack.push(ParentFrame {
+            id,
+            remembered,
+            previous,
+            new_children: Vec::new(),
+        });
     }
 
     pub fn pop_parent(&mut self) {
-        self.parent_stack.pop();
+        if let Some(frame) = self.parent_stack.pop() {
+            let ParentFrame {
+                id,
+                remembered,
+                previous,
+                new_children,
+            } = frame;
+            let needs_update = previous != new_children;
+            if needs_update {
+                let update_children = new_children.clone();
+                self.commands
+                    .push(Box::new(move |applier: &mut dyn Applier| {
+                        let parent_node = applier.get_mut(id)?;
+                        parent_node.update_children(&update_children);
+                        Ok(())
+                    }));
+            }
+            unsafe {
+                (*remembered).children = new_children;
+            }
+        }
     }
 
     pub fn skip_current_group(&mut self) {
@@ -749,6 +795,12 @@ pub fn location_key(file: &str, line: u32, column: u32) -> Key {
     file.hash(&mut hasher);
     line.hash(&mut hasher);
     column.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn hash_key<K: Hash>(key: &K) -> Key {
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
     hasher.finish()
 }
 

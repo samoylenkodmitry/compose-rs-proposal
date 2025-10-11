@@ -12,7 +12,8 @@ pub use modifier::{
     PointerEvent, PointerEventKind, Rect, RoundedCornerShape, Size,
 };
 pub use primitives::{
-    Button, ButtonNode, Column, ColumnNode, Row, RowNode, Spacer, SpacerNode, Text, TextNode,
+    Button, ButtonNode, Column, ColumnNode, ForEach, Row, RowNode, Spacer, SpacerNode, Text,
+    TextNode,
 };
 
 /// Convenience alias used in examples and tests.
