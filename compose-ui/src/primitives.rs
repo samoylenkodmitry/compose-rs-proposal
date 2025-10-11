@@ -246,7 +246,7 @@ pub fn ForEach<T: Hash>(items: &[T], mut row: impl FnMut(&T)) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{SnapshotState, TestComposition};
+    use crate::{LayoutEngine, SnapshotState, TestComposition};
     use compose_core::{self, location_key, Composition, MemoryApplier, ReadSignal, WriteSignal};
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
@@ -465,5 +465,49 @@ mod tests {
 
         let reordered_texts = collect_column_texts(&mut composition).expect("collect reorder");
         assert_eq!(reordered_texts, vec!["C", "B", "A"]);
+    }
+
+    #[test]
+    fn layout_column_uses_taffy_measurements() {
+        let mut composition = Composition::new(MemoryApplier::new());
+        let key = location_key(file!(), line!(), column!());
+        let mut text_id = None;
+
+        composition
+            .render(key, || {
+                Column(Modifier::padding(10.0), || {
+                    let id = Text("Hello", Modifier::empty());
+                    text_id = Some(id);
+                    Spacer(Size {
+                        width: 0.0,
+                        height: 30.0,
+                    });
+                });
+            })
+            .expect("initial render");
+
+        let root = composition.root().expect("root node");
+        let layout_tree = composition
+            .applier_mut()
+            .compute_layout(
+                root,
+                Size {
+                    width: 200.0,
+                    height: 200.0,
+                },
+            )
+            .expect("compute layout");
+
+        let root_layout = layout_tree.root().clone();
+        assert!((root_layout.rect.width - 60.0).abs() < 1e-3);
+        assert!((root_layout.rect.height - 70.0).abs() < 1e-3);
+        assert_eq!(root_layout.children.len(), 2);
+
+        let text_layout = &root_layout.children[0];
+        assert_eq!(text_layout.node_id, text_id.expect("text node id"));
+        assert!((text_layout.rect.x - 10.0).abs() < 1e-3);
+        assert!((text_layout.rect.y - 10.0).abs() < 1e-3);
+        assert!((text_layout.rect.width - 40.0).abs() < 1e-3);
+        assert!((text_layout.rect.height - 20.0).abs() < 1e-3);
     }
 }

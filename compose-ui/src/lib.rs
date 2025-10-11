@@ -4,9 +4,11 @@ use compose_core::{location_key, MemoryApplier};
 pub use compose_core::{Composition, Key};
 pub use compose_macros::composable;
 
+mod layout;
 mod modifier;
 mod primitives;
 
+pub use layout::{LayoutBox, LayoutEngine, LayoutTree};
 pub use modifier::{
     Brush, Color, CornerRadii, DrawCommand, DrawPrimitive, GraphicsLayer, Modifier, Point,
     PointerEvent, PointerEventKind, Rect, RoundedCornerShape, Size,

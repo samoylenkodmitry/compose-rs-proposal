@@ -9,7 +9,7 @@ This roadmap captures near-term milestones and ready-to-apply patches for evolvi
 3. ✅ **Fine-grained updates – Signals (Phase 2)**: route signal writes through a dirty-node queue, expose `schedule_node_update`/`flush_pending_node_updates`, and let `Text` subscribe so it can patch its own node without a full recomposition.
 4. ✅ **Error handling**: replace `expect`/`unwrap` across the runtime and applier with `Result` and structured error types.
 5. ✅ **Keys & reordering**: provide stable identity for dynamic lists to avoid churn during reordering.
-6. **Layout with `taffy`**: map `Modifier` data into `taffy::Style` and compute layouts inside the applier.
+6. ✅ **Layout with `taffy`**: map `Modifier` data into `taffy::Style` and compute layouts inside the applier.
 7. **Renderer stub**: sketch a `WgpuApplier` (or keep a headless applier plus golden layout tests).
 8. **Benchmarks & tests**: add microbenchmarks for skip/wide list scenarios, signal-targeted updates, and layout goldens.
 
@@ -99,7 +99,12 @@ Back container children with `IndexSet<NodeId>` to preserve order and enable fas
 
 ### 7. Layout with `taffy`
 
-Map modifiers into `taffy::Style` and compute layouts in the applier each frame. Provide helpers for building `taffy` nodes and retrieving computed layouts for rendering.
+Status: ✅ `compose_ui::layout` implements a `LayoutEngine` trait for the
+core `MemoryApplier`, rebuilding a temporary `taffy` tree on demand and
+returning a lightweight `LayoutTree`. Desktop rendering now requests the
+layout tree and walks it to paint backgrounds, overlays, and hit targets
+instead of performing bespoke box calculations. Unit tests cover a column
+stack with text and spacers to verify padding and child placement.
 
 ### 8. Renderer stub
 

@@ -5,8 +5,9 @@ use std::time::Instant;
 use compose_core::{self, location_key, Composition, Key, MemoryApplier, Node, NodeError, NodeId};
 use compose_ui::{
     composable, Brush, Button, ButtonNode, Color, Column, ColumnNode, CornerRadii, DrawCommand,
-    DrawPrimitive, GraphicsLayer, Modifier, Point, PointerEvent, PointerEventKind, Rect,
-    RoundedCornerShape, Row, RowNode, Size, Spacer, SpacerNode, Text, TextNode,
+    DrawPrimitive, GraphicsLayer, LayoutBox, LayoutEngine, Modifier, Point, PointerEvent,
+    PointerEventKind, Rect, RoundedCornerShape, Row, RowNode, Size, Spacer, SpacerNode, Text,
+    TextNode,
 };
 use once_cell::sync::Lazy;
 use pixels::{Pixels, SurfaceTexture};
@@ -240,15 +241,20 @@ impl ComposeDesktopApp {
                 height: self.viewport.1,
             };
             let applier = self.composition.applier_mut();
-            layout_node(
-                applier,
-                root,
-                0.0,
-                0.0,
-                viewport_size,
-                GraphicsLayer::default(),
-                &mut self.scene,
-            );
+            match applier.compute_layout(root, viewport_size) {
+                Ok(layout_tree) => {
+                    let root_layout = layout_tree.into_root();
+                    render_layout_node(
+                        applier,
+                        &root_layout,
+                        GraphicsLayer::default(),
+                        &mut self.scene,
+                    );
+                }
+                Err(err) => {
+                    log::error!("failed to compute layout: {err}");
+                }
+            }
         }
     }
 }
@@ -608,7 +614,6 @@ impl Scene {
 struct NodeStyle {
     padding: f32,
     background: Option<Color>,
-    size: Option<Size>,
     clickable: Option<Rc<dyn Fn(Point)>>,
     shape: Option<RoundedCornerShape>,
     pointer_inputs: Vec<Rc<dyn Fn(PointerEvent)>>,
@@ -621,7 +626,6 @@ impl NodeStyle {
         Self {
             padding: modifier.total_padding(),
             background: modifier.background_color(),
-            size: modifier.explicit_size(),
             clickable: modifier.click_handler(),
             shape: modifier.corner_shape(),
             pointer_inputs: modifier.pointer_inputs(),
@@ -766,89 +770,54 @@ fn try_node<T: Node + 'static, R>(
     }
 }
 
-fn layout_node(
+fn render_layout_node(
     applier: &mut MemoryApplier,
-    node_id: NodeId,
-    origin_x: f32,
-    origin_y: f32,
-    max_size: Size,
+    layout: &LayoutBox,
     layer: GraphicsLayer,
     scene: &mut Scene,
-) -> Size {
-    if let Some(column) = try_node(applier, node_id, |node: &mut ColumnNode| node.clone()) {
-        return layout_column(applier, column, origin_x, origin_y, max_size, layer, scene);
+) {
+    if let Some(column) = try_node(applier, layout.node_id, |node: &mut ColumnNode| {
+        node.clone()
+    }) {
+        render_column(applier, column, layout, layer, scene);
+        return;
     }
-    if let Some(row) = try_node(applier, node_id, |node: &mut RowNode| node.clone()) {
-        return layout_row(applier, row, origin_x, origin_y, max_size, layer, scene);
+    if let Some(row) = try_node(applier, layout.node_id, |node: &mut RowNode| node.clone()) {
+        render_row(applier, row, layout, layer, scene);
+        return;
     }
-    if let Some(text) = try_node(applier, node_id, |node: &mut TextNode| node.clone()) {
-        return layout_text(text, origin_x, origin_y, layer, scene);
+    if let Some(text) = try_node(applier, layout.node_id, |node: &mut TextNode| node.clone()) {
+        render_text(text, layout, layer, scene);
+        return;
     }
-    if let Some(spacer) = try_node(applier, node_id, |node: &mut SpacerNode| node.clone()) {
-        return layout_spacer(spacer, origin_x, origin_y, layer, scene);
+    if let Some(spacer) = try_node(applier, layout.node_id, |node: &mut SpacerNode| {
+        node.clone()
+    }) {
+        render_spacer(spacer, layout, layer, scene);
+        return;
     }
-    if let Some(button) = try_node(applier, node_id, |node: &mut ButtonNode| node.clone()) {
-        return layout_button(applier, button, origin_x, origin_y, max_size, layer, scene);
-    }
-    Size {
-        width: 0.0,
-        height: 0.0,
+    if let Some(button) = try_node(applier, layout.node_id, |node: &mut ButtonNode| {
+        node.clone()
+    }) {
+        render_button(applier, button, layout, layer, scene);
     }
 }
 
-fn layout_column(
+fn render_column(
     applier: &mut MemoryApplier,
     node: ColumnNode,
-    origin_x: f32,
-    origin_y: f32,
-    max_size: Size,
+    layout: &LayoutBox,
     layer: GraphicsLayer,
     scene: &mut Scene,
-) -> Size {
+) {
     let style = NodeStyle::from_modifier(&node.modifier);
     let node_layer = combine_layers(layer, style.graphics_layer);
-    let inner_x = origin_x + style.padding;
-    let inner_y = origin_y + style.padding;
-    let mut total_height: f32 = 0.0;
-    let mut max_child_width: f32 = 0.0;
-    let available_width =
-        (style.size.map(|s| s.width).unwrap_or(max_size.width) - style.padding * 2.0).max(0.0);
-    let available_height =
-        (style.size.map(|s| s.height).unwrap_or(max_size.height) - style.padding * 2.0).max(0.0);
-    for child in node.children {
-        let size = layout_node(
-            applier,
-            child,
-            inner_x,
-            inner_y + total_height,
-            Size {
-                width: available_width,
-                height: available_height,
-            },
-            node_layer,
-            scene,
-        );
-        total_height += size.height;
-        max_child_width = max_child_width.max(size.width);
-    }
-    let mut width = max_child_width + style.padding * 2.0;
-    let mut height = total_height + style.padding * 2.0;
-    if let Some(size) = style.size {
-        if size.width > 0.0 {
-            width = size.width;
-        }
-        if size.height > 0.0 {
-            height = size.height;
-        }
-    }
-    let rect = Rect {
-        x: origin_x,
-        y: origin_y,
-        width,
-        height,
+    let rect = layout.rect;
+    let size = Size {
+        width: rect.width,
+        height: rect.height,
     };
-    let size = Size { width, height };
-    let origin = (origin_x, origin_y);
+    let origin = (rect.x, rect.y);
     apply_draw_commands(
         &style.draw_commands,
         DrawPlacement::Behind,
@@ -859,7 +828,7 @@ fn layout_column(
         scene,
     );
     let scaled_shape = style.shape.map(|shape| {
-        let resolved = shape.resolve(width, height);
+        let resolved = shape.resolve(rect.width, rect.height);
         RoundedCornerShape::with_radii(scale_corner_radii(resolved, node_layer.scale))
     });
     let transformed_rect = apply_layer_to_rect(rect, origin, node_layer);
@@ -877,6 +846,10 @@ fn layout_column(
         click_actions,
         style.pointer_inputs.clone(),
     );
+    for (child_id, child_layout) in node.children.iter().zip(&layout.children) {
+        debug_assert_eq!(*child_id, child_layout.node_id);
+        render_layout_node(applier, child_layout, node_layer, scene);
+    }
     apply_draw_commands(
         &style.draw_commands,
         DrawPlacement::Overlay,
@@ -886,62 +859,23 @@ fn layout_column(
         node_layer,
         scene,
     );
-    Size { width, height }
 }
 
-fn layout_row(
+fn render_row(
     applier: &mut MemoryApplier,
     node: RowNode,
-    origin_x: f32,
-    origin_y: f32,
-    max_size: Size,
+    layout: &LayoutBox,
     layer: GraphicsLayer,
     scene: &mut Scene,
-) -> Size {
+) {
     let style = NodeStyle::from_modifier(&node.modifier);
     let node_layer = combine_layers(layer, style.graphics_layer);
-    let mut total_width: f32 = 0.0;
-    let mut max_child_height: f32 = 0.0;
-    let inner_x = origin_x + style.padding;
-    let inner_y = origin_y + style.padding;
-    let available_width =
-        (style.size.map(|s| s.width).unwrap_or(max_size.width) - style.padding * 2.0).max(0.0);
-    let available_height =
-        (style.size.map(|s| s.height).unwrap_or(max_size.height) - style.padding * 2.0).max(0.0);
-    for child in node.children {
-        let size = layout_node(
-            applier,
-            child,
-            inner_x + total_width,
-            inner_y,
-            Size {
-                width: available_width,
-                height: available_height,
-            },
-            node_layer,
-            scene,
-        );
-        total_width += size.width;
-        max_child_height = max_child_height.max(size.height);
-    }
-    let mut width = total_width + style.padding * 2.0;
-    let mut height = max_child_height + style.padding * 2.0;
-    if let Some(size) = style.size {
-        if size.width > 0.0 {
-            width = size.width;
-        }
-        if size.height > 0.0 {
-            height = size.height;
-        }
-    }
-    let rect = Rect {
-        x: origin_x,
-        y: origin_y,
-        width,
-        height,
+    let rect = layout.rect;
+    let size = Size {
+        width: rect.width,
+        height: rect.height,
     };
-    let size = Size { width, height };
-    let origin = (origin_x, origin_y);
+    let origin = (rect.x, rect.y);
     apply_draw_commands(
         &style.draw_commands,
         DrawPlacement::Behind,
@@ -952,7 +886,7 @@ fn layout_row(
         scene,
     );
     let scaled_shape = style.shape.map(|shape| {
-        let resolved = shape.resolve(width, height);
+        let resolved = shape.resolve(rect.width, rect.height);
         RoundedCornerShape::with_radii(scale_corner_radii(resolved, node_layer.scale))
     });
     let transformed_rect = apply_layer_to_rect(rect, origin, node_layer);
@@ -970,6 +904,10 @@ fn layout_row(
         click_actions,
         style.pointer_inputs.clone(),
     );
+    for (child_id, child_layout) in node.children.iter().zip(&layout.children) {
+        debug_assert_eq!(*child_id, child_layout.node_id);
+        render_layout_node(applier, child_layout, node_layer, scene);
+    }
     apply_draw_commands(
         &style.draw_commands,
         DrawPlacement::Overlay,
@@ -979,37 +917,17 @@ fn layout_row(
         node_layer,
         scene,
     );
-    Size { width, height }
 }
 
-fn layout_text(
-    node: TextNode,
-    origin_x: f32,
-    origin_y: f32,
-    layer: GraphicsLayer,
-    scene: &mut Scene,
-) -> Size {
+fn render_text(node: TextNode, layout: &LayoutBox, layer: GraphicsLayer, scene: &mut Scene) {
     let style = NodeStyle::from_modifier(&node.modifier);
     let node_layer = combine_layers(layer, style.graphics_layer);
-    let metrics = measure_text(&node.text);
-    let mut width = metrics.width + style.padding * 2.0;
-    let mut height = metrics.height + style.padding * 2.0;
-    if let Some(size) = style.size {
-        if size.width > 0.0 {
-            width = size.width;
-        }
-        if size.height > 0.0 {
-            height = size.height;
-        }
-    }
-    let rect = Rect {
-        x: origin_x,
-        y: origin_y,
-        width,
-        height,
+    let rect = layout.rect;
+    let size = Size {
+        width: rect.width,
+        height: rect.height,
     };
-    let size = Size { width, height };
-    let origin = (origin_x, origin_y);
+    let origin = (rect.x, rect.y);
     apply_draw_commands(
         &style.draw_commands,
         DrawPlacement::Behind,
@@ -1020,7 +938,7 @@ fn layout_text(
         scene,
     );
     let scaled_shape = style.shape.map(|shape| {
-        let resolved = shape.resolve(width, height);
+        let resolved = shape.resolve(rect.width, rect.height);
         RoundedCornerShape::with_radii(scale_corner_radii(resolved, node_layer.scale))
     });
     let transformed_rect = apply_layer_to_rect(rect, origin, node_layer);
@@ -1028,9 +946,10 @@ fn layout_text(
         let brush = apply_layer_to_brush(Brush::solid(color), node_layer);
         scene.push_shape(transformed_rect, brush, scaled_shape.clone());
     }
+    let metrics = measure_text(&node.text);
     let text_rect = Rect {
-        x: origin_x + style.padding,
-        y: origin_y + style.padding,
+        x: rect.x + style.padding,
+        y: rect.y + style.padding,
         width: metrics.width,
         height: metrics.height,
     };
@@ -1060,76 +979,31 @@ fn layout_text(
         node_layer,
         scene,
     );
-    Size { width, height }
 }
 
-fn layout_spacer(
-    node: SpacerNode,
-    origin_x: f32,
-    origin_y: f32,
+fn render_spacer(
+    _node: SpacerNode,
+    _layout: &LayoutBox,
     _layer: GraphicsLayer,
     _scene: &mut Scene,
-) -> Size {
-    let _ = (origin_x, origin_y);
-    Size {
-        width: node.size.width,
-        height: node.size.height,
-    }
+) {
 }
 
-fn layout_button(
+fn render_button(
     applier: &mut MemoryApplier,
     node: ButtonNode,
-    origin_x: f32,
-    origin_y: f32,
-    max_size: Size,
+    layout: &LayoutBox,
     layer: GraphicsLayer,
     scene: &mut Scene,
-) -> Size {
+) {
     let style = NodeStyle::from_modifier(&node.modifier);
     let node_layer = combine_layers(layer, style.graphics_layer);
-    let inner_x = origin_x + style.padding;
-    let inner_y = origin_y + style.padding;
-    let available_width =
-        (style.size.map(|s| s.width).unwrap_or(max_size.width) - style.padding * 2.0).max(0.0);
-    let available_height =
-        (style.size.map(|s| s.height).unwrap_or(max_size.height) - style.padding * 2.0).max(0.0);
-    let mut total_height: f32 = 0.0;
-    let mut max_child_width: f32 = 0.0;
-    for child in node.children {
-        let size = layout_node(
-            applier,
-            child,
-            inner_x,
-            inner_y + total_height,
-            Size {
-                width: available_width,
-                height: available_height,
-            },
-            node_layer,
-            scene,
-        );
-        total_height += size.height;
-        max_child_width = max_child_width.max(size.width);
-    }
-    let mut width = max_child_width + style.padding * 2.0;
-    let mut height = total_height + style.padding * 2.0;
-    if let Some(size) = style.size {
-        if size.width > 0.0 {
-            width = size.width;
-        }
-        if size.height > 0.0 {
-            height = size.height;
-        }
-    }
-    let rect = Rect {
-        x: origin_x,
-        y: origin_y,
-        width,
-        height,
+    let rect = layout.rect;
+    let size = Size {
+        width: rect.width,
+        height: rect.height,
     };
-    let size = Size { width, height };
-    let origin = (origin_x, origin_y);
+    let origin = (rect.x, rect.y);
     apply_draw_commands(
         &style.draw_commands,
         DrawPlacement::Behind,
@@ -1140,7 +1014,7 @@ fn layout_button(
         scene,
     );
     let scaled_shape = style.shape.map(|shape| {
-        let resolved = shape.resolve(width, height);
+        let resolved = shape.resolve(rect.width, rect.height);
         RoundedCornerShape::with_radii(scale_corner_radii(resolved, node_layer.scale))
     });
     let transformed_rect = apply_layer_to_rect(rect, origin, node_layer);
@@ -1158,6 +1032,10 @@ fn layout_button(
         click_actions,
         style.pointer_inputs.clone(),
     );
+    for (child_id, child_layout) in node.children.iter().zip(&layout.children) {
+        debug_assert_eq!(*child_id, child_layout.node_id);
+        render_layout_node(applier, child_layout, node_layer, scene);
+    }
     apply_draw_commands(
         &style.draw_commands,
         DrawPlacement::Overlay,
@@ -1167,7 +1045,6 @@ fn layout_button(
         node_layer,
         scene,
     );
-    Size { width, height }
 }
 
 struct TextMetrics {
