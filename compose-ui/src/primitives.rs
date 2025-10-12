@@ -3,7 +3,7 @@ use std::cell::RefCell;
 use std::hash::Hash;
 use std::rc::Rc;
 
-use compose_core::{self, IntoSignal, Node, NodeId, ReadSignal};
+use compose_core::{self, MutableState, Node, NodeId, State};
 use indexmap::IndexSet;
 
 use crate::composable;
@@ -91,11 +91,6 @@ pub struct TextNode {
 
 impl Node for TextNode {}
 
-struct TextSubscription {
-    signal: ReadSignal<String>,
-    _listener: Rc<dyn Fn(&String)>,
-}
-
 #[derive(Clone, Default)]
 pub struct SpacerNode {
     pub size: Size,
@@ -158,7 +153,10 @@ impl Node for ButtonNode {
 }
 
 #[composable(no_skip)]
-pub fn Column(modifier: Modifier, mut content: impl FnMut()) -> NodeId {
+pub fn Column<F>(modifier: Modifier, mut content: F) -> NodeId
+where
+    F: FnMut(),
+{
     let id = compose_core::emit_node(|| ColumnNode {
         modifier: modifier.clone(),
         children: IndexSet::new(),
@@ -175,7 +173,10 @@ pub fn Column(modifier: Modifier, mut content: impl FnMut()) -> NodeId {
 }
 
 #[composable(no_skip)]
-pub fn Row(modifier: Modifier, mut content: impl FnMut()) -> NodeId {
+pub fn Row<F>(modifier: Modifier, mut content: F) -> NodeId
+where
+    F: FnMut(),
+{
     let id = compose_core::emit_node(|| RowNode {
         modifier: modifier.clone(),
         children: IndexSet::new(),
@@ -191,10 +192,102 @@ pub fn Row(modifier: Modifier, mut content: impl FnMut()) -> NodeId {
     id
 }
 
-#[composable(no_skip)]
-pub fn Text(value: impl IntoSignal<String>, modifier: Modifier) -> NodeId {
-    let signal: ReadSignal<String> = value.into_signal();
-    let current = signal.get();
+#[derive(Clone)]
+struct DynamicTextSource(Rc<dyn Fn() -> String>);
+
+impl DynamicTextSource {
+    fn new<F>(resolver: F) -> Self
+    where
+        F: Fn() -> String + 'static,
+    {
+        Self(Rc::new(resolver))
+    }
+
+    fn resolve(&self) -> String {
+        (self.0)()
+    }
+}
+
+impl PartialEq for DynamicTextSource {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for DynamicTextSource {}
+
+#[derive(Clone, PartialEq, Eq)]
+enum TextSource {
+    Static(String),
+    Dynamic(DynamicTextSource),
+}
+
+impl TextSource {
+    fn resolve(&self) -> String {
+        match self {
+            TextSource::Static(text) => text.clone(),
+            TextSource::Dynamic(dynamic) => dynamic.resolve(),
+        }
+    }
+}
+
+trait IntoTextSource {
+    fn into_text_source(self) -> TextSource;
+}
+
+impl IntoTextSource for String {
+    fn into_text_source(self) -> TextSource {
+        TextSource::Static(self)
+    }
+}
+
+impl<'a> IntoTextSource for &'a str {
+    fn into_text_source(self) -> TextSource {
+        TextSource::Static(self.to_string())
+    }
+}
+
+impl<T> IntoTextSource for State<T>
+where
+    T: ToString + Clone + 'static,
+{
+    fn into_text_source(self) -> TextSource {
+        let state = self.clone();
+        TextSource::Dynamic(DynamicTextSource::new(move || state.value().to_string()))
+    }
+}
+
+impl<T> IntoTextSource for MutableState<T>
+where
+    T: ToString + Clone + 'static,
+{
+    fn into_text_source(self) -> TextSource {
+        let state = self.clone();
+        TextSource::Dynamic(DynamicTextSource::new(move || state.value().to_string()))
+    }
+}
+
+impl<F> IntoTextSource for F
+where
+    F: Fn() -> String + 'static,
+{
+    fn into_text_source(self) -> TextSource {
+        TextSource::Dynamic(DynamicTextSource::new(self))
+    }
+}
+
+impl IntoTextSource for DynamicTextSource {
+    fn into_text_source(self) -> TextSource {
+        TextSource::Dynamic(self)
+    }
+}
+
+#[composable]
+pub fn Text<S>(value: S, modifier: Modifier) -> NodeId
+where
+    S: IntoTextSource + Clone + PartialEq + 'static,
+{
+    let current = value.into_text_source().resolve();
     let id = compose_core::emit_node(|| TextNode {
         modifier: modifier.clone(),
         text: current.clone(),
@@ -207,39 +300,6 @@ pub fn Text(value: impl IntoSignal<String>, modifier: Modifier) -> NodeId {
     }) {
         debug_assert!(false, "failed to update Text node: {err}");
     }
-    compose_core::with_current_composer(|composer| {
-        let subscription = composer.remember(|| None::<TextSubscription>);
-        let needs_subscribe = match subscription {
-            Some(existing) => !existing.signal.ptr_eq(&signal),
-            None => true,
-        };
-        if needs_subscribe {
-            let listener: Rc<dyn Fn(&String)> = {
-                let node_id = id;
-                Rc::new(move |updated: &String| {
-                    let new_text = updated.clone();
-                    compose_core::schedule_node_update(move |applier| {
-                        let node = applier.get_mut(node_id)?;
-                        let text_node = node.as_any_mut().downcast_mut::<TextNode>().ok_or(
-                            compose_core::NodeError::TypeMismatch {
-                                id: node_id,
-                                expected: std::any::type_name::<TextNode>(),
-                            },
-                        )?;
-                        if text_node.text != new_text {
-                            text_node.text = new_text;
-                        }
-                        Ok(())
-                    });
-                })
-            };
-            signal.subscribe(listener.clone());
-            *subscription = Some(TextSubscription {
-                signal: signal.clone(),
-                _listener: listener,
-            });
-        }
-    });
     id
 }
 
@@ -255,11 +315,11 @@ pub fn Spacer(size: Size) -> NodeId {
 }
 
 #[composable(no_skip)]
-pub fn Button(
-    modifier: Modifier,
-    on_click: impl FnMut() + 'static,
-    mut content: impl FnMut(),
-) -> NodeId {
+pub fn Button<F, G>(modifier: Modifier, on_click: F, mut content: G) -> NodeId
+where
+    F: FnMut() + 'static,
+    G: FnMut(),
+{
     let on_click_rc: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(on_click));
     let id = compose_core::emit_node(|| ButtonNode {
         modifier: modifier.clone(),
@@ -279,7 +339,11 @@ pub fn Button(
 }
 
 #[composable(no_skip)]
-pub fn ForEach<T: Hash>(items: &[T], mut row: impl FnMut(&T)) {
+pub fn ForEach<T, F>(items: &[T], mut row: F)
+where
+    T: Hash,
+    F: FnMut(&T),
+{
     for item in items {
         compose_core::with_key(item, || row(item));
     }
@@ -289,9 +353,8 @@ pub fn ForEach<T: Hash>(items: &[T], mut row: impl FnMut(&T)) {
 mod tests {
     use super::*;
     use crate::{LayoutEngine, SnapshotState, TestComposition};
-    use compose_core::{self, location_key, Composition, MemoryApplier, ReadSignal, WriteSignal};
+    use compose_core::{self, location_key, Composition, MemoryApplier, MutableState, State};
     use std::cell::{Cell, RefCell};
-    use std::rc::Rc;
 
     thread_local! {
         static COUNTER_ROW_INVOCATIONS: Cell<usize> = Cell::new(0);
@@ -299,12 +362,13 @@ mod tests {
     }
 
     #[composable]
-    fn CounterRow(label: &'static str, count: ReadSignal<i32>) -> NodeId {
+    fn CounterRow(label: &'static str, count: State<i32>) -> NodeId {
         COUNTER_ROW_INVOCATIONS.with(|calls| calls.set(calls.get() + 1));
         Column(Modifier::empty(), || {
             Text(label, Modifier::empty());
+            let count_for_text = count.clone();
             let text_id = Text(
-                count.map(|value| format!("Count = {}", value)),
+                DynamicTextSource::new(move || format!("Count = {}", count_for_text.value())),
                 Modifier::empty(),
             );
             COUNTER_TEXT_ID.with(|slot| *slot.borrow_mut() = Some(text_id));
@@ -355,22 +419,24 @@ mod tests {
     }
 
     #[test]
-    fn text_updates_with_signal_after_write() {
+    fn text_updates_with_state_after_write() {
         let mut composition = Composition::new(MemoryApplier::new());
         let root_key = location_key(file!(), line!(), column!());
-        let schedule = Rc::new(|| compose_core::schedule_frame());
-        let (count, set_count): (ReadSignal<i32>, WriteSignal<i32>) =
-            compose_core::create_signal(0, schedule);
         let mut text_node_id = None;
+        let mut captured_state: Option<MutableState<i32>> = None;
 
         composition
             .render(root_key, || {
                 Column(Modifier::empty(), || {
+                    let count = compose_core::use_state(|| 0);
+                    if captured_state.is_none() {
+                        captured_state = Some(count.clone());
+                    }
+                    let count_for_text = count.clone();
                     text_node_id = Some(Text(
-                        {
-                            let c = count.clone();
-                            c.map(|value| format!("Count = {}", value))
-                        },
+                        DynamicTextSource::new(move || {
+                            format!("Count = {}", count_for_text.value())
+                        }),
                         Modifier::empty(),
                     ));
                 });
@@ -387,10 +453,14 @@ mod tests {
                 .expect("read text node");
         }
 
-        set_count.set(1);
+        let state = captured_state.expect("captured state");
+        state.set(1);
+        assert!(composition.should_render());
+
         composition
-            .flush_pending_node_updates()
-            .expect("flush updates");
+            .process_invalid_scopes()
+            .expect("process invalid scopes succeeds");
+
         {
             let applier = composition.applier_mut();
             applier
@@ -399,23 +469,25 @@ mod tests {
                 })
                 .expect("read text node");
         }
-        assert!(composition.should_render());
+        assert!(!composition.should_render());
     }
 
     #[test]
-    fn counter_signal_skips_when_label_static() {
+    fn counter_state_skips_when_label_static() {
         COUNTER_ROW_INVOCATIONS.with(|calls| calls.set(0));
         COUNTER_TEXT_ID.with(|slot| *slot.borrow_mut() = None);
 
         let mut composition = Composition::new(MemoryApplier::new());
         let root_key = location_key(file!(), line!(), column!());
-        let schedule = Rc::new(|| compose_core::schedule_frame());
-        let (count, set_count): (ReadSignal<i32>, WriteSignal<i32>) =
-            compose_core::create_signal(0, schedule);
+        let mut captured_state: Option<MutableState<i32>> = None;
 
         composition
             .render(root_key, || {
-                CounterRow("Counter", count.clone());
+                let count = compose_core::use_state(|| 0);
+                if captured_state.is_none() {
+                    captured_state = Some(count.clone());
+                }
+                CounterRow("Counter", count.as_state());
             })
             .expect("initial render succeeds");
 
@@ -431,10 +503,17 @@ mod tests {
                 .expect("read text node");
         }
 
-        set_count.set(1);
+        let state = captured_state.expect("captured state");
+        state.set(1);
+        assert!(composition.should_render());
+
+        COUNTER_ROW_INVOCATIONS.with(|calls| calls.set(0));
+
         composition
-            .flush_pending_node_updates()
-            .expect("flush updates");
+            .process_invalid_scopes()
+            .expect("process invalid scopes succeeds");
+
+        COUNTER_ROW_INVOCATIONS.with(|calls| assert_eq!(calls.get(), 0));
 
         {
             let applier = composition.applier_mut();
@@ -444,15 +523,6 @@ mod tests {
                 })
                 .expect("read text node");
         }
-        assert!(composition.should_render());
-
-        composition
-            .render(root_key, || {
-                CounterRow("Counter", count.clone());
-            })
-            .expect("second render succeeds");
-
-        COUNTER_ROW_INVOCATIONS.with(|calls| assert_eq!(calls.get(), 1));
         assert!(!composition.should_render());
     }
 

@@ -32,4 +32,4 @@ pub fn run_test_composition(mut build: impl FnMut()) -> TestComposition {
     composition
 }
 
-pub use compose_core::State as SnapshotState;
+pub use compose_core::MutableState as SnapshotState;
