@@ -37,19 +37,19 @@ Context and why
 - Jetpack Compose invalidates and recomposes only scopes that read a changing State. Parents that pass state down without reading do not recompose. This is the crux of Compose performance and must match exactly.
 
 Deliverables
-- RecomposeScope per composed group. Composer maintains a current scope stack.
-- Tracked reads: State<T>.value getter records the current RecomposeScope; writer invalidates only its readers. Passing state through without reading does not register the parent.
-- State and remember APIs:
-  - remember { T }
-  - mutableStateOf(initial): MutableState<T>
-  - interface State<T> { val value: T }
-  - interface MutableState<T> : State<T> { override var value: T }
-  - derivedStateOf { … }: recomputes lazily, invalidates readers when source states change.
-- Skip logic: when parameters are stable and equal and no local invalidations exist, skip the scope and reuse prior result. The macro should generate changed bit masks (ints) like Compose instead of per-param heap allocations. Keep a pragmatic stability model:
-  - Provide a Stable marker/derive for pure data types; default to equality for non-stable types.
-  - Allow a @stable marker in the macro until stability inference matures.
+- RecomposeScope per composed group. Composer maintains a current scope stack. (Implemented)
+- Tracked reads: State<T>.value getter records the current RecomposeScope; writer invalidates only its readers. Passing state through without reading does not register the parent. (Implemented)
+- State and remember APIs: (Implemented)
+  - remember { T } (Implemented)
+  - mutableStateOf(initial): MutableState<T> (Implemented)
+  - interface State<T> { val value: T } (Implemented)
+  - interface MutableState<T> : State<T> { override var value: T } (Implemented)
+  - derivedStateOf { … }: recomputes lazily, invalidates readers when source states change. (Implemented)
+- Skip logic: when parameters are stable and equal and no local invalidations exist, skip the scope and reuse prior result. The macro should generate changed bit masks (ints) like Compose instead of per-param heap allocations. Keep a pragmatic stability model: (Implemented - stability annotations pending)
+  - Provide a Stable marker/derive for pure data types; default to equality for non-stable types. (Planned)
+  - Allow a @stable marker in the macro until stability inference matures. (Planned)
 - ApplyChanges loop: apply change ops (Phase 0), then run SideEffect queue (Phase 3 later) in the same frame.
-- Migrate signal-based updates in Text to tracked State reads (no out-of-band patching).
+- Migrate signal-based updates in Text to tracked State reads (no out-of-band patching). (Implemented)
 
 Tests / definition of done
 - Changing one leaf MutableState in a 100-node tree recomposes only the readers (and their ancestors needed to reach them), not the whole tree.

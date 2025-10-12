@@ -253,6 +253,14 @@ pub enum ModOp {
 #[derive(Clone, Default)]
 pub struct Modifier(Rc<Vec<ModOp>>);
 
+impl PartialEq for Modifier {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for Modifier {}
+
 impl Modifier {
     pub fn empty() -> Self {
         Self::default()

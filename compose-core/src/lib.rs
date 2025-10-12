@@ -1,16 +1,110 @@
 #![doc = r"Core runtime pieces for the Compose-RS experiment."]
 
 use std::any::Any;
-use std::cell::{Ref, RefCell, RefMut};
+use std::cell::{Cell, RefCell};
 use std::collections::{hash_map::DefaultHasher, HashSet};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::mem;
 use std::rc::{Rc, Weak};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread_local;
 
 pub type Key = u64;
 pub type NodeId = usize;
+
+type ScopeId = usize;
+
+static NEXT_SCOPE_ID: AtomicUsize = AtomicUsize::new(1);
+
+fn next_scope_id() -> ScopeId {
+    NEXT_SCOPE_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+struct RecomposeScopeInner {
+    id: ScopeId,
+    runtime: RuntimeHandle,
+    invalid: Cell<bool>,
+    enqueued: Cell<bool>,
+    group_index: Cell<Option<usize>>,
+    recompose: RefCell<Option<RecomposeCallback>>,
+}
+
+impl RecomposeScopeInner {
+    fn new(runtime: RuntimeHandle) -> Self {
+        Self {
+            id: next_scope_id(),
+            runtime,
+            invalid: Cell::new(false),
+            enqueued: Cell::new(false),
+            group_index: Cell::new(None),
+            recompose: RefCell::new(None),
+        }
+    }
+}
+
+type RecomposeCallback = Box<dyn for<'a> FnMut(&mut Composer<'a>) + 'static>;
+
+#[derive(Clone)]
+pub struct RecomposeScope {
+    inner: Rc<RecomposeScopeInner>,
+}
+
+impl RecomposeScope {
+    fn new(runtime: RuntimeHandle) -> Self {
+        Self {
+            inner: Rc::new(RecomposeScopeInner::new(runtime)),
+        }
+    }
+
+    fn id(&self) -> ScopeId {
+        self.inner.id
+    }
+
+    pub fn is_invalid(&self) -> bool {
+        self.inner.invalid.get()
+    }
+
+    fn invalidate(&self) {
+        self.inner.invalid.set(true);
+        if !self.inner.enqueued.replace(true) {
+            self.inner
+                .runtime
+                .register_invalid_scope(self.inner.id, Rc::downgrade(&self.inner));
+        }
+    }
+
+    fn mark_recomposed(&self) {
+        self.inner.invalid.set(false);
+        if self.inner.enqueued.replace(false) {
+            self.inner.runtime.mark_scope_recomposed(self.inner.id);
+        }
+    }
+
+    fn downgrade(&self) -> Weak<RecomposeScopeInner> {
+        Rc::downgrade(&self.inner)
+    }
+
+    fn set_group_index(&self, index: usize) {
+        self.inner.group_index.set(Some(index));
+    }
+
+    fn group_index(&self) -> Option<usize> {
+        self.inner.group_index.get()
+    }
+
+    fn set_recompose(&self, callback: RecomposeCallback) {
+        *self.inner.recompose.borrow_mut() = Some(callback);
+    }
+
+    fn run_recompose(&self, composer: &mut Composer<'_>) {
+        let mut callback_cell = self.inner.recompose.borrow_mut();
+        if let Some(mut callback) = callback_cell.take() {
+            drop(callback_cell);
+            callback(composer);
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeError {
@@ -49,12 +143,50 @@ pub fn with_current_composer<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
     })
 }
 
+fn with_current_composer_opt<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> Option<R> {
+    CURRENT_COMPOSER.with(|stack| {
+        let ptr = *stack.borrow().last()?;
+        let composer = unsafe { &mut *(ptr as *mut Composer<'static>) };
+        let composer: &mut Composer<'_> =
+            unsafe { mem::transmute::<&mut Composer<'static>, &mut Composer<'_>>(composer) };
+        Some(f(composer))
+    })
+}
+
 pub fn emit_node<N: Node + 'static>(init: impl FnOnce() -> N) -> NodeId {
     with_current_composer(|composer| composer.emit_node(init))
 }
 
 pub fn with_key<K: Hash>(key: &K, content: impl FnOnce()) {
     with_current_composer(|composer| composer.with_key(key, |_| content()));
+}
+
+pub fn remember<T: 'static>(init: impl FnOnce() -> T) -> &'static mut T {
+    with_current_composer(|composer| {
+        let value = composer.remember(init);
+        unsafe { mem::transmute::<&mut T, &mut T>(value) }
+    })
+}
+
+#[allow(non_snake_case)]
+pub fn mutableStateOf<T: 'static>(initial: T) -> MutableState<T> {
+    with_current_composer(|composer| composer.mutable_state_of(initial))
+}
+
+#[allow(non_snake_case)]
+pub fn derivedStateOf<T: 'static + Clone>(compute: impl Fn() -> T + 'static) -> State<T> {
+    with_current_composer(|composer| {
+        let key = location_key(file!(), line!(), column!());
+        composer.with_group(key, |composer| {
+            let runtime = composer.runtime_handle();
+            let compute_rc: Rc<dyn Fn() -> T> = Rc::new(compute);
+            let derived =
+                composer.remember(|| DerivedState::new(runtime.clone(), compute_rc.clone()));
+            derived.set_compute(compute_rc.clone());
+            derived.recompute();
+            derived.state.as_state()
+        })
+    })
 }
 
 pub fn with_node_mut<N: Node + 'static, R>(
@@ -72,8 +204,8 @@ pub fn pop_parent() {
     with_current_composer(|composer| composer.pop_parent());
 }
 
-pub fn use_state<T: 'static>(init: impl FnOnce() -> T) -> State<T> {
-    with_current_composer(|composer| composer.use_state(init))
+pub fn use_state<T: 'static>(init: impl FnOnce() -> T) -> MutableState<T> {
+    remember(|| mutableStateOf(init())).clone()
 }
 
 pub fn animate_float_as_state(target: f32, label: &str) -> State<f32> {
@@ -84,6 +216,7 @@ pub fn animate_float_as_state(target: f32, label: &str) -> State<f32> {
 struct GroupEntry {
     key: Key,
     end_slot: usize,
+    start_slot: usize,
 }
 
 #[derive(Default)]
@@ -124,6 +257,9 @@ impl SlotTable {
                     let entry = &self.groups[*index];
                     if entry.key == key {
                         self.cursor += 1;
+                        if let Some(entry) = self.groups.get_mut(*index) {
+                            entry.start_slot = cursor;
+                        }
                         self.group_stack.push(GroupFrame { index: *index });
                         return *index;
                     }
@@ -136,7 +272,7 @@ impl SlotTable {
         self.groups.push(GroupEntry {
             key,
             end_slot: cursor,
-            ..Default::default()
+            start_slot: cursor,
         });
         if cursor == self.slots.len() {
             self.slots.push(Slot::Group { index });
@@ -152,6 +288,27 @@ impl SlotTable {
         if let Some(frame) = self.group_stack.pop() {
             if let Some(entry) = self.groups.get_mut(frame.index) {
                 entry.end_slot = self.cursor;
+            }
+        }
+    }
+
+    fn start_recompose(&mut self, index: usize) {
+        if let Some(entry) = self.groups.get(index) {
+            self.cursor = entry.start_slot;
+            self.group_stack.push(GroupFrame { index });
+            self.cursor += 1;
+            if self.cursor < self.slots.len() {
+                if matches!(self.slots.get(self.cursor), Some(Slot::Value(_))) {
+                    self.cursor += 1;
+                }
+            }
+        }
+    }
+
+    fn end_recompose(&mut self) {
+        if let Some(frame) = self.group_stack.pop() {
+            if let Some(entry) = self.groups.get(frame.index) {
+                self.cursor = entry.end_slot;
             }
         }
     }
@@ -332,6 +489,8 @@ impl Applier for MemoryApplier {
 struct RuntimeInner {
     needs_frame: RefCell<bool>,
     node_updates: RefCell<Vec<Command>>,
+    invalid_scopes: RefCell<HashSet<ScopeId>>,
+    scope_queue: RefCell<Vec<(ScopeId, Weak<RecomposeScopeInner>)>>,
 }
 
 impl RuntimeInner {
@@ -349,6 +508,26 @@ impl RuntimeInner {
 
     fn has_updates(&self) -> bool {
         !self.node_updates.borrow().is_empty()
+    }
+
+    fn register_invalid_scope(&self, id: ScopeId, scope: Weak<RecomposeScopeInner>) {
+        let mut invalid = self.invalid_scopes.borrow_mut();
+        if invalid.insert(id) {
+            self.scope_queue.borrow_mut().push((id, scope));
+            self.schedule();
+        }
+    }
+
+    fn mark_scope_recomposed(&self, id: ScopeId) {
+        self.invalid_scopes.borrow_mut().remove(&id);
+    }
+
+    fn take_invalidated_scopes(&self) -> Vec<(ScopeId, Weak<RecomposeScopeInner>)> {
+        self.scope_queue.borrow_mut().drain(..).collect()
+    }
+
+    fn has_invalid_scopes(&self) -> bool {
+        !self.invalid_scopes.borrow().is_empty()
     }
 }
 
@@ -373,6 +552,32 @@ impl RuntimeHandle {
             .upgrade()
             .map(|inner| inner.take_updates())
             .unwrap_or_default()
+    }
+
+    fn register_invalid_scope(&self, id: ScopeId, scope: Weak<RecomposeScopeInner>) {
+        if let Some(inner) = self.0.upgrade() {
+            inner.register_invalid_scope(id, scope);
+        }
+    }
+
+    fn mark_scope_recomposed(&self, id: ScopeId) {
+        if let Some(inner) = self.0.upgrade() {
+            inner.mark_scope_recomposed(id);
+        }
+    }
+
+    pub(crate) fn take_invalidated_scopes(&self) -> Vec<(ScopeId, Weak<RecomposeScopeInner>)> {
+        self.0
+            .upgrade()
+            .map(|inner| inner.take_invalidated_scopes())
+            .unwrap_or_default()
+    }
+
+    fn has_invalid_scopes(&self) -> bool {
+        self.0
+            .upgrade()
+            .map(|inner| inner.has_invalid_scopes())
+            .unwrap_or(false)
     }
 }
 
@@ -421,6 +626,7 @@ pub struct Composer<'a> {
     parent_stack: Vec<ParentFrame>,
     pub(crate) root: Option<NodeId>,
     commands: Vec<Command>,
+    scope_stack: Vec<RecomposeScope>,
 }
 
 #[derive(Default, Clone)]
@@ -449,6 +655,7 @@ impl<'a> Composer<'a> {
             parent_stack: Vec::new(),
             root,
             commands: Vec::new(),
+            scope_stack: Vec::new(),
         }
     }
 
@@ -474,8 +681,16 @@ impl<'a> Composer<'a> {
     }
 
     pub fn with_group<R>(&mut self, key: Key, f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
-        self.slots.start(key);
+        let index = self.slots.start(key);
+        let scope_ref = self
+            .slots
+            .remember(|| RecomposeScope::new(self.runtime.clone()))
+            .clone();
+        scope_ref.set_group_index(index);
+        self.scope_stack.push(scope_ref.clone());
         let result = f(self);
+        self.scope_stack.pop();
+        scope_ref.mark_recomposed();
         self.slots.end();
         result
     }
@@ -489,9 +704,46 @@ impl<'a> Composer<'a> {
         self.slots.remember(init)
     }
 
-    pub fn use_state<T: 'static>(&mut self, init: impl FnOnce() -> T) -> State<T> {
-        let runtime = self.runtime.clone();
-        let state = self.slots.remember(|| State::new(init(), runtime));
+    pub fn mutable_state_of<T: 'static>(&mut self, initial: T) -> MutableState<T> {
+        MutableState::with_runtime(initial, self.runtime.clone())
+    }
+
+    pub fn current_recompose_scope(&self) -> Option<RecomposeScope> {
+        self.scope_stack.last().cloned()
+    }
+
+    pub fn skip_current_group(&mut self) {
+        self.slots.skip_current();
+    }
+
+    pub fn runtime_handle(&self) -> RuntimeHandle {
+        self.runtime.clone()
+    }
+
+    pub fn set_recompose_callback<F>(&mut self, callback: F)
+    where
+        F: for<'b> FnMut(&mut Composer<'b>) + 'static,
+    {
+        if let Some(scope) = self.current_recompose_scope() {
+            scope.set_recompose(Box::new(callback));
+        }
+    }
+
+    fn recompose_group(&mut self, scope: &RecomposeScope) {
+        if let Some(index) = scope.group_index() {
+            self.slots.start_recompose(index);
+            self.scope_stack.push(scope.clone());
+            scope.run_recompose(self);
+            self.scope_stack.pop();
+            self.slots.end_recompose();
+            scope.mark_recomposed();
+        }
+    }
+
+    pub fn use_state<T: 'static>(&mut self, init: impl FnOnce() -> T) -> MutableState<T> {
+        let state = self
+            .slots
+            .remember(|| MutableState::with_runtime(init(), self.runtime.clone()));
         state.clone()
     }
 
@@ -501,7 +753,7 @@ impl<'a> Composer<'a> {
             .slots
             .remember(|| AnimatedFloatState::new(target, runtime));
         animated.update(target, label);
-        animated.state.clone()
+        animated.state.as_state()
     }
 
     pub fn emit_node<N: Node + 'static>(&mut self, init: impl FnOnce() -> N) -> NodeId {
@@ -636,22 +888,165 @@ impl<'a> Composer<'a> {
         }
     }
 
-    pub fn skip_current_group(&mut self) {
-        self.slots.skip_current();
-    }
-
-    pub fn runtime(&self) -> &RuntimeHandle {
-        &self.runtime
-    }
-
     pub fn take_commands(&mut self) -> Vec<Command> {
         std::mem::take(&mut self.commands)
     }
 }
 
+struct MutableStateInner<T> {
+    value: RefCell<T>,
+    watchers: RefCell<Vec<Weak<RecomposeScopeInner>>>,
+    _runtime: RuntimeHandle,
+}
+
 pub struct State<T> {
-    inner: Rc<RefCell<T>>,
-    runtime: RuntimeHandle,
+    inner: Rc<MutableStateInner<T>>,
+}
+
+pub struct MutableState<T> {
+    inner: Rc<MutableStateInner<T>>,
+}
+
+impl<T> PartialEq for State<T> {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.inner, &other.inner)
+    }
+}
+
+impl<T> Eq for State<T> {}
+
+impl<T> Clone for State<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Rc::clone(&self.inner),
+        }
+    }
+}
+
+impl<T> PartialEq for MutableState<T> {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.inner, &other.inner)
+    }
+}
+
+impl<T> Eq for MutableState<T> {}
+
+impl<T> Clone for MutableState<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Rc::clone(&self.inner),
+        }
+    }
+}
+
+impl<T> MutableState<T> {
+    pub fn with_runtime(value: T, runtime: RuntimeHandle) -> Self {
+        Self {
+            inner: Rc::new(MutableStateInner {
+                value: RefCell::new(value),
+                watchers: RefCell::new(Vec::new()),
+                _runtime: runtime,
+            }),
+        }
+    }
+
+    pub fn as_state(&self) -> State<T> {
+        State {
+            inner: Rc::clone(&self.inner),
+        }
+    }
+
+    pub fn set_value(&self, value: T) {
+        *self.inner.value.borrow_mut() = value;
+        let mut watchers = self.inner.watchers.borrow_mut();
+        watchers.retain(|w| w.strong_count() > 0);
+        for watcher in watchers.iter() {
+            if let Some(scope) = watcher.upgrade() {
+                RecomposeScope { inner: scope }.invalidate();
+            }
+        }
+    }
+
+    pub fn set(&self, value: T) {
+        self.set_value(value);
+    }
+}
+
+impl<T: Clone> MutableState<T> {
+    pub fn value(&self) -> T {
+        self.as_state().value()
+    }
+
+    pub fn get(&self) -> T {
+        self.value()
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for MutableState<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MutableState")
+            .field("value", &*self.inner.value.borrow())
+            .finish()
+    }
+}
+
+struct DerivedState<T> {
+    compute: Rc<dyn Fn() -> T>,
+    state: MutableState<T>,
+}
+
+impl<T: Clone> DerivedState<T> {
+    fn new(runtime: RuntimeHandle, compute: Rc<dyn Fn() -> T>) -> Self {
+        let initial = compute();
+        Self {
+            compute,
+            state: MutableState::with_runtime(initial, runtime),
+        }
+    }
+
+    fn set_compute(&mut self, compute: Rc<dyn Fn() -> T>) {
+        self.compute = compute;
+    }
+
+    fn recompute(&self) {
+        let value = (self.compute)();
+        self.state.set_value(value);
+    }
+}
+
+impl<T: Clone> State<T> {
+    fn subscribe_current_scope(&self) {
+        if let Some(Some(scope)) =
+            with_current_composer_opt(|composer| composer.current_recompose_scope())
+        {
+            let mut watchers = self.inner.watchers.borrow_mut();
+            watchers.retain(|w| w.strong_count() > 0);
+            let id = scope.id();
+            let already_registered = watchers
+                .iter()
+                .any(|w| w.upgrade().map(|inner| inner.id == id).unwrap_or(false));
+            if !already_registered {
+                watchers.push(scope.downgrade());
+            }
+        }
+    }
+
+    pub fn value(&self) -> T {
+        self.subscribe_current_scope();
+        self.inner.value.borrow().clone()
+    }
+
+    pub fn get(&self) -> T {
+        self.value()
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for State<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("State")
+            .field("value", &*self.inner.value.borrow())
+            .finish()
+    }
 }
 
 pub struct ParamState<T> {
@@ -670,6 +1065,13 @@ impl<T> ParamState<T> {
                 true
             }
         }
+    }
+
+    pub fn value(&self) -> Option<T>
+    where
+        T: Clone,
+    {
+        self.value.clone()
     }
 }
 
@@ -700,14 +1102,14 @@ impl<T> Default for ReturnSlot<T> {
 }
 
 struct AnimatedFloatState {
-    state: State<f32>,
+    state: MutableState<f32>,
     current: f32,
 }
 
 impl AnimatedFloatState {
     fn new(initial: f32, runtime: RuntimeHandle) -> Self {
         Self {
-            state: State::new(initial, runtime),
+            state: MutableState::with_runtime(initial, runtime),
             current: initial,
         }
     }
@@ -715,54 +1117,8 @@ impl AnimatedFloatState {
     fn update(&mut self, target: f32, _label: &str) {
         if self.current != target {
             self.current = target;
-            *self.state.inner.borrow_mut() = target;
+            self.state.set_value(target);
         }
-    }
-}
-
-impl<T> State<T> {
-    pub fn new(value: T, runtime: RuntimeHandle) -> Self {
-        Self {
-            inner: Rc::new(RefCell::new(value)),
-            runtime,
-        }
-    }
-
-    pub fn get(&self) -> T
-    where
-        T: Clone,
-    {
-        self.inner.borrow().clone()
-    }
-
-    pub fn set(&self, value: T) {
-        *self.inner.borrow_mut() = value;
-        self.runtime.schedule();
-    }
-
-    pub fn borrow(&self) -> Ref<'_, T> {
-        self.inner.borrow()
-    }
-
-    pub fn borrow_mut(&self) -> RefMut<'_, T> {
-        self.inner.borrow_mut()
-    }
-}
-
-impl<T> Clone for State<T> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: Rc::clone(&self.inner),
-            runtime: self.runtime.clone(),
-        }
-    }
-}
-
-impl<T: fmt::Debug> fmt::Debug for State<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("State")
-            .field("value", &*self.inner.borrow())
-            .finish()
     }
 }
 
@@ -785,10 +1141,14 @@ impl<A: Applier> Composition<A> {
 
     pub fn render(&mut self, key: Key, mut content: impl FnMut()) -> Result<(), NodeError> {
         self.slots.reset();
-        let (root, mut commands) = {
-            let runtime = RuntimeHandle(Rc::downgrade(&self.runtime));
-            let mut composer =
-                Composer::new(&mut self.slots, &mut self.applier, runtime, self.root);
+        let runtime_handle = self.runtime_handle();
+        let (root, commands) = {
+            let mut composer = Composer::new(
+                &mut self.slots,
+                &mut self.applier,
+                runtime_handle.clone(),
+                self.root,
+            );
             composer.install(|composer| {
                 composer.with_group(key, |_| content());
                 let root = composer.root;
@@ -796,15 +1156,18 @@ impl<A: Applier> Composition<A> {
                 (root, commands)
             })
         };
-        for command in commands.iter_mut() {
+        for mut command in commands {
             command(&mut self.applier)?;
         }
-        for mut command in RuntimeHandle(Rc::downgrade(&self.runtime)).take_updates() {
+        for mut command in runtime_handle.take_updates() {
             command(&mut self.applier)?;
         }
         self.root = root;
         self.slots.trim_to_cursor();
-        *self.runtime.needs_frame.borrow_mut() = false;
+        self.process_invalid_scopes()?;
+        if !self.runtime.has_updates() && !runtime_handle.has_invalid_scopes() {
+            *self.runtime.needs_frame.borrow_mut() = false;
+        }
         Ok(())
     }
 
@@ -822,6 +1185,53 @@ impl<A: Applier> Composition<A> {
 
     pub fn root(&self) -> Option<NodeId> {
         self.root
+    }
+
+    pub fn process_invalid_scopes(&mut self) -> Result<(), NodeError> {
+        let runtime_handle = self.runtime_handle();
+        loop {
+            let pending = runtime_handle.take_invalidated_scopes();
+            if pending.is_empty() {
+                break;
+            }
+            let mut scopes = Vec::new();
+            for (id, weak) in pending {
+                if let Some(inner) = weak.upgrade() {
+                    scopes.push(RecomposeScope { inner });
+                } else {
+                    runtime_handle.mark_scope_recomposed(id);
+                }
+            }
+            if scopes.is_empty() {
+                continue;
+            }
+            let runtime_clone = runtime_handle.clone();
+            let (root, commands) = {
+                self.slots.reset();
+                let mut composer =
+                    Composer::new(&mut self.slots, &mut self.applier, runtime_clone, self.root);
+                composer.install(|composer| {
+                    for scope in scopes.iter() {
+                        composer.recompose_group(scope);
+                    }
+                    let root = composer.root;
+                    let commands = composer.take_commands();
+                    (root, commands)
+                })
+            };
+            self.root = root;
+            for mut command in commands {
+                command(&mut self.applier)?;
+            }
+            for mut update in runtime_handle.take_updates() {
+                update(&mut self.applier)?;
+            }
+            self.slots.trim_to_cursor();
+        }
+        if !self.runtime.has_updates() && !runtime_handle.has_invalid_scopes() {
+            *self.runtime.needs_frame.borrow_mut() = false;
+        }
+        Ok(())
     }
 
     pub fn flush_pending_node_updates(&mut self) -> Result<(), NodeError> {
@@ -867,6 +1277,13 @@ mod tests {
         static INVOCATIONS: Cell<usize> = Cell::new(0);
     }
 
+    thread_local! {
+        static PARENT_RECOMPOSITIONS: Cell<usize> = Cell::new(0);
+        static CHILD_RECOMPOSITIONS: Cell<usize> = Cell::new(0);
+        static CAPTURED_PARENT_STATE: RefCell<Option<compose_core::MutableState<i32>>> =
+            RefCell::new(None);
+    }
+
     #[test]
     fn slot_table_remember_replaces_mismatched_type() {
         let mut slots = SlotTable::new();
@@ -900,6 +1317,24 @@ mod tests {
         })
         .expect("update text node");
         id
+    }
+
+    #[composable]
+    fn child_reads_state(state: compose_core::State<i32>) -> NodeId {
+        CHILD_RECOMPOSITIONS.with(|calls| calls.set(calls.get() + 1));
+        counted_text(state.value())
+    }
+
+    #[composable]
+    fn parent_passes_state() -> NodeId {
+        PARENT_RECOMPOSITIONS.with(|calls| calls.set(calls.get() + 1));
+        let state = compose_core::use_state(|| 0);
+        CAPTURED_PARENT_STATE.with(|slot| {
+            if slot.borrow().is_none() {
+                *slot.borrow_mut() = Some(state.clone());
+            }
+        });
+        child_reads_state(state.as_state())
     }
 
     #[test]
@@ -939,6 +1374,7 @@ mod tests {
         composition
             .render(location_key(file!(), line!(), column!()), || {
                 let state = use_state(|| 10);
+                let _ = state.value();
                 stored = Some(state);
             })
             .expect("render succeeds");
@@ -946,6 +1382,43 @@ mod tests {
         assert!(!composition.should_render());
         state.set(11);
         assert!(composition.should_render());
+    }
+
+    #[test]
+    fn state_invalidation_skips_parent_scope() {
+        PARENT_RECOMPOSITIONS.with(|calls| calls.set(0));
+        CHILD_RECOMPOSITIONS.with(|calls| calls.set(0));
+        CAPTURED_PARENT_STATE.with(|slot| *slot.borrow_mut() = None);
+
+        let mut composition = Composition::new(MemoryApplier::new());
+        let root_key = location_key(file!(), line!(), column!());
+
+        composition
+            .render(root_key, || {
+                parent_passes_state();
+            })
+            .expect("initial render succeeds");
+
+        PARENT_RECOMPOSITIONS.with(|calls| assert_eq!(calls.get(), 1));
+        CHILD_RECOMPOSITIONS.with(|calls| assert_eq!(calls.get(), 1));
+
+        let state = CAPTURED_PARENT_STATE
+            .with(|slot| slot.borrow().clone())
+            .expect("captured state");
+
+        PARENT_RECOMPOSITIONS.with(|calls| calls.set(0));
+        CHILD_RECOMPOSITIONS.with(|calls| calls.set(0));
+
+        state.set(1);
+        assert!(composition.should_render());
+
+        composition
+            .process_invalid_scopes()
+            .expect("process invalid scopes succeeds");
+
+        PARENT_RECOMPOSITIONS.with(|calls| assert_eq!(calls.get(), 0));
+        CHILD_RECOMPOSITIONS.with(|calls| assert!(calls.get() > 0));
+        assert!(!composition.should_render());
     }
 
     #[test]

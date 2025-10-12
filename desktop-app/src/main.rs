@@ -28,11 +28,11 @@ static FONT: Lazy<Font<'static>> = Lazy::new(|| {
 });
 
 thread_local! {
-    static CURRENT_ANIMATION_STATE: RefCell<Option<compose_core::State<f32>>> =
+    static CURRENT_ANIMATION_STATE: RefCell<Option<compose_core::MutableState<f32>>> =
         RefCell::new(None);
 }
 
-fn with_animation_state<R>(state: &compose_core::State<f32>, f: impl FnOnce() -> R) -> R {
+fn with_animation_state<R>(state: &compose_core::MutableState<f32>, f: impl FnOnce() -> R) -> R {
     CURRENT_ANIMATION_STATE.with(|cell| {
         let previous = cell.replace(Some(state.clone()));
         let result = f();
@@ -41,7 +41,7 @@ fn with_animation_state<R>(state: &compose_core::State<f32>, f: impl FnOnce() ->
     })
 }
 
-fn animation_state() -> compose_core::State<f32> {
+fn animation_state() -> compose_core::MutableState<f32> {
     CURRENT_ANIMATION_STATE.with(|cell| {
         cell.borrow()
             .as_ref()
@@ -139,12 +139,11 @@ fn main() {
 
 struct ComposeDesktopApp {
     composition: Composition<MemoryApplier>,
-    root_key: Key,
     scene: Scene,
     cursor: (f32, f32),
     viewport: (f32, f32),
     buffer_size: (u32, u32),
-    animation_state: compose_core::State<f32>,
+    animation_state: compose_core::MutableState<f32>,
     animation_phase: f32,
     last_frame: Instant,
 }
@@ -153,7 +152,7 @@ impl ComposeDesktopApp {
     fn new(root_key: Key) -> Self {
         let mut composition = Composition::new(MemoryApplier::new());
         let runtime = composition.runtime_handle();
-        let animation_state = compose_core::State::new(0.0, runtime.clone());
+        let animation_state = compose_core::MutableState::with_runtime(0.0, runtime.clone());
         if let Err(err) = composition.render(root_key, || {
             with_animation_state(&animation_state, || counter_app())
         }) {
@@ -162,7 +161,6 @@ impl ComposeDesktopApp {
         let scene = Scene::new();
         let mut app = Self {
             composition,
-            root_key,
             scene,
             cursor: (0.0, 0.0),
             viewport: (INITIAL_WIDTH as f32, INITIAL_HEIGHT as f32),
@@ -224,10 +222,10 @@ impl ComposeDesktopApp {
         self.animation_state.set(animation_value);
         if self.composition.should_render() {
             let state = self.animation_state.clone();
-            if let Err(err) = self.composition.render(self.root_key, || {
-                with_animation_state(&state, || counter_app())
-            }) {
-                log::error!("render failed: {err}");
+            if let Err(err) =
+                with_animation_state(&state, || self.composition.process_invalid_scopes())
+            {
+                log::error!("recomposition failed: {err}");
             }
             self.rebuild_scene();
         }
