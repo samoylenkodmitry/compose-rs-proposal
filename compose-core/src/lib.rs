@@ -72,8 +72,33 @@ pub fn pop_parent() {
     with_current_composer(|composer| composer.pop_parent());
 }
 
-pub fn use_state<T: 'static>(init: impl FnOnce() -> T) -> State<T> {
-    with_current_composer(|composer| composer.use_state(init))
+pub fn remember<T: Clone + 'static>(init: impl FnOnce() -> T) -> T {
+    with_current_composer(|composer| composer.remember(init).clone())
+}
+
+#[allow(non_snake_case)]
+pub fn mutableStateOf<T: 'static>(value: T) -> MutableState<T> {
+    with_current_composer(|composer| MutableState::new(value, composer.runtime().clone()))
+}
+
+pub fn mutable_state_of<T: 'static>(value: T) -> MutableState<T> {
+    mutableStateOf(value)
+}
+
+#[allow(non_snake_case)]
+pub fn derivedStateOf<T: PartialEq + Clone + 'static>(
+    calculation: impl Fn() -> T + 'static,
+) -> State<T> {
+    with_current_composer(|composer| composer.derived_state_of(calculation))
+}
+
+pub fn use_state<T: Clone + 'static>(init: impl FnOnce() -> T) -> MutableState<T> {
+    remember(|| mutableStateOf(init()))
+}
+
+#[allow(non_snake_case)]
+pub fn useState<T: Clone + 'static>(init: impl FnOnce() -> T) -> MutableState<T> {
+    use_state(init)
 }
 
 pub fn animate_float_as_state(target: f32, label: &str) -> State<f32> {
@@ -489,9 +514,11 @@ impl<'a> Composer<'a> {
         self.slots.remember(init)
     }
 
-    pub fn use_state<T: 'static>(&mut self, init: impl FnOnce() -> T) -> State<T> {
+    pub fn use_state<T: Clone + 'static>(&mut self, init: impl FnOnce() -> T) -> MutableState<T> {
         let runtime = self.runtime.clone();
-        let state = self.slots.remember(|| State::new(init(), runtime));
+        let state = self
+            .slots
+            .remember(|| MutableState::new(init(), runtime.clone()));
         state.clone()
     }
 
@@ -501,7 +528,20 @@ impl<'a> Composer<'a> {
             .slots
             .remember(|| AnimatedFloatState::new(target, runtime));
         animated.update(target, label);
-        animated.state.clone()
+        animated.state()
+    }
+
+    pub fn derived_state_of<T: PartialEq + Clone + 'static>(
+        &mut self,
+        calculation: impl Fn() -> T + 'static,
+    ) -> State<T> {
+        let runtime = self.runtime.clone();
+        let compute = Rc::new(calculation);
+        let slot = self
+            .slots
+            .remember(|| DerivedStateSlot::new(compute.clone(), runtime));
+        slot.recompute();
+        slot.state()
     }
 
     pub fn emit_node<N: Node + 'static>(&mut self, init: impl FnOnce() -> N) -> NodeId {
@@ -649,8 +689,13 @@ impl<'a> Composer<'a> {
     }
 }
 
+#[derive(Clone)]
 pub struct State<T> {
     inner: Rc<RefCell<T>>,
+}
+
+pub struct MutableState<T> {
+    state: State<T>,
     runtime: RuntimeHandle,
 }
 
@@ -700,14 +745,14 @@ impl<T> Default for ReturnSlot<T> {
 }
 
 struct AnimatedFloatState {
-    state: State<f32>,
+    state: MutableState<f32>,
     current: f32,
 }
 
 impl AnimatedFloatState {
     fn new(initial: f32, runtime: RuntimeHandle) -> Self {
         Self {
-            state: State::new(initial, runtime),
+            state: MutableState::new(initial, runtime),
             current: initial,
         }
     }
@@ -715,46 +760,68 @@ impl AnimatedFloatState {
     fn update(&mut self, target: f32, _label: &str) {
         if self.current != target {
             self.current = target;
-            *self.state.inner.borrow_mut() = target;
+            self.state.set_value(target);
         }
+    }
+
+    fn state(&self) -> State<f32> {
+        self.state.as_state()
+    }
+}
+
+struct DerivedStateSlot<T> {
+    compute: Rc<dyn Fn() -> T>,
+    state: MutableState<T>,
+}
+
+impl<T: PartialEq + Clone + 'static> DerivedStateSlot<T> {
+    fn new(compute: Rc<dyn Fn() -> T>, runtime: RuntimeHandle) -> Self {
+        let initial = compute();
+        Self {
+            compute,
+            state: MutableState::new(initial, runtime),
+        }
+    }
+
+    fn recompute(&mut self) {
+        let new_value = (self.compute)();
+        if self.state.get() != new_value {
+            self.state.set(new_value);
+        }
+    }
+
+    fn state(&self) -> State<T> {
+        self.state.as_state()
     }
 }
 
 impl<T> State<T> {
-    pub fn new(value: T, runtime: RuntimeHandle) -> Self {
+    fn new(value: T) -> Self {
         Self {
             inner: Rc::new(RefCell::new(value)),
-            runtime,
         }
     }
 
-    pub fn get(&self) -> T
+    fn from_inner(inner: Rc<RefCell<T>>) -> Self {
+        Self { inner }
+    }
+
+    pub fn value(&self) -> T
     where
         T: Clone,
     {
         self.inner.borrow().clone()
     }
 
-    pub fn set(&self, value: T) {
-        *self.inner.borrow_mut() = value;
-        self.runtime.schedule();
+    pub fn get(&self) -> T
+    where
+        T: Clone,
+    {
+        self.value()
     }
 
     pub fn borrow(&self) -> Ref<'_, T> {
         self.inner.borrow()
-    }
-
-    pub fn borrow_mut(&self) -> RefMut<'_, T> {
-        self.inner.borrow_mut()
-    }
-}
-
-impl<T> Clone for State<T> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: Rc::clone(&self.inner),
-            runtime: self.runtime.clone(),
-        }
     }
 }
 
@@ -762,6 +829,67 @@ impl<T: fmt::Debug> fmt::Debug for State<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("State")
             .field("value", &*self.inner.borrow())
+            .finish()
+    }
+}
+
+impl<T> MutableState<T> {
+    pub fn new(value: T, runtime: RuntimeHandle) -> Self {
+        Self {
+            state: State::new(value),
+            runtime,
+        }
+    }
+
+    pub fn value(&self) -> T
+    where
+        T: Clone,
+    {
+        self.state.value()
+    }
+
+    pub fn set_value(&self, value: T) {
+        *self.state.inner.borrow_mut() = value;
+        self.runtime.schedule();
+    }
+
+    pub fn get(&self) -> T
+    where
+        T: Clone,
+    {
+        self.value()
+    }
+
+    pub fn set(&self, value: T) {
+        self.set_value(value);
+    }
+
+    pub fn borrow(&self) -> Ref<'_, T> {
+        self.state.borrow()
+    }
+
+    pub fn borrow_mut(&self) -> RefMut<'_, T> {
+        self.state.inner.borrow_mut()
+    }
+
+    pub fn as_state(&self) -> State<T> {
+        State::from_inner(Rc::clone(&self.state.inner))
+    }
+}
+
+impl<T> Clone for MutableState<T> {
+    fn clone(&self) -> Self {
+        Self {
+            state: self.as_state(),
+            runtime: self.runtime.clone(),
+        }
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for MutableState<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MutableState")
+            .field("value", &*self.state.inner.borrow())
             .finish()
     }
 }
@@ -914,7 +1042,7 @@ mod tests {
                         composer.with_group(
                             location_key(file!(), line!(), column!()),
                             |composer| {
-                                let count = composer.use_state(|| 0);
+                                let count = remember(|| mutableStateOf(0));
                                 let node_id = composer.emit_node(|| TextNode::default());
                                 composer
                                     .with_node_mut(node_id, |node: &mut TextNode| {
@@ -938,7 +1066,7 @@ mod tests {
         let mut stored = None;
         composition
             .render(location_key(file!(), line!(), column!()), || {
-                let state = use_state(|| 10);
+                let state = remember(|| mutableStateOf(10));
                 stored = Some(state);
             })
             .expect("render succeeds");

@@ -6,8 +6,8 @@ Goal
 
 Naming and API normalization
 - Public API uses lowerCamelCase names that mirror Kotlin closely.
-- Provide remember, mutableStateOf, derivedStateOf, State<T>, MutableState<T>.
-- Replace use_state with remember { mutableStateOf(...) } (keep a temporary alias useState for migration if desired).
+- Provide remember, mutableStateOf, derivedStateOf, State<T>, MutableState<T>. (Implemented)
+- Replace use_state with remember { mutableStateOf(...) } (keep a temporary alias useState for migration if desired). (Implemented)
 - Replace emit_node and similar internals from the public surface. Node creation happens inside composables; any remaining low-level helpers are internal-only.
 - Functions like with_key -> withKey; with_current_composer -> withCurrentComposer kept internal; public API is composables and Modifiers.
 - Prefer Rust ergonomics where it doesn’t change behavior, but match Kotlin naming and call shapes for public API.
@@ -45,6 +45,7 @@ Deliverables
   - interface State<T> { val value: T }
   - interface MutableState<T> : State<T> { override var value: T }
   - derivedStateOf { … }: recomputes lazily, invalidates readers when source states change.
+  (remember/mutableStateOf/derivedStateOf now available in compose-core; derivedStateOf currently recomputes eagerly.)
 - Skip logic: when parameters are stable and equal and no local invalidations exist, skip the scope and reuse prior result. The macro should generate changed bit masks (ints) like Compose instead of per-param heap allocations. Keep a pragmatic stability model:
   - Provide a Stable marker/derive for pure data types; default to equality for non-stable types.
   - Allow a @stable marker in the macro until stability inference matures.

@@ -28,11 +28,11 @@ static FONT: Lazy<Font<'static>> = Lazy::new(|| {
 });
 
 thread_local! {
-    static CURRENT_ANIMATION_STATE: RefCell<Option<compose_core::State<f32>>> =
+    static CURRENT_ANIMATION_STATE: RefCell<Option<compose_core::MutableState<f32>>> =
         RefCell::new(None);
 }
 
-fn with_animation_state<R>(state: &compose_core::State<f32>, f: impl FnOnce() -> R) -> R {
+fn with_animation_state<R>(state: &compose_core::MutableState<f32>, f: impl FnOnce() -> R) -> R {
     CURRENT_ANIMATION_STATE.with(|cell| {
         let previous = cell.replace(Some(state.clone()));
         let result = f();
@@ -41,7 +41,7 @@ fn with_animation_state<R>(state: &compose_core::State<f32>, f: impl FnOnce() ->
     })
 }
 
-fn animation_state() -> compose_core::State<f32> {
+fn animation_state() -> compose_core::MutableState<f32> {
     CURRENT_ANIMATION_STATE.with(|cell| {
         cell.borrow()
             .as_ref()
@@ -144,7 +144,7 @@ struct ComposeDesktopApp {
     cursor: (f32, f32),
     viewport: (f32, f32),
     buffer_size: (u32, u32),
-    animation_state: compose_core::State<f32>,
+    animation_state: compose_core::MutableState<f32>,
     animation_phase: f32,
     last_frame: Instant,
 }
@@ -153,7 +153,7 @@ impl ComposeDesktopApp {
     fn new(root_key: Key) -> Self {
         let mut composition = Composition::new(MemoryApplier::new());
         let runtime = composition.runtime_handle();
-        let animation_state = compose_core::State::new(0.0, runtime.clone());
+        let animation_state = compose_core::MutableState::new(0.0, runtime.clone());
         if let Err(err) = composition.render(root_key, || {
             with_animation_state(&animation_state, || counter_app())
         }) {
@@ -261,9 +261,10 @@ impl ComposeDesktopApp {
 
 #[composable]
 fn counter_app() {
-    let counter = compose_core::use_state(|| 0);
-    let pointer_position = compose_core::use_state(|| Point { x: 0.0, y: 0.0 });
-    let pointer_down = compose_core::use_state(|| false);
+    let counter = compose_core::remember(|| compose_core::mutableStateOf(0));
+    let pointer_position =
+        compose_core::remember(|| compose_core::mutableStateOf(Point { x: 0.0, y: 0.0 }));
+    let pointer_down = compose_core::remember(|| compose_core::mutableStateOf(false));
     let wave_state = animation_state();
     let wave = wave_state.get();
 
