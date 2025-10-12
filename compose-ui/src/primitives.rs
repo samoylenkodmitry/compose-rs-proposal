@@ -24,6 +24,20 @@ impl Node for ColumnNode {
         self.children.shift_remove(&child);
     }
 
+    fn move_child(&mut self, from: usize, to: usize) {
+        if from == to || from >= self.children.len() {
+            return;
+        }
+        let mut ordered: Vec<NodeId> = self.children.iter().copied().collect();
+        let child = ordered.remove(from);
+        let target = to.min(ordered.len());
+        ordered.insert(target, child);
+        self.children.clear();
+        for id in ordered {
+            self.children.insert(id);
+        }
+    }
+
     fn update_children(&mut self, children: &[NodeId]) {
         self.children.clear();
         for &child in children {
@@ -45,6 +59,20 @@ impl Node for RowNode {
 
     fn remove_child(&mut self, child: NodeId) {
         self.children.shift_remove(&child);
+    }
+
+    fn move_child(&mut self, from: usize, to: usize) {
+        if from == to || from >= self.children.len() {
+            return;
+        }
+        let mut ordered: Vec<NodeId> = self.children.iter().copied().collect();
+        let child = ordered.remove(from);
+        let target = to.min(ordered.len());
+        ordered.insert(target, child);
+        self.children.clear();
+        for id in ordered {
+            self.children.insert(id);
+        }
     }
 
     fn update_children(&mut self, children: &[NodeId]) {
@@ -105,6 +133,20 @@ impl Node for ButtonNode {
 
     fn remove_child(&mut self, child: NodeId) {
         self.children.shift_remove(&child);
+    }
+
+    fn move_child(&mut self, from: usize, to: usize) {
+        if from == to || from >= self.children.len() {
+            return;
+        }
+        let mut ordered: Vec<NodeId> = self.children.iter().copied().collect();
+        let child = ordered.remove(from);
+        let target = to.min(ordered.len());
+        ordered.insert(target, child);
+        self.children.clear();
+        for id in ordered {
+            self.children.insert(id);
+        }
     }
 
     fn update_children(&mut self, children: &[NodeId]) {
