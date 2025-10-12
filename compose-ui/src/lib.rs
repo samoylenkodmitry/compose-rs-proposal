@@ -9,6 +9,9 @@ mod modifier;
 mod primitives;
 mod renderer;
 
+/// Default text size used by Compose-RS widgets when measuring and rendering text.
+pub const DEFAULT_TEXT_SIZE: f32 = 24.0;
+
 pub use layout::{LayoutBox, LayoutEngine, LayoutTree};
 pub use modifier::{
     Brush, Color, CornerRadii, DrawCommand, DrawPrimitive, GraphicsLayer, Modifier, Point,

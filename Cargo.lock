@@ -355,6 +355,7 @@ dependencies = [
  "compose-macros",
  "criterion",
  "indexmap 2.11.4",
+ "rusttype",
  "taffy",
 ]
 

@@ -1,8 +1,12 @@
+use std::sync::OnceLock;
+
 use compose_core::{MemoryApplier, Node, NodeError, NodeId};
+use rusttype::{point, Font, Scale};
 use taffy::prelude::*;
 
 use crate::modifier::{Modifier, Rect as GeometryRect, Size};
 use crate::primitives::{ButtonNode, ColumnNode, RowNode, SpacerNode, TextNode};
+use crate::DEFAULT_TEXT_SIZE;
 
 /// Result of running layout for a Compose tree.
 #[derive(Debug, Clone)]
@@ -276,12 +280,40 @@ fn text_style(modifier: &Modifier, text: &str) -> Style {
     style
 }
 
+static FONT: OnceLock<Font<'static>> = OnceLock::new();
+
+fn font() -> &'static Font<'static> {
+    FONT.get_or_init(|| {
+        Font::try_from_bytes(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../desktop-app/assets/Roboto-Light.ttf"
+        )) as &[u8])
+        .expect("font")
+    })
+}
+
 fn measure_text(text: &str) -> Size {
-    let width = (text.chars().count() as f32) * 8.0;
-    Size {
-        width,
-        height: 20.0,
-    }
+    let scale = Scale::uniform(DEFAULT_TEXT_SIZE);
+    let font = font();
+    let v_metrics = font.v_metrics(scale);
+    let glyphs: Vec<_> = font.layout(text, scale, point(0.0, 0.0)).collect();
+    let max_x = glyphs
+        .iter()
+        .filter_map(|g| g.pixel_bounding_box().map(|bb| bb.max.x as f32))
+        .fold(0.0, f32::max);
+    let min_x = glyphs
+        .iter()
+        .filter_map(|g| g.pixel_bounding_box().map(|bb| bb.min.x as f32))
+        .fold(f32::INFINITY, f32::min);
+    let width = if glyphs.is_empty() {
+        0.0
+    } else if min_x.is_infinite() {
+        max_x
+    } else {
+        (max_x - min_x).max(0.0)
+    };
+    let height = (v_metrics.ascent - v_metrics.descent).ceil();
+    Size { width, height }
 }
 
 fn uniform_padding(padding: f32) -> taffy::prelude::Rect<LengthPercentage> {

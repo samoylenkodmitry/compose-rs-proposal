@@ -7,7 +7,7 @@ use compose_ui::{
     composable, Brush, Button, ButtonNode, Color, Column, ColumnNode, CornerRadii, DrawCommand,
     DrawPrimitive, GraphicsLayer, LayoutBox, LayoutEngine, Modifier, Point, PointerEvent,
     PointerEventKind, Rect, RoundedCornerShape, Row, RowNode, Size, Spacer, SpacerNode, Text,
-    TextNode,
+    TextNode, DEFAULT_TEXT_SIZE,
 };
 use once_cell::sync::Lazy;
 use pixels::{Pixels, SurfaceTexture};
@@ -19,7 +19,7 @@ use winit::window::WindowBuilder;
 
 const INITIAL_WIDTH: u32 = 800;
 const INITIAL_HEIGHT: u32 = 600;
-const TEXT_SIZE: f32 = 24.0;
+const TEXT_SIZE: f32 = DEFAULT_TEXT_SIZE;
 const TWO_PI: f32 = std::f32::consts::PI * 2.0;
 
 static FONT: Lazy<Font<'static>> = Lazy::new(|| {

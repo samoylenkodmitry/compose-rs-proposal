@@ -10,6 +10,7 @@ compose-core = { path = "../compose-core" }
 compose-macros = { path = "../compose-macros" }
 indexmap = "2"
 taffy = "0.3"
+rusttype = "0.9"
 
 [features]
 default = []
