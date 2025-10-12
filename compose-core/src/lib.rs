@@ -172,7 +172,7 @@ impl SlotTable {
                     self.cursor += 1;
                     return unsafe { &mut *ptr };
                 } else {
-                    panic!("type mismatch in remember");
+                    self.slots.truncate(cursor);
                 }
             }
             self.slots.truncate(cursor);
@@ -865,6 +865,30 @@ mod tests {
 
     thread_local! {
         static INVOCATIONS: Cell<usize> = Cell::new(0);
+    }
+
+    #[test]
+    fn slot_table_remember_replaces_mismatched_type() {
+        let mut slots = SlotTable::new();
+
+        {
+            let value = slots.remember(|| 42i32);
+            assert_eq!(*value, 42);
+        }
+
+        slots.reset();
+
+        {
+            let value = slots.remember(|| "updated");
+            assert_eq!(*value, "updated");
+        }
+
+        slots.reset();
+
+        {
+            let value = slots.remember(|| "should not run");
+            assert_eq!(*value, "updated");
+        }
     }
 
     #[composable]
