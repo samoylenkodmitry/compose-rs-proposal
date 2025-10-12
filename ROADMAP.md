@@ -19,7 +19,7 @@ Context and why
 Deliverables
 - Node lifecycle: mount called on create, update on reuse, unmount on removal (post-order).
 - Change list generation: insert, move, remove child operations (incremental), not only update_children. Expose applier ops for insertChild(index), moveChild(from, to), removeChild(index). (Implemented)
-- Slot model resilience:
+- Slot model resilience (Implemented):
   - No panics on type/shape mismatch; dispose old subtree and write new content.
   - Keys/anchors per group; removing or replacing a group disposes its subtree and remembered values.
   - Remembered values support disposal when replaced or the group is removed (hook for Phase 3 RememberObserver).
