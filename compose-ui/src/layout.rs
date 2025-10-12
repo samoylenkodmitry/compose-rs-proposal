@@ -297,22 +297,35 @@ fn measure_text(text: &str) -> Size {
     let font = font();
     let v_metrics = font.v_metrics(scale);
     let glyphs: Vec<_> = font.layout(text, scale, point(0.0, 0.0)).collect();
-    let max_x = glyphs
-        .iter()
-        .filter_map(|g| g.pixel_bounding_box().map(|bb| bb.max.x as f32))
-        .fold(0.0, f32::max);
-    let min_x = glyphs
-        .iter()
-        .filter_map(|g| g.pixel_bounding_box().map(|bb| bb.min.x as f32))
-        .fold(f32::INFINITY, f32::min);
-    let width = if glyphs.is_empty() {
-        0.0
-    } else if min_x.is_infinite() {
-        max_x
-    } else {
-        (max_x - min_x).max(0.0)
-    };
-    let height = (v_metrics.ascent - v_metrics.descent).ceil();
+
+    if glyphs.is_empty() {
+        return Size { width: 0.0, height: (v_metrics.ascent - v_metrics.descent).ceil() };
+    }
+
+    let mut min_x = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+
+    for glyph in &glyphs {
+        let h_metrics = glyph.unpositioned().h_metrics();
+        let positioned = glyph.position().x;
+        min_x = min_x.min(positioned + h_metrics.left_side_bearing);
+        max_x = max_x.max(positioned + h_metrics.advance_width);
+
+        if let Some(bb) = glyph.pixel_bounding_box() {
+            min_x = min_x.min(bb.min.x as f32);
+            max_x = max_x.max(bb.max.x as f32);
+        }
+    }
+
+    if min_x.is_infinite() {
+        min_x = 0.0;
+    }
+    if max_x.is_infinite() {
+        max_x = 0.0;
+    }
+
+    let width = (max_x - min_x).max(0.0);
+    let height = (v_metrics.ascent - v_metrics.descent + v_metrics.line_gap).ceil();
     Size { width, height }
 }
 
