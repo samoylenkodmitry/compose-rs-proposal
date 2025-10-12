@@ -1,381 +1,181 @@
-# ROADMAP: Jetpack Compose–Compatible **Text** API for Compose‑RS
-
-> **Goal**: Deliver a 1:1 user‑facing `Text` API compatible with Android Jetpack Compose (incl. `AnnotatedString`, `SpanStyle`, gradients, shadows, `TextStyle`, `TextOverflow.Ellipsis`, `maxLines`, `softWrap`, `onTextLayout`, link annotations, marquee, hyphenation & line‑break policies) while remaining **portable** (desktop, mobile, WASM) and **tweakable per platform** with **pluggable text engines** and **optional embedded fonts**.
-
----
-
-## 0) Principles & Non‑Goals
-
-- **Parity first:** Mirror Jetpack Compose semantics where it makes sense in Rust. If a divergence is necessary, provide a shim/alias so user code remains ergonomic.
-- **Pluggable engines:** Keep a **thin engine facade**; allow multiple implementations (small/fast vs. feature‑rich) and select **per target** (compile‑time features) or **at runtime** (registry).
-- **Measured leaves:** Text is a **taffy measured leaf** (no static width guesses). Measurement must reflect constraints, style, DPI, wrapping, and overflow rules.
-- **No global blockers:** All dependencies are **pure Rust**; no C toolchains required.
-- **Non‑goals:** Rich text editing, IME, selection/handles (future work).
-
----
-
-## 1) Public API (User‑Facing) — **Compose Parity**
-
-### 1.1 `Text` function signatures
-
-Provide overloads similar to Compose. The primary entrypoint accepts either a `String` or an `AnnotatedString` plus style/behavior knobs:
-
-```rust
-#[composable(no_skip)]
-pub fn Text(
-  text: impl Into<TextContent>,              // String | AnnotatedString
-  modifier: Modifier,
-  style: TextStyle,                          // paragraph-level defaults
-  // top-level span defaults (compose allows both top-level & style):
-  color: Option<Color>,
-  brush: Option<Brush>,                      // gradient fills
-  font_size: Option<Sp>,
-  font_weight: Option<FontWeight>,
-  font_style: Option<FontStyle>,
-  letter_spacing: Option<Sp>,
-  text_decoration: Option<TextDecoration>,
-  text_align: Option<TextAlign>,
-  line_height: Option<Sp>,
-  overflow: TextOverflow,                    // Clip | Ellipsis | Visible
-  max_lines: Option<usize>,
-  soft_wrap: bool,
-  // callbacks:
-  on_text_layout: Option<Rc<dyn Fn(&TextLayoutResult)>>,
-  on_text_click: Option<Rc<dyn Fn(TextLink)>>,
-) -> NodeId
-```
-
-Sugar overloads:
-```rust
-pub fn Text(text: &str, modifier: Modifier) -> NodeId { /* builds defaults */ }
-pub fn Text(text: AnnotatedString, modifier: Modifier, style: TextStyle) -> NodeId { /* ... */ }
-```
-
-### 1.2 `AnnotatedString` & builder DSL
-
-```rust
-pub struct AnnotatedString {
-  pub text: String,
-  pub span_styles: Vec<StyleRange<SpanStyle>>,
-  pub paragraph_styles: Vec<StyleRange<ParagraphStyle>>,
-  pub annotations: Vec<StyleRange<Annotation>>, // e.g., link(url)
-}
-
-pub fn build_annotated_string(f: impl FnOnce(&mut AnnotatedStringBuilder)) -> AnnotatedString;
-```
-
-Builder supports:
-- `append("...")`
-- `with_style(style, |b| { … })`
-- `with_annotation(tag, value, |b| { … })` and Compose‑like `withLink(...) { … }` helper
-
-### 1.3 Text/Span/Paragraph styles & units
-
-- `SpanStyle { color, brush, font_size: Option<Sp>, font_weight, font_style, letter_spacing: Option<Sp>, text_decoration, shadow: Option<Shadow> }`
-- `TextStyle { text_align, line_height: Option<Sp>, line_break: LineBreak, hyphens: Hyphens, shadow: Option<Shadow> }`
-- `ParagraphStyle` used internally for per‑block overrides (mapped from `TextStyle`).
-- Units: `Dp`, `Sp`; with `Density { scale: f32 }` and `LocalDensity` composition‑local later.
-
-### 1.4 Behavior flags
-
-- `TextOverflow::{Clip, Ellipsis, Visible}`
-- `maxLines`, `softWrap`
-- `onTextLayout(TextLayoutResult)` (contains `hasVisualOverflow`, line metrics, glyph positions, baseline, truncation info)
-- `onTextClick(TextLink)` for annotated ranges (e.g., URLs)
-
-### 1.5 Marquee
-
-- `Modifier.basicMarquee(speed: f32 = 24.0, delay_ms: u64 = 800)`
-- Activates when measured width > allocated width; animates translation in a loop.
-
----
-
-## 2) Under the Hood — **Engine Abstraction + Fallback**
-
-To satisfy “API parity on top, fallback engines under the hood and tweakable per platform (maybe even embed)”, we introduce an engine facade.
-
-### 2.1 Engine facade
-
-```rust
-pub struct LayoutRequest {
-  pub content: AnnotatedString,
-  pub para: TextStyle,                // paragraph-level defaults
-  pub wrap_width_px: f32,             // f32::INFINITY = no wrap
-  pub max_lines: Option<usize>,
-  pub overflow: TextOverflow,
-  pub soft_wrap: bool,
-  pub density: Density,               // for Sp→px
-}
-
-pub struct LayoutMetrics {
-  pub width_px: f32,
-  pub height_px: f32,
-  pub ascent_px: f32,
-  pub descent_px: f32,
-  pub baseline_px: f32,
-  pub visual_overflow: bool,
-  pub truncated: bool,
-  pub lines: Arc<[LineInfo]>,         // per-line boxes & ranges
-  pub runs: Arc<[GlyphRun]>,          // shaped glyph runs with style ids
-}
-
-pub trait TextEngine: Send + Sync + 'static {
-  fn layout(&self, req: &LayoutRequest) -> Arc<LayoutMetrics>;
-}
-```
-
-### 2.2 Engine implementations (compile‑time features)
-
-- **`text-fontdue`**: tiny/fast pure‑Rust; limited shaping. Good for minimal builds or ASCII UIs.
-- **`text-cosmic`** (default): `cosmic-text` + `rustybuzz` + `swash` for full shaping, BiDi, emoji/color & variable fonts, fallback, hyphenation, line‑breaks.
-
-**Cargo.toml**:
-```toml
-[features]
-text-fontdue = ["dep:fontdue"]
-text-cosmic = ["dep:cosmic-text", "dep:swash", "dep:rustybuzz"]
-default = ["text-cosmic"]
-```
-
-### 2.3 Runtime selection & **fallback chain**
-
-- Build with **one** engine for smallest binaries, or **both** to allow runtime switching.
-- Provide `EngineRegistry`:
-  ```rust
-  pub enum EngineKind { Cosmic, Fontdue }
-  pub struct EngineRegistry { /* map + default */ }
-  impl EngineRegistry {
-    pub fn select(kind: EngineKind);
-    pub fn select_from_env(); // e.g., TEXT_BACKEND=fontdue|cosmic
-    pub fn get() -> &'static dyn TextEngine;
-  }
-  ```
-- **Per‑platform defaults** (overrideable via features/env):
-  - Desktop (Win/macOS/Linux): `Cosmic`
-  - Android/iOS: `Cosmic` with **embedded fonts** (see below)
-  - WASM: `Cosmic` (works), `Fontdue` available for very small builds
-
-### 2.4 Fonts: system, fallback, **embedded**
-
-- **Discovery**: `fontdb` to locate system fonts when available.
-- **Fallback cascade** per script (Latin, Cyrillic, Arabic, CJK).
-- **Emoji**: bundle Noto Color Emoji (COLRv1) optionally.
-- **Embedded mode**: ship Roboto/Inter + Noto Emoji inside the crate for platforms with no system access (WASM, sandboxed mobile). Expose a builder to register additional embedded fonts.
-- **Tweaks**: `TEXT_EMBED_ONLY=1` env or feature `embed-fonts` to disable system probing.
-
----
-
-## 3) Layout Integration — **Taffy Measured Leaf**
-
-- Replace any fixed text guesses with **`new_leaf_with_measure`**. The measure closure:
-  1) Resolves wrap width from `known.width` or `AvailableSpace::Definite`.
-  2) Builds a `LayoutRequest` with current `AnnotatedString`, `TextStyle`, flags, density.
-  3) Calls `EngineRegistry::get().layout(&req)` and returns `{width, height}`.
-- Baseline: keep in `LayoutMetrics` for future baseline alignment.
-- Padding, background, rounded corners remain in `Modifier` and container styles.
-
----
-
-## 4) Rendering — **Glyph Atlas + Brushes & Shadows**
-
-- **Glyph atlas**: A8 for monochrome, RGBA for color fonts. Batch quads; reuse across frames.
-- **Runs**: For each `GlyphRun` apply either solid `color` or a `Brush` (linear/radial gradient). Gradients can be applied by per‑vertex colors (approx) or offscreen composition (better).
-- **Shadows**: render shadow pass first (offset + blur approximation), then main text.
-- **Decorations**: underline/strikethrough from run metrics (thickness/position).
-
----
-
-## 5) Interaction — **Clickable Annotations**
-
-- `onTextClick`: map pointer to local (x, y), hit‑test line, then glyph/cluster → char index → annotation range. Invoke with `TextLink { url: String }` or opaque payload.
-- Reuse existing `Modifier::pointer_input` plumbing; `TextNode` stores span→annotation mapping.
-
----
-
-## 6) Hyphenation & Line‑Breaks
-
-- `Hyphens::{None, Auto}`; `LineBreak::{Simple, Paragraph}` mirroring Compose.
-- With `cosmic-text`: enable built‑in policies; otherwise integrate `hyphenation` crate.
-- Edge cases: long unbreakable sequences, zero‑width spaces, soft hyphens, BiDi.
-
----
-
-## 7) DPI & Units
-
-- Introduce `Density` and later `LocalDensity` composition‑local.
-- Convert `Sp/Dp → px` before measurement/paint. Ensure consistency with shape/padding units.
-
----
-
-## 8) Performance — **Caching & Batching**
-
-- **Layout cache key**: `{ text_hash, span_rev, para_rev, font_key, font_size_px, wrap_w_ceil, letter_spacing, line_height, max_lines, overflow, hyphens, line_break }` → `Arc<LayoutMetrics>`
-- **Glyph atlas LRU** by font+size. Preheat commonly used fonts/sizes.
-- Avoid re‑shaping on paint; measurement returns positioned glyphs.
-
----
-
-## 9) Platform Matrix & Tweakability
-
-| Platform         | Default Engine | Notes                                                                 | Suggested Tweaks                               |
-|------------------|----------------|-----------------------------------------------------------------------|-----------------------------------------------|
-| Windows/macOS/Linux | Cosmic       | Full shaping, BiDi, emoji, variable fonts                             | `TEXT_BACKEND=fontdue` for tiny binaries       |
-| Android/iOS      | Cosmic + **embedded fonts** | Bundle Inter/Roboto + Noto Emoji; optional system fallback           | `embed-fonts` feature; disable system probing  |
-| WASM             | Cosmic         | Works in web; file system limited ⇒ prefer embedded fonts             | `TEXT_EMBED_ONLY=1`                            |
-| Minimal/CLI UIs  | Fontdue        | Very small, ASCII‑centric                                             | Force `text-fontdue` feature                   |
-
-**Runtime override**: `TEXT_BACKEND=cosmic|fontdue` (when both compiled).  
-**Compile‑time**: cargo features choose engines; default `text-cosmic`.
-
----
-
-## 10) File/Module Plan (proposed paths)
-
-```
-compose-ui/
-  src/
-    text/
-      mod.rs
-      types.rs                 // Dp, Sp, enums: FontWeight, TextAlign, TextOverflow, Hyphens, LineBreak, Shadow, Offset
-      annotated_string.rs      // AnnotatedString + builder API
-      text_style.rs            // SpanStyle, TextStyle, ParagraphStyle
-      layout_result.rs         // TextLayoutResult, TextLink, LineInfo, GlyphRun
-      engine.rs                // TextEngine trait + LayoutRequest/LayoutMetrics
-      fonts.rs                 // system discovery, fallback cascades, embedded registry
-      fontdue_engine.rs        // small/fast engine impl
-      cosmic_engine.rs         // full‑feature engine impl
-      paint.rs                 // atlas & run painting helpers
-    primitives.rs              // TextNode updated to store AnnotatedString & styles & callbacks
-    layout.rs                  // new_leaf_with_measure hookup for TextNode
-    renderer.rs                // RenderOp::GlyphRun batching & brush/shadow handling
-```
-
----
-
-## 11) Migration Tasks (Agent‑ready, ordered)
-
-### Phase 0 — Prep
-- [ ] **Remove fixed text guessers** and wire `new_leaf_with_measure` for `TextNode`.
-- [ ] Add `Density` (hardcode from window scale for now).
-
-### Phase 1 — Public API Surface
-- [ ] Add `text/types.rs` (units/enums), `text/annotated_string.rs`, `text/text_style.rs`.
-- [ ] Implement `build_annotated_string` builder & DSL helpers (link annotations).
-- [ ] Extend `TextNode` fields: `content: AnnotatedString`, `para: TextStyle`, flags, callbacks.
-- [ ] Update `Text(...)` overloads in `primitives.rs` to accept new shapes.
-
-**Acceptance:** `Text(AnnotatedString{...})` renders single‑style lines; colors & underline work.
-
-### Phase 2 — Engine Facade & Fallback
-- [ ] Add `text/engine.rs` (trait & structs), `text/fonts.rs` (system + embedded registry).
-- [ ] Implement `fontdue_engine.rs` (fast minimal) and `cosmic_engine.rs` (feature‑rich).
-- [ ] Add `EngineRegistry` + env select + per‑platform defaults.
-
-**Acceptance:** Demo builds with either engine; runtime env switch works when both compiled.
-
-### Phase 3 — Layout & Wrapping
-- [ ] In `layout.rs`, compute wrap width from known/available constraints and call engine.
-- [ ] Implement `maxLines`, `softWrap`, `overflow=Ellipsis` in engine layout.
-- [ ] Emit `TextLayoutResult` & invoke `on_text_layout`.
-
-**Acceptance:** Multi‑line wrapping; ellipsis on long text; callback reports `hasVisualOverflow`.
-
-### Phase 4 — Rendering Richness
-- [ ] Implement glyph atlas & `RenderOp::GlyphRun` in `renderer.rs` and `text/paint.rs`.
-- [ ] Support spans with `Brush` (linear/radial gradient), bold/italic, decorations, shadows.
-
-**Acceptance:** Sample shows bold red, gradient span, italic+underline, paragraph align/lineHeight.
-
-### Phase 5 — Interactivity
-- [ ] Hit‑testing from pointer to annotation; fire `on_text_click(TextLink)`.
-- [ ] Provide `withLink(...)` helper in builder.
-
-**Acceptance:** Clicking the link span invokes callback with URL.
-
-### Phase 6 — Line Break & Hyphens
-- [ ] Enable hyphenation & advanced line‑breaking (cosmic‑text path); fallback to `hyphenation` for fontdue.
-- [ ] Add unit tests for soft hyphen & long words.
-
-**Acceptance:** Paragraph line breaks match expectations; hyphens appear when `Hyphens.Auto`.
-
-### Phase 7 — Marquee & Polish
-- [ ] `Modifier.basicMarquee(...)` using existing `GraphicsLayer` translation + simple animation timer.
-- [ ] Composition local for `Density`; unify `Sp/Dp` conversions across UI.
-
-**Acceptance:** Long single‑line text scrolls smoothly; DPI‑aware sizing looks correct.
-
----
-
-## 12) Acceptance Test Matrix (visual + metric)
-
-- **Wrapping**: narrow vs wide; compare measured width/height to engine output.
-- **Overflow**: `maxLines=1` + ellipsis, multi‑line truncation.
-- **Styles**: bold, italic, underline, gradient brush, shadow blur/offset.
-- **Alignment**: start, center, end, justify.
-- **Hyphenation**: “extraordinary”, “characterization”; with/without auto hyphens.
-- **BiDi**: English + Arabic/Hebrew samples.
-- **Emoji/Color**: glyphs from COLRv1; fallback if missing.
-- **DPI**: 1.0, 1.5, 2.0 scale factors; visual proportions match containers/padding.
-- **Click**: link hit‑test on varied DPI & line breaks.
-- **Perf**: cache hit vs miss; atlas reuse across frames.
-
----
-
-## 13) Example Snippets (parity demonstration)
-
-```rust
-let annotated = build_annotated_string(|b| {
-  b.with_style(SpanStyle { font_weight: Some(FontWeight::Bold), color: Some(Color::RED), font_size: Some(24.sp()), ..Default::default() }, |b| {
-    b.append("Bold and red text");
-  });
-  b.append(" then some normal text. ");
-  b.with_style(SpanStyle { font_style: Some(FontStyle::Italic), text_decoration: Some(TextDecoration::Underline), brush: Some(Brush::linear_gradient(vec![Color::BLUE, Color::GREEN])), ..Default::default() }, |b| {
-    b.append("This part is italic, underlined, and has a gradient.");
-  });
-  b.append(" And this is a long section of normal text to show text layout options. ");
-  b.with_annotation("link", "https://developer.android.com/", |b| {
-    b.with_style(SpanStyle { color: Some(Color::CYAN), text_decoration: Some(TextDecoration::Underline), ..Default::default() }, |b| {
-      b.append("Clickable link");
-    });
-  });
-  b.append(". Text continues and should wrap automatically.");
-});
-
-Text(
-  annotated,
-  Modifier.padding(16.0).fill_max_width(),
-  TextStyle { text_align: TextAlign::Justify, line_height: Some(22.sp()), line_break: LineBreak::Paragraph, hyphens: Hyphens::Auto, shadow: Some(Shadow::new(Color::GRAY, Offset::new(4.0,4.0), 8.0)), ..Default::default() },
-  /* color */ None, /* brush */ None, /* font_size */ None,
-  /* weight */ None, /* style */ None, /* letter_spacing */ None,
-  /* decoration */ None, /* align */ None, /* line_height */ None,
-  TextOverflow::Ellipsis, Some(5), true,
-  Some(Rc::new(|result: &TextLayoutResult| { /* inspect overflow */ })),
-  Some(Rc::new(|link: TextLink| { open_url(&link.url); })),
-);
-```
-
----
-
-## 14) Open Questions & Future Work
-
-- **Justification quality**: per‑locale stretch/space distribution (cosmic‑text exposes flags).
-- **Variable fonts controls**: expose axis parameters (wght, wdth, ital).
-- **Baseline alignment in flex**: add baseline function to taffy integration.
-- **Internationalization**: per‑paragraph direction & script detection, locale‑aware line breaking.
-- **Text selection/editing**: separate feature track (cursor, selection handles, IME).
-
----
-
-## 15) Deliverables Summary for Coding Agent
-
-- New modules under `compose-ui/src/text/…` with engine facade, types, builder, engines.
-- Updated `TextNode`, `layout.rs` (measured leaf), and `renderer.rs` (glyph runs).
-- Cargo features for `text-fontdue` / `text-cosmic`. Runtime `EngineRegistry` + env override.
-- Embedded fonts option & platform defaults (desktop/mobile/WASM).
-- Samples & tests covering parity scenarios and performance.
-
-**Remember:** the API on top remains stable; **under the hood we can fallback** to whichever engine is compiled/selected, and all knobs are **tweakable per platform** (features, env, embedded fonts).
-
----
-
-**End of ROADMAP** — Ready for implementation.
+ROADMAP.md — Compose-RS: Foundation-first, Jetpack Compose parity
+
+Goal
+- Behavior and user-facing API 1:1 with Jetpack Compose (Kotlin), including naming and call shapes.
+- No feature flags. Each phase lands complete, with tests mirroring official Compose docs examples and semantics.
+
+Naming and API normalization
+- Public API uses lowerCamelCase names that mirror Kotlin closely.
+- Provide remember, mutableStateOf, derivedStateOf, State<T>, MutableState<T>.
+- Replace use_state with remember { mutableStateOf(...) } (keep a temporary alias useState for migration if desired).
+- Replace emit_node and similar internals from the public surface. Node creation happens inside composables; any remaining low-level helpers are internal-only.
+- Functions like with_key -> withKey; with_current_composer -> withCurrentComposer kept internal; public API is composables and Modifiers.
+- Prefer Rust ergonomics where it doesn’t change behavior, but match Kotlin naming and call shapes for public API.
+
+Phase 0 — Lifecycle, change ops, and slot robustness (must land before Phase 1)
+Context and why
+- Correct node lifecycle and structural change application are prerequisites for recomposition, effects, and subcomposition. Compose parity requires deterministic mount/update/unmount and child insert/move/remove, not just wholesale child list replacement.
+
+Deliverables
+- Node lifecycle: mount called on create, update on reuse, unmount on removal (post-order).
+- Change list generation: insert, move, remove child operations (incremental), not only update_children. Expose applier ops for insertChild(index), moveChild(from, to), removeChild(index).
+- Slot model resilience:
+  - No panics on type/shape mismatch; dispose old subtree and write new content.
+  - Keys/anchors per group; removing or replacing a group disposes its subtree and remembered values.
+  - Remembered values support disposal when replaced or the group is removed (hook for Phase 3 RememberObserver).
+- Parent diff: during popParent, compute child diff and emit insert/move/remove ops.
+- Thread-local composer safety: replace ad hoc transmute with a scoped thread-local handle.
+
+Tests / definition of done
+- Removing a subtree unmounts all nodes exactly once and MemoryApplier count drops.
+- Reordering keyed children preserves state and nodes; only moves occur (no recreate).
+- remember type change or count change does not panic; old value disposed; new value constructed.
+- Mismatch recovery works for nested keyed groups.
+
+Phase 1 — Smart recomposition (tracked reads and scopes)
+Context and why
+- Jetpack Compose invalidates and recomposes only scopes that read a changing State. Parents that pass state down without reading do not recompose. This is the crux of Compose performance and must match exactly.
+
+Deliverables
+- RecomposeScope per composed group. Composer maintains a current scope stack.
+- Tracked reads: State<T>.value getter records the current RecomposeScope; writer invalidates only its readers. Passing state through without reading does not register the parent.
+- State and remember APIs:
+  - remember { T }
+  - mutableStateOf(initial): MutableState<T>
+  - interface State<T> { val value: T }
+  - interface MutableState<T> : State<T> { override var value: T }
+  - derivedStateOf { … }: recomputes lazily, invalidates readers when source states change.
+- Skip logic: when parameters are stable and equal and no local invalidations exist, skip the scope and reuse prior result. The macro should generate changed bit masks (ints) like Compose instead of per-param heap allocations. Keep a pragmatic stability model:
+  - Provide a Stable marker/derive for pure data types; default to equality for non-stable types.
+  - Allow a @stable marker in the macro until stability inference matures.
+- ApplyChanges loop: apply change ops (Phase 0), then run SideEffect queue (Phase 3 later) in the same frame.
+- Migrate signal-based updates in Text to tracked State reads (no out-of-band patching).
+
+Tests / definition of done
+- Changing one leaf MutableState in a 100-node tree recomposes only the readers (and their ancestors needed to reach them), not the whole tree.
+- A parent passing a state to a child without reading it does not recompose when the state changes; only the child does.
+- A composable with stable, equal params is not re-invoked between frames (changed bit masks verified).
+- Slot model handles 10k inserts/deletes without pathological slowdown.
+
+Phase 2 — Intrinsic layout (replace Taffy; adopt Compose’s model)
+Context and why
+- Compose layouts use Constraints → measure → place, intrinsics, alignment lines, and baseline alignment. This is necessary for parity with Row, Column, Box, Spacer, and custom Layout behavior.
+
+Deliverables
+- Core types: Constraints, Measurable, Placeable, MeasureScope, MeasureResult, PlacementScope.
+- Layout composable with a MeasurePolicy (trailing lambda):
+  - Layout(modifier = Modifier, content = @Composable() -> Unit) { measurables, constraints -> MeasureResult }
+- Re-implement primitives on top of Layout:
+  - Row, Column, Box, Spacer(modifier) with arrangements, alignments, weight, fill, etc.
+  - Baseline alignment for text and alignment lines propagation.
+- Intrinsics: IntrinsicSize.Min/Max and intrinsic measurement methods.
+- Remove Taffy dependency.
+
+Tests / definition of done
+- Port and mirror examples from the Jetpack Compose layout docs for Row/Column/Box/Spacer with arrangements and alignments.
+- IntrinsicSize.Min/Max behaviors match Compose examples.
+- Baseline alignment matches Compose behavior for text.
+- Visual and layout regression of existing demos pass after the swap.
+
+Phase 3 — Effects and CompositionLocal
+Context and why
+- Side effects and locals are required to write real apps and to match Compose behavior.
+
+Deliverables
+- SideEffect: runs after applyChanges in the same frame.
+- DisposableEffect(vararg keys): cleanup runs on key change and on scope disposal; effect re-runs with new keys.
+- LaunchedEffect(vararg keys): coroutine/tick scope tied to composition lifecycle; cancels and restarts on key changes.
+- CompositionLocal:
+  - compositionLocalOf/staticCompositionLocalOf
+  - CompositionLocalProvider(vararg values, content)
+  - Built-ins: LocalDensity, LocalLayoutDirection, etc.
+- RememberObserver hook for remembered values to integrate with disposal (invoked at group removal and replacement).
+
+Tests / definition of done
+- DisposableEffect cleanup runs on key change and disposal.
+- LaunchedEffect cancels and restarts correctly.
+- CompositionLocal changes recompose only consumers, not siblings.
+
+Phase 4 — Modifier.Node chain (persistent chain, per-phase traversal)
+Context and why
+- Compose’s modifier chain is persistent and node-based. This enables efficient traversal for layout, draw, input, and semantics. The current Vec-based approach won’t scale.
+
+Deliverables
+- Modifier as a persistent chain (cons-list). then is O(1), preserves order.
+- Modifier node infrastructure:
+  - ModifierNodeElement<N : ModifierNode>, Modifier.Node.
+  - Role-specific nodes: LayoutModifierNode, DrawModifierNode, PointerInputModifierNode, SemanticsModifierNode.
+- Port existing modifiers (padding, background, clickable, roundedCorners, drawBehind/drawWithContent) as elements/nodes.
+- Phase-specific traversals: layout visit sees layout nodes only; draw visit sees draw nodes only; input dispatch goes through pointer nodes; semantics separated.
+
+Tests / definition of done
+- Long modifier chains compose without quadratic behavior.
+- Layout pass ignores draw/input nodes; draw pass ignores layout nodes.
+- Pointer input dispatch and hit-testing match expected order/clipping semantics.
+
+Phase 5 — Animations (frame clock; interruptible motion)
+Context and why
+- Compose animations are state-driven and interruptible. They depend on effects and a frame clock.
+
+Deliverables
+- Monotonic frame clock integrated with recomposer; requestAnimationFrame-like scheduling.
+- animate*AsState parity (Float, Color, Dp equivalents) with default spring/tween specs.
+- Animatable<T> with animateTo, snapTo, cancel/interrupt semantics.
+
+Tests / definition of done
+- animateFloatAsState is smooth, cancels/restarts on target changes.
+- Animatable animateTo/snapTo interop with LaunchedEffect matches Compose behavior.
+
+Phase 6 — Subcompose and Lazy
+Context and why
+- LazyColumn/LazyRow rely on subcomposition to compose only visible items and reuse item content.
+
+Deliverables
+- SubcomposeLayout API and engine.
+- LazyColumn and LazyRow built on SubcomposeLayout with item reuse windows.
+- Compose/measure only visible items plus lookahead buffer.
+
+Tests / definition of done
+- LazyColumn with 10,000 items scrolls without composing everything; invisible items are not composed/measured.
+- Updates/invalidation affect only visible or cached items.
+
+Phase 7 — Canvas, input, tooling
+Context and why
+- Canvas and pointer input are core user features; tooling helps validate recomposition and layout.
+
+Deliverables
+- Canvas composable and DrawScope parity; Modifier.drawBehind/drawWithContent as draw nodes.
+- Pointer input via pointerInput(keys) with gesture detectors (detectTapGestures) layered on top.
+- Tooling overlays: recomposition counter and layout bounds overlay (draw modifiers) behind a runtime flag.
+
+Tests / definition of done
+- Drawing primitives render correctly and in the right order.
+- Pointer input flows through the modifier node chain with correct hit-testing and clipping.
+- Overlays don’t affect measure/placement or input hits.
+
+Cross-cutting implementation notes
+- Replace ad-hoc signal-based Text updates with tracked State reads once Phase 1 lands.
+- Keep scheduleNodeUpdate as an internal escape hatch but do not use it for normal state-driven updates.
+- Ensure applyChanges runs mount/update/unmount and effect phases in the correct order in a single frame.
+- Single-threaded runtime initially; document and enforce via scoped thread-local composer. Multi-thread rendering later.
+
+Migration plan from current codebase
+- Introduce Phase 0 change ops and lifecycle first; update MemoryApplier to support insert/move/remove and unmount.
+- Add remember/mutableStateOf/derivedStateOf; keep temporary aliases for current APIs (use_state -> remember+mutableStateOf).
+- Switch Text and other primitives to read State via .value (or value()/setValue()) and rely on tracked reads. Remove out-of-band node patches.
+- Swap Taffy with the Constraints model; reimplement Row/Column/Spacer/Box.
+- Transition Modifier to persistent chain; then to node elements without breaking public APIs.
+
+Key acceptance tests to add early
+- Parent skip-on-pass-through: parent passes state to child without reading; parent does not recompose on child state changes.
+- Reorder with keys: state preserved in moved items; no recreation.
+- Subtree removal: unmount and disposal run exactly once; MemoryApplier count decreases accordingly.
+- Intrinsics parity: mirror official Compose examples verbatim for width(IntrinsicSize.Min/Max) and baseline alignment.
+
+Performance guardrails
+- Compose 10k nodes with long modifier chains without quadratic behavior.
+- Recompose a single leaf in O(depth) time with minimal allocations.
+- Modifier.then O(1) and persistent.
+
+No feature flags
+- Each phase lands atomically with updates to existing primitives/tests. No temporary switches.
