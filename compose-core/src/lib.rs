@@ -2,7 +2,7 @@
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::collections::{hash_map::DefaultHasher, HashSet};
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::mem;
@@ -14,11 +14,17 @@ pub type Key = u64;
 pub type NodeId = usize;
 
 type ScopeId = usize;
+type LocalKey = usize;
 
 static NEXT_SCOPE_ID: AtomicUsize = AtomicUsize::new(1);
+static NEXT_LOCAL_KEY: AtomicUsize = AtomicUsize::new(1);
 
 fn next_scope_id() -> ScopeId {
     NEXT_SCOPE_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+fn next_local_key() -> LocalKey {
+    NEXT_LOCAL_KEY.fetch_add(1, Ordering::Relaxed)
 }
 
 struct RecomposeScopeInner {
@@ -187,6 +193,106 @@ pub fn derivedStateOf<T: 'static + Clone>(compute: impl Fn() -> T + 'static) -> 
             derived.state.as_state()
         })
     })
+}
+
+pub struct ProvidedValue {
+    key: LocalKey,
+    apply: Box<dyn Fn(&mut Composer<'_>) -> Rc<dyn Any>>,
+}
+
+impl ProvidedValue {
+    fn into_entry(self, composer: &mut Composer<'_>) -> (LocalKey, Rc<dyn Any>) {
+        let ProvidedValue { key, apply } = self;
+        let entry = apply(composer);
+        (key, entry)
+    }
+}
+
+#[allow(non_snake_case)]
+pub fn CompositionLocalProvider(
+    values: impl IntoIterator<Item = ProvidedValue>,
+    content: impl FnOnce(),
+) {
+    with_current_composer(|composer| {
+        let provided: Vec<ProvidedValue> = values.into_iter().collect();
+        composer.with_composition_locals(provided, |_composer| content());
+    })
+}
+
+struct LocalStateEntry<T: Clone + 'static> {
+    state: MutableState<T>,
+}
+
+impl<T: Clone + 'static> LocalStateEntry<T> {
+    fn new(state: MutableState<T>) -> Self {
+        Self { state }
+    }
+
+    fn set(&self, value: T) {
+        self.state.set_value(value);
+    }
+
+    fn value(&self) -> T {
+        self.state.value()
+    }
+}
+
+#[derive(Clone)]
+pub struct CompositionLocal<T: Clone + 'static> {
+    key: LocalKey,
+    default: Rc<dyn Fn() -> T>,
+}
+
+impl<T: Clone + 'static> PartialEq for CompositionLocal<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+    }
+}
+
+impl<T: Clone + 'static> Eq for CompositionLocal<T> {}
+
+impl<T: Clone + 'static> CompositionLocal<T> {
+    pub fn provides(&self, value: T) -> ProvidedValue {
+        let key = self.key;
+        ProvidedValue {
+            key,
+            apply: Box::new(move |composer: &mut Composer<'_>| {
+                let runtime = composer.runtime_handle();
+                let entry_ref = composer.remember(|| {
+                    Rc::new(LocalStateEntry::new(MutableState::with_runtime(
+                        value.clone(),
+                        runtime.clone(),
+                    )))
+                });
+                let entry = Rc::clone(entry_ref);
+                entry.set(value.clone());
+                entry as Rc<dyn Any>
+            }),
+        }
+    }
+
+    pub fn current(&self) -> T {
+        with_current_composer(|composer| composer.read_composition_local(self))
+    }
+
+    pub fn default_value(&self) -> T {
+        (self.default)()
+    }
+}
+
+#[allow(non_snake_case)]
+pub fn compositionLocalOf<T: Clone + 'static>(
+    default: impl Fn() -> T + 'static,
+) -> CompositionLocal<T> {
+    CompositionLocal {
+        key: next_local_key(),
+        default: Rc::new(default),
+    }
+}
+
+#[allow(non_snake_case)]
+pub fn staticCompositionLocalOf<T: Clone + 'static>(value: T) -> CompositionLocal<T> {
+    compositionLocalOf(move || value.clone())
 }
 
 pub fn with_node_mut<N: Node + 'static, R>(
@@ -627,6 +733,7 @@ pub struct Composer<'a> {
     pub(crate) root: Option<NodeId>,
     commands: Vec<Command>,
     scope_stack: Vec<RecomposeScope>,
+    local_stack: Vec<LocalContext>,
 }
 
 #[derive(Default, Clone)]
@@ -639,6 +746,11 @@ struct ParentFrame {
     remembered: *mut ParentChildren,
     previous: Vec<NodeId>,
     new_children: Vec<NodeId>,
+}
+
+#[derive(Default)]
+struct LocalContext {
+    values: HashMap<LocalKey, Rc<dyn Any>>,
 }
 
 impl<'a> Composer<'a> {
@@ -656,6 +768,7 @@ impl<'a> Composer<'a> {
             root,
             commands: Vec::new(),
             scope_stack: Vec::new(),
+            local_stack: Vec::new(),
         }
     }
 
@@ -708,6 +821,19 @@ impl<'a> Composer<'a> {
         MutableState::with_runtime(initial, self.runtime.clone())
     }
 
+    pub fn read_composition_local<T: Clone + 'static>(&mut self, local: &CompositionLocal<T>) -> T {
+        for context in self.local_stack.iter().rev() {
+            if let Some(entry) = context.values.get(&local.key) {
+                let typed = entry
+                    .clone()
+                    .downcast::<LocalStateEntry<T>>()
+                    .expect("composition local type mismatch");
+                return typed.value();
+            }
+        }
+        local.default_value()
+    }
+
     pub fn current_recompose_scope(&self) -> Option<RecomposeScope> {
         self.scope_stack.last().cloned()
     }
@@ -727,6 +853,25 @@ impl<'a> Composer<'a> {
         if let Some(scope) = self.current_recompose_scope() {
             scope.set_recompose(Box::new(callback));
         }
+    }
+
+    pub fn with_composition_locals<R>(
+        &mut self,
+        provided: Vec<ProvidedValue>,
+        f: impl FnOnce(&mut Composer<'_>) -> R,
+    ) -> R {
+        if provided.is_empty() {
+            return f(self);
+        }
+        let mut context = LocalContext::default();
+        for value in provided {
+            let (key, entry) = value.into_entry(self);
+            context.values.insert(key, entry);
+        }
+        self.local_stack.push(context);
+        let result = f(self);
+        self.local_stack.pop();
+        result
     }
 
     fn recompose_group(&mut self, scope: &RecomposeScope) {
@@ -1720,5 +1865,69 @@ mod tests {
             })
             .expect("render succeeds");
         INVOCATIONS.with(|calls| assert_eq!(calls.get(), 2));
+    }
+
+    #[test]
+    fn composition_local_provider_scopes_values() {
+        thread_local! {
+            static CHILD_RECOMPOSITIONS: Cell<usize> = Cell::new(0);
+            static LAST_VALUE: Cell<i32> = Cell::new(0);
+        }
+
+        let local_counter = compositionLocalOf(|| 0);
+        let mut composition = Composition::new(MemoryApplier::new());
+        let runtime = composition.runtime_handle();
+        let provided_state = MutableState::with_runtime(1, runtime.clone());
+
+        #[composable]
+        fn child(local_counter: CompositionLocal<i32>) {
+            CHILD_RECOMPOSITIONS.with(|count| count.set(count.get() + 1));
+            let value = local_counter.current();
+            LAST_VALUE.with(|slot| slot.set(value));
+        }
+
+        #[composable]
+        fn parent(local_counter: CompositionLocal<i32>, state: MutableState<i32>) {
+            CompositionLocalProvider(vec![local_counter.provides(state.value())], || {
+                child(local_counter.clone());
+            });
+        }
+
+        composition
+            .render(1, || parent(local_counter.clone(), provided_state.clone()))
+            .expect("initial composition");
+
+        assert_eq!(CHILD_RECOMPOSITIONS.with(|c| c.get()), 1);
+        assert_eq!(LAST_VALUE.with(|slot| slot.get()), 1);
+
+        provided_state.set_value(5);
+        composition
+            .process_invalid_scopes()
+            .expect("process local change");
+
+        assert_eq!(CHILD_RECOMPOSITIONS.with(|c| c.get()), 2);
+        assert_eq!(LAST_VALUE.with(|slot| slot.get()), 5);
+    }
+
+    #[test]
+    fn composition_local_default_value_used_outside_provider() {
+        thread_local! {
+            static READ_VALUE: Cell<i32> = Cell::new(0);
+        }
+
+        let local_counter = compositionLocalOf(|| 7);
+        let mut composition = Composition::new(MemoryApplier::new());
+
+        #[composable]
+        fn reader(local_counter: CompositionLocal<i32>) {
+            let value = local_counter.current();
+            READ_VALUE.with(|slot| slot.set(value));
+        }
+
+        composition
+            .render(2, || reader(local_counter.clone()))
+            .expect("compose reader");
+
+        assert_eq!(READ_VALUE.with(|slot| slot.get()), 7);
     }
 }
