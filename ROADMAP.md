@@ -94,11 +94,11 @@ Deliverables (Core Infrastructure)
   - [x] Implement `take_node_from_reusables(slot_id)` with two-phase matching
   - [x] Implement `dispose_or_reuse_starting_from_index(start_index)`
   - [x] Ensure `subcompose()` only callable during measure/layout (panic otherwise)
-- [ ] Extend `RecomposeScope` with reuse lifecycle
-  - [ ] Add `deactivate()` method (mark inactive without disposing)
-  - [ ] Add `reactivate()` method (mark active, trigger recomposition)
-  - [ ] Add `compose_with_reuse()` for maximizing state reuse
-  - [ ] Implement `forceReuse` and `forceRecompose` flags
+- [x] Extend `RecomposeScope` with reuse lifecycle
+  - [x] Add `deactivate()` method (mark inactive without disposing)
+  - [x] Add `reactivate()` method (mark active, trigger recomposition)
+  - [x] Add `compose_with_reuse()` for maximizing state reuse
+  - [x] Implement `forceReuse` and `forceRecompose` flags
 
 Deliverables (SubcomposeLayout Primitive)
 - [ ] Create `SubcomposeMeasureScope` trait extending `MeasureScope`

@@ -112,7 +112,7 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
             let __current_scope = __composer
                 .current_recompose_scope()
                 .expect("missing recompose scope");
-            let mut __changed = __current_scope.is_invalid();
+            let mut __changed = __current_scope.should_recompose();
             #(#param_setup)*
             let __result_slot_ptr: *mut compose_core::ReturnSlot<#return_ty> = {
                 let __slot_ref = __composer
