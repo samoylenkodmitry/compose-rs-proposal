@@ -5,7 +5,6 @@
 compose-core/src/lib.rs
 compose-core/src/signals.rs
 compose-macros/src/lib.rs
-compose-ui/benches/skip_recomposition.rs
 compose-ui/src/layout.rs
 compose-ui/src/lib.rs
 compose-ui/src/modifier.rs
@@ -20,7 +19,7 @@ desktop-app/src/main.rs
 ```rust
 use any::Any;
 use cell::{Cell, RefCell};
-use collections::{hash_map::DefaultHasher, HashSet};
+use collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use fmt;
 use hash::{Hash, Hasher};
 use mem;
@@ -30,9 +29,14 @@ use thread_local;
 pub type Key = u64;
 pub type NodeId = usize;
 type ScopeId = usize;
+type LocalKey = usize;
 static NEXT_SCOPE_ID: AtomicUsize = AtomicUsize::new(1);
+static NEXT_LOCAL_KEY: AtomicUsize = AtomicUsize::new(1);
 fn next_scope_id() -> ScopeId {
     NEXT_SCOPE_ID.fetch_add(1, Ordering::Relaxed)
+}
+fn next_local_key() -> LocalKey {
+    NEXT_LOCAL_KEY.fetch_add(1, Ordering::Relaxed)
 }
 struct RecomposeScopeInner {
     id: ScopeId,
@@ -174,6 +178,174 @@ pub fn derivedStateOf<T: 'static + Clone>(compute: impl Fn() -> T + 'static) -> 
             derived.state.as_state()
         })
     })
+}
+pub struct ProvidedValue {
+    key: LocalKey,
+    apply: Box<dyn Fn(&mut Composer<'_>) -> Rc<dyn Any>>,
+}
+impl ProvidedValue {
+    fn into_entry(self, composer: &mut Composer<'_>) -> (LocalKey, Rc<dyn Any>) {
+        let ProvidedValue { key, apply } = self;
+        let entry = apply(composer);
+        (key, entry)
+    }
+}
+#[allow(non_snake_case)]
+pub fn CompositionLocalProvider(
+    values: impl IntoIterator<Item = ProvidedValue>,
+    content: impl FnOnce(),
+) {
+    with_current_composer(|composer| {
+        let provided: Vec<ProvidedValue> = values.into_iter().collect();
+        composer.with_composition_locals(provided, |_composer| content());
+    })
+}
+struct LocalStateEntry<T: Clone + 'static> {
+    state: MutableState<T>,
+}
+impl<T: Clone + 'static> LocalStateEntry<T> {
+    fn new(state: MutableState<T>) -> Self {
+        Self { state }
+    }
+    fn set(&self, value: T) {
+        self.state.set_value(value);
+    }
+    fn value(&self) -> T {
+        self.state.value()
+    }
+}
+#[derive(Clone)]
+pub struct CompositionLocal<T: Clone + 'static> {
+    key: LocalKey,
+    default: Rc<dyn Fn() -> T>,
+}
+impl<T: Clone + 'static> PartialEq for CompositionLocal<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+    }
+}
+impl<T: Clone + 'static> Eq for CompositionLocal<T> {}
+impl<T: Clone + 'static> CompositionLocal<T> {
+    pub fn provides(&self, value: T) -> ProvidedValue {
+        let key = self.key;
+        ProvidedValue {
+            key,
+            apply: Box::new(move |composer: &mut Composer<'_>| {
+                let runtime = composer.runtime_handle();
+                let entry_ref = composer.remember(|| {
+                    Rc::new(LocalStateEntry::new(MutableState::with_runtime(
+                        value.clone(),
+                        runtime.clone(),
+                    )))
+                });
+                let entry = Rc::clone(entry_ref);
+                entry.set(value.clone());
+                entry as Rc<dyn Any>
+            }),
+        }
+    }
+    pub fn current(&self) -> T {
+        with_current_composer(|composer| composer.read_composition_local(self))
+    }
+    pub fn default_value(&self) -> T {
+        (self.default)()
+    }
+}
+#[allow(non_snake_case)]
+pub fn compositionLocalOf<T: Clone + 'static>(
+    default: impl Fn() -> T + 'static,
+) -> CompositionLocal<T> {
+    CompositionLocal {
+        key: next_local_key(),
+        default: Rc::new(default),
+    }
+}
+#[allow(non_snake_case)]
+pub fn staticCompositionLocalOf<T: Clone + 'static>(value: T) -> CompositionLocal<T> {
+    compositionLocalOf(move || value.clone())
+}
+#[derive(Default)]
+struct DisposableEffectState {
+    key: Option<Key>,
+    cleanup: Option<Box<dyn FnOnce()>>,
+}
+impl DisposableEffectState {
+    fn should_run(&self, key: Key) -> bool {
+        match self.key {
+            Some(current) => current != key,
+            None => true,
+        }
+    }
+    fn set_key(&mut self, key: Key) {
+        self.key = Some(key);
+    }
+    fn set_cleanup(&mut self, cleanup: Option<Box<dyn FnOnce()>>) {
+        self.cleanup = cleanup;
+    }
+    fn run_cleanup(&mut self) {
+        if let Some(cleanup) = self.cleanup.take() {
+            cleanup();
+        }
+    }
+}
+impl Drop for DisposableEffectState {
+    fn drop(&mut self) {
+        self.run_cleanup();
+    }
+}
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DisposableEffectScope;
+pub struct DisposableEffectResult {
+    cleanup: Option<Box<dyn FnOnce()>>,
+}
+impl DisposableEffectScope {
+    pub fn on_dispose(&self, cleanup: impl FnOnce() + 'static) -> DisposableEffectResult {
+        DisposableEffectResult::new(cleanup)
+    }
+}
+impl DisposableEffectResult {
+    pub fn new(cleanup: impl FnOnce() + 'static) -> Self {
+        Self {
+            cleanup: Some(Box::new(cleanup)),
+        }
+    }
+    fn into_cleanup(self) -> Option<Box<dyn FnOnce()>> {
+        self.cleanup
+    }
+}
+impl Default for DisposableEffectResult {
+    fn default() -> Self {
+        Self { cleanup: None }
+    }
+}
+#[allow(non_snake_case)]
+pub fn SideEffect(effect: impl FnOnce() + 'static) {
+    with_current_composer(|composer| composer.register_side_effect(effect));
+}
+#[allow(non_snake_case)]
+pub fn DisposableEffect<K, F>(keys: K, effect: F)
+where
+    K: Hash,
+    F: FnOnce(DisposableEffectScope) -> DisposableEffectResult + 'static,
+{
+    with_current_composer(|composer| {
+        let key_hash = hash_key(&keys);
+        let state = composer.remember(DisposableEffectState::default);
+        if state.should_run(key_hash) {
+            state.run_cleanup();
+            state.set_key(key_hash);
+            let state_ptr: *mut DisposableEffectState = &mut *state;
+            let mut effect_opt = Some(effect);
+            composer.register_side_effect(move || {
+                if let Some(effect) = effect_opt.take() {
+                    let result = effect(DisposableEffectScope);
+                    unsafe {
+                        (*state_ptr).set_cleanup(result.into_cleanup());
+                    }
+                }
+            });
+        }
+    });
 }
 pub fn with_node_mut<N: Node + 'static, R>(
     id: NodeId,
@@ -554,6 +726,8 @@ pub struct Composer<'a> {
     pub(crate) root: Option<NodeId>,
     commands: Vec<Command>,
     scope_stack: Vec<RecomposeScope>,
+    local_stack: Vec<LocalContext>,
+    side_effects: Vec<Box<dyn FnOnce()>>,
 }
 #[derive(Default, Clone)]
 struct ParentChildren {
@@ -564,6 +738,10 @@ struct ParentFrame {
     remembered: *mut ParentChildren,
     previous: Vec<NodeId>,
     new_children: Vec<NodeId>,
+}
+#[derive(Default)]
+struct LocalContext {
+    values: HashMap<LocalKey, Rc<dyn Any>>,
 }
 impl<'a> Composer<'a> {
     pub fn new(
@@ -580,6 +758,8 @@ impl<'a> Composer<'a> {
             root,
             commands: Vec::new(),
             scope_stack: Vec::new(),
+            local_stack: Vec::new(),
+            side_effects: Vec::new(),
         }
     }
     pub fn install<R>(&'a mut self, f: impl FnOnce(&mut Composer<'a>) -> R) -> R {
@@ -626,6 +806,18 @@ impl<'a> Composer<'a> {
     pub fn mutable_state_of<T: 'static>(&mut self, initial: T) -> MutableState<T> {
         MutableState::with_runtime(initial, self.runtime.clone())
     }
+    pub fn read_composition_local<T: Clone + 'static>(&mut self, local: &CompositionLocal<T>) -> T {
+        for context in self.local_stack.iter().rev() {
+            if let Some(entry) = context.values.get(&local.key) {
+                let typed = entry
+                    .clone()
+                    .downcast::<LocalStateEntry<T>>()
+                    .expect("composition local type mismatch");
+                return typed.value();
+            }
+        }
+        local.default_value()
+    }
     pub fn current_recompose_scope(&self) -> Option<RecomposeScope> {
         self.scope_stack.last().cloned()
     }
@@ -642,6 +834,24 @@ impl<'a> Composer<'a> {
         if let Some(scope) = self.current_recompose_scope() {
             scope.set_recompose(Box::new(callback));
         }
+    }
+    pub fn with_composition_locals<R>(
+        &mut self,
+        provided: Vec<ProvidedValue>,
+        f: impl FnOnce(&mut Composer<'_>) -> R,
+    ) -> R {
+        if provided.is_empty() {
+            return f(self);
+        }
+        let mut context = LocalContext::default();
+        for value in provided {
+            let (key, entry) = value.into_entry(self);
+            context.values.insert(key, entry);
+        }
+        self.local_stack.push(context);
+        let result = f(self);
+        self.local_stack.pop();
+        result
     }
     fn recompose_group(&mut self, scope: &RecomposeScope) {
         if let Some(index) = scope.group_index() {
@@ -794,6 +1004,12 @@ impl<'a> Composer<'a> {
     }
     pub fn take_commands(&mut self) -> Vec<Command> {
         mem::take(&mut self.commands)
+    }
+    pub fn register_side_effect(&mut self, effect: impl FnOnce() + 'static) {
+        self.side_effects.push(Box::new(effect));
+    }
+    pub fn take_side_effects(&mut self) -> Vec<Box<dyn FnOnce()>> {
+        mem::take(&mut self.side_effects)
     }
 }
 struct MutableStateInner<T> {
@@ -1008,7 +1224,7 @@ impl<A: Applier> Composition<A> {
     pub fn render(&mut self, key: Key, mut content: impl FnMut()) -> Result<(), NodeError> {
         self.slots.reset();
         let runtime_handle = self.runtime_handle();
-        let (root, commands) = {
+        let (root, commands, side_effects) = {
             let mut composer = Composer::new(
                 &mut self.slots,
                 &mut self.applier,
@@ -1019,7 +1235,8 @@ impl<A: Applier> Composition<A> {
                 composer.with_group(key, |_| content());
                 let root = composer.root;
                 let commands = composer.take_commands();
-                (root, commands)
+                let side_effects = composer.take_side_effects();
+                (root, commands, side_effects)
             })
         };
         for mut command in commands {
@@ -1027,6 +1244,9 @@ impl<A: Applier> Composition<A> {
         }
         for mut command in runtime_handle.take_updates() {
             command(&mut self.applier)?;
+        }
+        for effect in side_effects {
+            effect();
         }
         self.root = root;
         self.slots.trim_to_cursor();
@@ -1067,7 +1287,7 @@ impl<A: Applier> Composition<A> {
                 continue;
             }
             let runtime_clone = runtime_handle.clone();
-            let (root, commands) = {
+            let (root, commands, side_effects) = {
                 self.slots.reset();
                 let mut composer =
                     Composer::new(&mut self.slots, &mut self.applier, runtime_clone, self.root);
@@ -1077,7 +1297,8 @@ impl<A: Applier> Composition<A> {
                     }
                     let root = composer.root;
                     let commands = composer.take_commands();
-                    (root, commands)
+                    let side_effects = composer.take_side_effects();
+                    (root, commands, side_effects)
                 })
             };
             self.root = root;
@@ -1086,6 +1307,9 @@ impl<A: Applier> Composition<A> {
             }
             for mut update in runtime_handle.take_updates() {
                 update(&mut self.applier)?;
+            }
+            for effect in side_effects {
+                effect();
             }
             self.slots.trim_to_cursor();
         }
@@ -1115,45 +1339,6 @@ fn hash_key<K: Hash>(key: &K) -> Key {
     key.hash(&mut hasher);
     hasher.finish()
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate as compose_core;
-    use compose_macros::composable;
-    use cell::Cell;
-    use rc::Rc;
-    #[derive(Default)]
-    struct TextNode {
-        text: String,
-    }
-    impl Node for TextNode {}
-    thread_local! {
-        static INVOCATIONS: Cell<usize> = Cell::new(0);
-    }
-    thread_local! {
-        static PARENT_RECOMPOSITIONS: Cell<usize> = Cell::new(0);
-        static CHILD_RECOMPOSITIONS: Cell<usize> = Cell::new(0);
-        static CAPTURED_PARENT_STATE: RefCell<Option<compose_core::MutableState<i32>>> =
-            RefCell::new(None);
-    }
-    #[test]
-    fn slot_table_remember_replaces_mismatched_type() {
-        let mut slots = SlotTable::new();
-        {
-            let value = slots.remember(|| 42i32);
-            assert_eq!(*value, 42);
-        }
-        slots.reset();
-        {
-            let value = slots.remember(|| "updated");
-            assert_eq!(*value, "updated");
-        }
-        slots.reset();
-        {
-            let value = slots.remember(|| "should not run");
-            assert_eq!(*value, "updated");
-        }
-    }
     #[composable]
     fn counted_text(value: i32) -> NodeId {
         INVOCATIONS.with(|calls| calls.set(calls.get() + 1));
@@ -1180,125 +1365,32 @@ mod tests {
         });
         child_reads_state(state.as_state())
     }
-    #[test]
-    fn remember_state_roundtrip() {
-        let mut composition = Composition::new(MemoryApplier::new());
-        let mut text_seen = String::new();
-        for _ in 0..2 {
-            composition
-                .render(location_key(file!(), line!(), column!()), || {
-                    with_current_composer(|composer| {
-                        composer.with_group(
-                            location_key(file!(), line!(), column!()),
-                            |composer| {
-                                let count = composer.use_state(|| 0);
-                                let node_id = composer.emit_node(|| TextNode::default());
-                                composer
-                                    .with_node_mut(node_id, |node: &mut TextNode| {
-                                        node.text = format!("{}", count.get());
-                                    })
-                                    .expect("update text node");
-                                text_seen = count.get().to_string();
-                            },
-                        );
-                    });
-                })
-                .expect("render succeeds");
-        }
-        assert_eq!(text_seen, "0");
+    #[composable]
+    fn side_effect_component() -> NodeId {
+        SIDE_EFFECT_LOG.with(|log| log.borrow_mut().push("compose"));
+        let state = compose_core::use_state(|| 0);
+        let _ = state.value();
+        SIDE_EFFECT_STATE.with(|slot| {
+            if slot.borrow().is_none() {
+                *slot.borrow_mut() = Some(state.clone());
+            }
+        });
+        compose_core::SideEffect(|| {
+            SIDE_EFFECT_LOG.with(|log| log.borrow_mut().push("effect"));
+        });
+        emit_node(|| TextNode::default())
     }
-    #[test]
-    fn state_update_schedules_render() {
-        let mut composition = Composition::new(MemoryApplier::new());
-        let mut stored = None;
-        composition
-            .render(location_key(file!(), line!(), column!()), || {
-                let state = use_state(|| 10);
-                let _ = state.value();
-                stored = Some(state);
+    #[composable]
+    fn disposable_effect_host() -> NodeId {
+        let state = compose_core::use_state(|| 0);
+        DISPOSABLE_STATE.with(|slot| *slot.borrow_mut() = Some(state.clone()));
+        compose_core::DisposableEffect(state.value(), |scope| {
+            DISPOSABLE_EFFECT_LOG.with(|log| log.borrow_mut().push("start"));
+            scope.on_dispose(|| {
+                DISPOSABLE_EFFECT_LOG.with(|log| log.borrow_mut().push("dispose"));
             })
-            .expect("render succeeds");
-        let state = stored.expect("state stored");
-        assert!(!composition.should_render());
-        state.set(11);
-        assert!(composition.should_render());
-    }
-    #[test]
-    fn state_invalidation_skips_parent_scope() {
-        PARENT_RECOMPOSITIONS.with(|calls| calls.set(0));
-        CHILD_RECOMPOSITIONS.with(|calls| calls.set(0));
-        CAPTURED_PARENT_STATE.with(|slot| *slot.borrow_mut() = None);
-        let mut composition = Composition::new(MemoryApplier::new());
-        let root_key = location_key(file!(), line!(), column!());
-        composition
-            .render(root_key, || {
-                parent_passes_state();
-            })
-            .expect("initial render succeeds");
-        PARENT_RECOMPOSITIONS.with(|calls| assert_eq!(calls.get(), 1));
-        CHILD_RECOMPOSITIONS.with(|calls| assert_eq!(calls.get(), 1));
-        let state = CAPTURED_PARENT_STATE
-            .with(|slot| slot.borrow().clone())
-            .expect("captured state");
-        PARENT_RECOMPOSITIONS.with(|calls| calls.set(0));
-        CHILD_RECOMPOSITIONS.with(|calls| calls.set(0));
-        state.set(1);
-        assert!(composition.should_render());
-        composition
-            .process_invalid_scopes()
-            .expect("process invalid scopes succeeds");
-        PARENT_RECOMPOSITIONS.with(|calls| assert_eq!(calls.get(), 0));
-        CHILD_RECOMPOSITIONS.with(|calls| assert!(calls.get() > 0));
-        assert!(!composition.should_render());
-    }
-    #[test]
-    fn animate_float_as_state_updates_immediately() {
-        let mut composition = Composition::new(MemoryApplier::new());
-        let root_key = location_key(file!(), line!(), column!());
-        let group_key = location_key(file!(), line!(), column!());
-        let mut values = Vec::new();
-        composition
-            .render(root_key, || {
-                with_current_composer(|composer| {
-                    composer.with_group(group_key, |composer| {
-                        let state = composer.animate_float_as_state(0.0, "alpha");
-                        values.push(state.get());
-                    });
-                });
-            })
-            .expect("render succeeds");
-        assert_eq!(values, vec![0.0]);
-        assert!(!composition.should_render());
-        composition
-            .render(root_key, || {
-                with_current_composer(|composer| {
-                    composer.with_group(group_key, |composer| {
-                        let state = composer.animate_float_as_state(1.0, "alpha");
-                        values.push(state.get());
-                    });
-                });
-            })
-            .expect("render succeeds");
-        assert_eq!(values, vec![0.0, 1.0]);
-        assert!(!composition.should_render());
-    }
-    #[test]
-    fn signal_write_triggers_callback_on_change() {
-        let triggered = Rc::new(Cell::new(0));
-        let count = triggered.clone();
-        let (read, write) = create_signal(0, Rc::new(move || count.set(count.get() + 1)));
-        assert_eq!(read.get(), 0);
-        write.set(1);
-        assert_eq!(read.get(), 1);
-        assert_eq!(triggered.get(), 1);
-        write.set(1);
-        assert_eq!(triggered.get(), 1);
-    }
-    #[test]
-    fn signal_map_snapshots_value() {
-        let (read, _write) = create_signal(2, Rc::new(|| {}));
-        let mapped = read.map(|v| v * 2);
-        assert_eq!(mapped.get(), 4);
+        });
+        emit_node(|| TextNode::default())
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     enum Operation {
@@ -1378,143 +1470,28 @@ mod tests {
             })
             .expect("read parent operations")
     }
-    #[test]
-    fn reorder_keyed_children_emits_moves() {
-        let mut slots = SlotTable::new();
-        let mut applier = MemoryApplier::new();
-        let runtime = Rc::new(RuntimeInner::default());
-        let parent_id = applier.create(Box::new(RecordingNode::default()));
-        let child_a = applier.create(Box::new(TrackingChild {
-            label: "a".to_string(),
-            mount_count: 1,
-        }));
-        let child_b = applier.create(Box::new(TrackingChild {
-            label: "b".to_string(),
-            mount_count: 1,
-        }));
-        let child_c = applier.create(Box::new(TrackingChild {
-            label: "c".to_string(),
-            mount_count: 1,
-        }));
-        applier
-            .with_node(parent_id, |node: &mut RecordingNode| {
-                node.children = vec![child_a, child_b, child_c];
-                node.operations.clear();
-            })
-            .expect("seed parent state");
-        let initial_len = applier.len();
-        let operations = apply_child_diff(
-            &mut slots,
-            &mut applier,
-            &runtime,
-            parent_id,
-            vec![child_a, child_b, child_c],
-            vec![child_c, child_b, child_a],
-        );
-        assert_eq!(
-            operations,
-            vec![
-                Operation::Move { from: 2, to: 0 },
-                Operation::Move { from: 2, to: 1 },
-            ]
-        );
-        let final_children = applier
-            .with_node(parent_id, |node: &mut RecordingNode| node.children.clone())
-            .expect("read reordered children");
-        assert_eq!(final_children, vec![child_c, child_b, child_a]);
-        let final_len = applier.len();
-        assert_eq!(initial_len, final_len);
-        for (expected_label, child_id) in [("a", child_a), ("b", child_b), ("c", child_c)] {
-            applier
-                .with_node(child_id, |child: &mut TrackingChild| {
-                    assert_eq!(child.label, expected_label.to_string());
-                    assert_eq!(child.mount_count, 1);
-                })
-                .expect("read tracking child state");
+        #[composable]
+        fn parent(local_counter: CompositionLocal<i32>, state: MutableState<i32>) {
+            CompositionLocalProvider(vec![local_counter.provides(state.value())], || {
+                child(local_counter.clone());
+            });
         }
+        composition
+            .render(1, || parent(local_counter.clone(), provided_state.clone()))
+            .expect("initial composition");
+        assert_eq!(CHILD_RECOMPOSITIONS.with(|c| c.get()), 1);
+        assert_eq!(LAST_VALUE.with(|slot| slot.get()), 1);
+        provided_state.set_value(5);
+        composition
+            .process_invalid_scopes()
+            .expect("process local change");
+        assert_eq!(CHILD_RECOMPOSITIONS.with(|c| c.get()), 2);
+        assert_eq!(LAST_VALUE.with(|slot| slot.get()), 5);
     }
-    #[test]
-    fn insert_and_remove_emit_expected_ops() {
-        let mut slots = SlotTable::new();
-        let mut applier = MemoryApplier::new();
-        let runtime = Rc::new(RuntimeInner::default());
-        let parent_id = applier.create(Box::new(RecordingNode::default()));
-        let child_a = applier.create(Box::new(TrackingChild {
-            label: "a".to_string(),
-            mount_count: 1,
-        }));
-        let child_b = applier.create(Box::new(TrackingChild {
-            label: "b".to_string(),
-            mount_count: 1,
-        }));
-        applier
-            .with_node(parent_id, |node: &mut RecordingNode| {
-                node.children = vec![child_a, child_b];
-                node.operations.clear();
-            })
-            .expect("seed parent state");
-        let initial_len = applier.len();
-        let child_c = applier.create(Box::new(TrackingChild {
-            label: "c".to_string(),
-            mount_count: 1,
-        }));
-        assert_eq!(applier.len(), initial_len + 1);
-        let insert_ops = apply_child_diff(
-            &mut slots,
-            &mut applier,
-            &runtime,
-            parent_id,
-            vec![child_a, child_b],
-            vec![child_a, child_b, child_c],
-        );
-        assert_eq!(insert_ops, vec![Operation::Insert(child_c)]);
-        let after_insert_children = applier
-            .with_node(parent_id, |node: &mut RecordingNode| node.children.clone())
-            .expect("read children after insert");
-        assert_eq!(after_insert_children, vec![child_a, child_b, child_c]);
-        applier
-            .with_node(parent_id, |node: &mut RecordingNode| {
-                node.operations.clear()
-            })
-            .expect("clear operations");
-        let remove_ops = apply_child_diff(
-            &mut slots,
-            &mut applier,
-            &runtime,
-            parent_id,
-            vec![child_a, child_b, child_c],
-            vec![child_a, child_c],
-        );
-        assert_eq!(remove_ops, vec![Operation::Remove(child_b)]);
-        let after_remove_children = applier
-            .with_node(parent_id, |node: &mut RecordingNode| node.children.clone())
-            .expect("read children after remove");
-        assert_eq!(after_remove_children, vec![child_a, child_c]);
-        assert_eq!(applier.len(), initial_len + 1);
-    }
-    #[test]
-    fn composable_skips_when_inputs_unchanged() {
-        INVOCATIONS.with(|calls| calls.set(0));
-        let mut composition = Composition::new(MemoryApplier::new());
-        let key = location_key(file!(), line!(), column!());
         composition
-            .render(key, || {
-                counted_text(1);
-            })
-            .expect("render succeeds");
-        INVOCATIONS.with(|calls| assert_eq!(calls.get(), 1));
-        composition
-            .render(key, || {
-                counted_text(1);
-            })
-            .expect("render succeeds");
-        INVOCATIONS.with(|calls| assert_eq!(calls.get(), 1));
-        composition
-            .render(key, || {
-                counted_text(2);
-            })
-            .expect("render succeeds");
-        INVOCATIONS.with(|calls| assert_eq!(calls.get(), 2));
+            .render(2, || reader(local_counter.clone()))
+            .expect("compose reader");
+        assert_eq!(READ_VALUE.with(|slot| slot.get()), 7);
     }
 }
 ```
@@ -1848,32 +1825,6 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
         TokenStream::from(quote! { #func })
     }
 }
-```
-**compose-ui/benches/skip_recomposition.rs**
-```rust
-use compose_core::{location_key, MemoryApplier};
-use compose_ui::{composable, Composition, Modifier, Text};
-use criterion::{criterion_group, criterion_main, Criterion};
-#[composable]
-fn StaticLabel(label: &'static str) {
-    Text(label.to_string(), Modifier::empty());
-}
-fn skip_recomposition_static_label(c: &mut Criterion) {
-    let mut composition = Composition::new(MemoryApplier::new());
-    let key = location_key(file!(), line!(), column!());
-    composition
-        .render(key, || StaticLabel("Hello"))
-        .expect("initial render");
-    c.bench_function("skip_recomposition_static_label", |b| {
-        b.iter(|| {
-            composition
-                .render(key, || StaticLabel("Hello"))
-                .expect("render");
-        });
-    });
-}
-criterion_group!(benches, skip_recomposition_static_label);
-criterion_main!(benches);
 ```
 **compose-ui/src/layout.rs**
 ```rust
@@ -2877,162 +2828,6 @@ where
         compose_core::with_key(item, || row(item));
     }
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{LayoutEngine, SnapshotState, TestComposition};
-    use compose_core::{self, location_key, Composition, MemoryApplier, MutableState, State};
-    use cell::{Cell, RefCell};
-    thread_local! {
-        static COUNTER_ROW_INVOCATIONS: Cell<usize> = Cell::new(0);
-        static COUNTER_TEXT_ID: RefCell<Option<NodeId>> = RefCell::new(None);
-    }
-    #[composable]
-    fn CounterRow(label: &'static str, count: State<i32>) -> NodeId {
-        COUNTER_ROW_INVOCATIONS.with(|calls| calls.set(calls.get() + 1));
-        Column(Modifier::empty(), || {
-            Text(label, Modifier::empty());
-            let count_for_text = count.clone();
-            let text_id = Text(
-                DynamicTextSource::new(move || format!("Count = {}", count_for_text.value())),
-                Modifier::empty(),
-            );
-            COUNTER_TEXT_ID.with(|slot| *slot.borrow_mut() = Some(text_id));
-        })
-    }
-    #[test]
-    fn button_triggers_state_update() {
-        let mut composition = Composition::new(MemoryApplier::new());
-        let mut button_state: Option<SnapshotState<i32>> = None;
-        let mut button_id = None;
-        composition
-            .render(location_key(file!(), line!(), column!()), || {
-                let counter = compose_core::use_state(|| 0);
-                if button_state.is_none() {
-                    button_state = Some(counter.clone());
-                }
-                Column(Modifier::empty(), || {
-                    Text(format!("Count = {}", counter.get()), Modifier::empty());
-                    button_id = Some(Button(
-                        Modifier::empty(),
-                        {
-                            let counter = counter.clone();
-                            move || {
-                                counter.set(counter.get() + 1);
-                            }
-                        },
-                        || {
-                            Text("+", Modifier::empty());
-                        },
-                    ));
-                });
-            })
-            .expect("render succeeds");
-        let state = button_state.expect("button state stored");
-        assert_eq!(state.get(), 0);
-        let button_node_id = button_id.expect("button id");
-        {
-            let applier = composition.applier_mut();
-            applier
-                .with_node(button_node_id, |node: &mut ButtonNode| {
-                    node.trigger();
-                })
-                .expect("trigger button node");
-        }
-        assert!(composition.should_render());
-    }
-    #[test]
-    fn text_updates_with_state_after_write() {
-        let mut composition = Composition::new(MemoryApplier::new());
-        let root_key = location_key(file!(), line!(), column!());
-        let mut text_node_id = None;
-        let mut captured_state: Option<MutableState<i32>> = None;
-        composition
-            .render(root_key, || {
-                Column(Modifier::empty(), || {
-                    let count = compose_core::use_state(|| 0);
-                    if captured_state.is_none() {
-                        captured_state = Some(count.clone());
-                    }
-                    let count_for_text = count.clone();
-                    text_node_id = Some(Text(
-                        DynamicTextSource::new(move || {
-                            format!("Count = {}", count_for_text.value())
-                        }),
-                        Modifier::empty(),
-                    ));
-                });
-            })
-            .expect("render succeeds");
-        let id = text_node_id.expect("text node id");
-        {
-            let applier = composition.applier_mut();
-            applier
-                .with_node(id, |node: &mut TextNode| {
-                    assert_eq!(node.text, "Count = 0");
-                })
-                .expect("read text node");
-        }
-        let state = captured_state.expect("captured state");
-        state.set(1);
-        assert!(composition.should_render());
-        composition
-            .process_invalid_scopes()
-            .expect("process invalid scopes succeeds");
-        {
-            let applier = composition.applier_mut();
-            applier
-                .with_node(id, |node: &mut TextNode| {
-                    assert_eq!(node.text, "Count = 1");
-                })
-                .expect("read text node");
-        }
-        assert!(!composition.should_render());
-    }
-    #[test]
-    fn counter_state_skips_when_label_static() {
-        COUNTER_ROW_INVOCATIONS.with(|calls| calls.set(0));
-        COUNTER_TEXT_ID.with(|slot| *slot.borrow_mut() = None);
-        let mut composition = Composition::new(MemoryApplier::new());
-        let root_key = location_key(file!(), line!(), column!());
-        let mut captured_state: Option<MutableState<i32>> = None;
-        composition
-            .render(root_key, || {
-                let count = compose_core::use_state(|| 0);
-                if captured_state.is_none() {
-                    captured_state = Some(count.clone());
-                }
-                CounterRow("Counter", count.as_state());
-            })
-            .expect("initial render succeeds");
-        COUNTER_ROW_INVOCATIONS.with(|calls| assert_eq!(calls.get(), 1));
-        let text_id = COUNTER_TEXT_ID.with(|slot| slot.borrow().expect("text id"));
-        {
-            let applier = composition.applier_mut();
-            applier
-                .with_node(text_id, |node: &mut TextNode| {
-                    assert_eq!(node.text, "Count = 0");
-                })
-                .expect("read text node");
-        }
-        let state = captured_state.expect("captured state");
-        state.set(1);
-        assert!(composition.should_render());
-        COUNTER_ROW_INVOCATIONS.with(|calls| calls.set(0));
-        composition
-            .process_invalid_scopes()
-            .expect("process invalid scopes succeeds");
-        COUNTER_ROW_INVOCATIONS.with(|calls| assert_eq!(calls.get(), 0));
-        {
-            let applier = composition.applier_mut();
-            applier
-                .with_node(text_id, |node: &mut TextNode| {
-                    assert_eq!(node.text, "Count = 1");
-                })
-                .expect("read text node");
-        }
-        assert!(!composition.should_render());
-    }
     fn collect_column_texts(
         composition: &mut TestComposition,
     ) -> Result<Vec<String>, compose_core::NodeError> {
@@ -3050,74 +2845,6 @@ mod tests {
             texts.push(text);
         }
         Ok(texts)
-    }
-    #[test]
-    fn foreach_reorders_without_losing_children() {
-        let mut composition = TestComposition::new(MemoryApplier::new());
-        let key = location_key(file!(), line!(), column!());
-        composition
-            .render(key, || {
-                Column(Modifier::empty(), || {
-                    let items = ["A", "B", "C"];
-                    ForEach(&items, |item| {
-                        Text(item.to_string(), Modifier::empty());
-                    });
-                });
-            })
-            .expect("initial render");
-        let initial_texts = collect_column_texts(&mut composition).expect("collect initial");
-        assert_eq!(initial_texts, vec!["A", "B", "C"]);
-        composition
-            .render(key, || {
-                Column(Modifier::empty(), || {
-                    let items = ["C", "B", "A"];
-                    ForEach(&items, |item| {
-                        Text(item.to_string(), Modifier::empty());
-                    });
-                });
-            })
-            .expect("reorder render");
-        let reordered_texts = collect_column_texts(&mut composition).expect("collect reorder");
-        assert_eq!(reordered_texts, vec!["C", "B", "A"]);
-    }
-    #[test]
-    fn layout_column_uses_taffy_measurements() {
-        let mut composition = Composition::new(MemoryApplier::new());
-        let key = location_key(file!(), line!(), column!());
-        let mut text_id = None;
-        composition
-            .render(key, || {
-                Column(Modifier::padding(10.0), || {
-                    let id = Text("Hello", Modifier::empty());
-                    text_id = Some(id);
-                    Spacer(Size {
-                        width: 0.0,
-                        height: 30.0,
-                    });
-                });
-            })
-            .expect("initial render");
-        let root = composition.root().expect("root node");
-        let layout_tree = composition
-            .applier_mut()
-            .compute_layout(
-                root,
-                Size {
-                    width: 200.0,
-                    height: 200.0,
-                },
-            )
-            .expect("compute layout");
-        let root_layout = layout_tree.root().clone();
-        assert!((root_layout.rect.width - 60.0).abs() < 1e-3);
-        assert!((root_layout.rect.height - 70.0).abs() < 1e-3);
-        assert_eq!(root_layout.children.len(), 2);
-        let text_layout = &root_layout.children[0];
-        assert_eq!(text_layout.node_id, text_id.expect("text node id"));
-        assert!((text_layout.rect.x - 10.0).abs() < 1e-3);
-        assert!((text_layout.rect.y - 10.0).abs() < 1e-3);
-        assert!((text_layout.rect.width - 40.0).abs() < 1e-3);
-        assert!((text_layout.rect.height - 20.0).abs() < 1e-3);
     }
 }
 ```
@@ -3330,136 +3057,6 @@ fn translate_primitive(primitive: DrawPrimitive, dx: f32, dy: f32) -> DrawPrimit
 fn resolve_radii(shape: RoundedCornerShape, rect: Rect) -> crate::modifier::CornerRadii {
     shape.resolve(rect.width, rect.height)
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::modifier::{Brush, Color, Modifier};
-    use crate::primitives::{Column, Text};
-    use crate::{layout::LayoutEngine, Composition};
-    use compose_core::{location_key, MemoryApplier};
-    fn compute_layout(composition: &mut Composition<MemoryApplier>, root: NodeId) -> LayoutTree {
-        composition
-            .applier_mut()
-            .compute_layout(
-                root,
-                Size {
-                    width: 200.0,
-                    height: 200.0,
-                },
-            )
-            .expect("layout")
-    }
-    #[test]
-    fn renderer_emits_background_and_text() {
-        let mut composition = Composition::new(MemoryApplier::new());
-        let key = location_key(file!(), line!(), column!());
-        composition
-            .render(key, || {
-                Text(
-                    "Hello".to_string(),
-                    Modifier::background(Color(0.1, 0.2, 0.3, 1.0)),
-                );
-            })
-            .expect("initial render");
-        let root = composition.root().expect("text root");
-        let layout = compute_layout(&mut composition, root);
-        let scene = {
-            let applier = composition.applier_mut();
-            let mut renderer = HeadlessRenderer::new(applier);
-            renderer.render(&layout).expect("render")
-        };
-        assert_eq!(scene.operations().len(), 2);
-        assert!(matches!(
-            scene.operations()[0],
-            RenderOp::Primitive {
-                layer: PaintLayer::Behind,
-                ..
-            }
-        ));
-        match &scene.operations()[1] {
-            RenderOp::Text { value, .. } => assert_eq!(value, "Hello"),
-            other => panic!("unexpected op: {other:?}"),
-        }
-    }
-    #[test]
-    fn renderer_translates_draw_commands() {
-        let mut composition = Composition::new(MemoryApplier::new());
-        let key = location_key(file!(), line!(), column!());
-        composition
-            .render(key, || {
-                Column(
-                    Modifier::padding(10.0)
-                        .then(Modifier::background(Color(0.3, 0.3, 0.9, 1.0)))
-                        .then(Modifier::draw_behind(|scope| {
-                            scope.draw_rect(Brush::solid(Color(0.8, 0.0, 0.0, 1.0)));
-                        })),
-                    || {
-                        Text(
-                            "Content".to_string(),
-                            Modifier::draw_behind(|scope| {
-                                scope.draw_rect(Brush::solid(Color(0.2, 0.2, 0.2, 1.0)));
-                            })
-                            .then(Modifier::draw_with_content(
-                                |scope| {
-                                    scope.draw_rect(Brush::solid(Color(0.0, 0.0, 0.0, 1.0)));
-                                },
-                            )),
-                        );
-                    },
-                );
-            })
-            .expect("initial render");
-        let root = composition.root().expect("column root");
-        let layout = compute_layout(&mut composition, root);
-        let scene = {
-            let applier = composition.applier_mut();
-            let mut renderer = HeadlessRenderer::new(applier);
-            renderer.render(&layout).expect("render")
-        };
-        let behind: Vec<_> = scene.primitives_for(PaintLayer::Behind).collect();
-        assert_eq!(behind.len(), 3); 
-        let mut saw_translated = false;
-        for primitive in behind {
-            match primitive {
-                DrawPrimitive::Rect { rect, .. } => {
-                    if rect.x >= 10.0 && rect.y >= 10.0 {
-                        saw_translated = true;
-                    }
-                }
-                DrawPrimitive::RoundRect { rect, .. } => {
-                    if rect.x >= 10.0 && rect.y >= 10.0 {
-                        saw_translated = true;
-                    }
-                }
-            }
-        }
-        assert!(
-            saw_translated,
-            "expected a translated primitive for padded text"
-        );
-        let overlay_ops: Vec<_> = scene
-            .operations()
-            .iter()
-            .filter(|op| {
-                matches!(
-                    op,
-                    RenderOp::Primitive {
-                        layer: PaintLayer::Overlay,
-                        ..
-                    }
-                )
-            })
-            .collect();
-        assert_eq!(overlay_ops.len(), 1);
-        if let RenderOp::Primitive { primitive, .. } = overlay_ops[0] {
-            match primitive {
-                DrawPrimitive::Rect { rect, .. } | DrawPrimitive::RoundRect { rect, .. } => {
-                    assert!(rect.x >= 10.0);
-                    assert!(rect.y >= 10.0);
-                }
-            }
-        }
-    }
 }
 ```
 **desktop-app/src/main.rs**
