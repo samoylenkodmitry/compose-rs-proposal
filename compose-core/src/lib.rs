@@ -32,6 +32,10 @@ struct RecomposeScopeInner {
     runtime: RuntimeHandle,
     invalid: Cell<bool>,
     enqueued: Cell<bool>,
+    active: Cell<bool>,
+    pending_recompose: Cell<bool>,
+    force_reuse: Cell<bool>,
+    force_recompose: Cell<bool>,
     group_index: Cell<Option<usize>>,
     recompose: RefCell<Option<RecomposeCallback>>,
 }
@@ -43,6 +47,10 @@ impl RecomposeScopeInner {
             runtime,
             invalid: Cell::new(false),
             enqueued: Cell::new(false),
+            active: Cell::new(true),
+            pending_recompose: Cell::new(false),
+            force_reuse: Cell::new(false),
+            force_recompose: Cell::new(false),
             group_index: Cell::new(None),
             recompose: RefCell::new(None),
         }
@@ -71,8 +79,15 @@ impl RecomposeScope {
         self.inner.invalid.get()
     }
 
+    pub fn is_active(&self) -> bool {
+        self.inner.active.get()
+    }
+
     fn invalidate(&self) {
         self.inner.invalid.set(true);
+        if !self.inner.active.get() {
+            return;
+        }
         if !self.inner.enqueued.replace(true) {
             self.inner
                 .runtime
@@ -82,8 +97,18 @@ impl RecomposeScope {
 
     fn mark_recomposed(&self) {
         self.inner.invalid.set(false);
+        self.inner.force_reuse.set(false);
+        self.inner.force_recompose.set(false);
         if self.inner.enqueued.replace(false) {
             self.inner.runtime.mark_scope_recomposed(self.inner.id);
+        }
+        let pending = self.inner.pending_recompose.replace(false);
+        if pending {
+            if self.inner.active.get() {
+                self.invalidate();
+            } else {
+                self.inner.invalid.set(true);
+            }
         }
     }
 
@@ -110,6 +135,55 @@ impl RecomposeScope {
             callback(composer);
         }
     }
+
+    pub fn deactivate(&self) {
+        if !self.inner.active.replace(false) {
+            return;
+        }
+        if self.inner.enqueued.replace(false) {
+            self.inner.runtime.mark_scope_recomposed(self.inner.id);
+        }
+    }
+
+    pub fn reactivate(&self) {
+        if self.inner.active.replace(true) {
+            return;
+        }
+        if self.inner.invalid.get() && !self.inner.enqueued.replace(true) {
+            self.inner
+                .runtime
+                .register_invalid_scope(self.inner.id, Rc::downgrade(&self.inner));
+        }
+    }
+
+    pub fn force_reuse(&self) {
+        self.inner.force_reuse.set(true);
+        self.inner.force_recompose.set(false);
+        self.inner.pending_recompose.set(true);
+    }
+
+    pub fn force_recompose(&self) {
+        self.inner.force_recompose.set(true);
+        self.inner.force_reuse.set(false);
+        self.inner.pending_recompose.set(false);
+    }
+
+    pub fn should_recompose(&self) -> bool {
+        if self.inner.force_recompose.replace(false) {
+            self.inner.force_reuse.set(false);
+            return true;
+        }
+        if self.inner.force_reuse.replace(false) {
+            return false;
+        }
+        self.is_invalid()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RecomposeOptions {
+    pub force_reuse: bool,
+    pub force_recompose: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -859,6 +933,7 @@ pub struct Composer<'a> {
     local_stack: Vec<LocalContext>,
     side_effects: Vec<Box<dyn FnOnce()>>,
     phase: Phase,
+    pending_scope_options: Option<RecomposeOptions>,
 }
 
 #[derive(Default, Clone)]
@@ -873,9 +948,18 @@ struct ParentFrame {
     new_children: Vec<NodeId>,
 }
 
-#[derive(Default)]
 struct SubcomposeFrame {
     nodes: Vec<NodeId>,
+    scopes: Vec<RecomposeScope>,
+}
+
+impl Default for SubcomposeFrame {
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            scopes: Vec::new(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -902,6 +986,7 @@ impl<'a> Composer<'a> {
             local_stack: Vec::new(),
             side_effects: Vec::new(),
             phase: Phase::Compose,
+            pending_scope_options: None,
         }
     }
 
@@ -932,13 +1017,33 @@ impl<'a> Composer<'a> {
             .slots
             .remember(|| RecomposeScope::new(self.runtime.clone()))
             .clone();
+        if let Some(options) = self.pending_scope_options.take() {
+            if options.force_recompose {
+                scope_ref.force_recompose();
+            } else if options.force_reuse {
+                scope_ref.force_reuse();
+            }
+        }
         scope_ref.set_group_index(index);
         self.scope_stack.push(scope_ref.clone());
+        if let Some(frame) = self.subcompose_stack.last_mut() {
+            frame.scopes.push(scope_ref.clone());
+        }
         let result = f(self);
         self.scope_stack.pop();
         scope_ref.mark_recomposed();
         self.slots.end();
         result
+    }
+
+    pub fn compose_with_reuse<R>(
+        &mut self,
+        key: Key,
+        options: RecomposeOptions,
+        f: impl FnOnce(&mut Composer<'_>) -> R,
+    ) -> R {
+        self.pending_scope_options = Some(options);
+        self.with_group(key, f)
     }
 
     pub fn with_key<K: Hash, R>(&mut self, key: &K, f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
@@ -1030,7 +1135,8 @@ impl<'a> Composer<'a> {
         let result = self.with_group(slot_id.raw(), |composer| content(composer));
         let frame = unsafe { guard.into_frame() };
         let nodes = frame.nodes;
-        state.register_active(slot_id, &nodes);
+        let scopes = frame.scopes;
+        state.register_active(slot_id, &nodes, &scopes);
         (result, nodes)
     }
 
@@ -2301,5 +2407,154 @@ mod tests {
             .expect("compose reader");
 
         assert_eq!(READ_VALUE.with(|slot| slot.get()), 7);
+    }
+
+    #[test]
+    fn compose_with_reuse_skips_then_recomposes() {
+        thread_local! {
+            static INVOCATIONS: Cell<usize> = Cell::new(0);
+        }
+
+        let mut composition = Composition::new(MemoryApplier::new());
+        let runtime = composition.runtime_handle();
+        let state = MutableState::with_runtime(0, runtime.clone());
+        let root_key = location_key(file!(), line!(), column!());
+        let slot_key = location_key(file!(), line!(), column!());
+
+        let mut render_with_options = |options: RecomposeOptions| {
+            let state_clone = state.clone();
+            composition
+                .render(root_key, || {
+                    let local_state = state_clone.clone();
+                    with_current_composer(|composer| {
+                        composer.compose_with_reuse(slot_key, options, |composer| {
+                            let scope =
+                                composer.current_recompose_scope().expect("scope available");
+                            let changed = scope.should_recompose();
+                            let has_previous = composer.remember(|| false);
+                            if !changed && *has_previous {
+                                composer.skip_current_group();
+                                return;
+                            }
+                            *has_previous = true;
+                            INVOCATIONS.with(|count| count.set(count.get() + 1));
+                            let _ = local_state.value();
+                        });
+                    });
+                })
+                .expect("render with options");
+        };
+
+        render_with_options(RecomposeOptions::default());
+
+        assert_eq!(INVOCATIONS.with(|count| count.get()), 1);
+
+        state.set_value(1);
+
+        render_with_options(RecomposeOptions {
+            force_reuse: true,
+            ..Default::default()
+        });
+
+        assert_eq!(INVOCATIONS.with(|count| count.get()), 1);
+    }
+
+    #[test]
+    fn compose_with_reuse_forces_recomposition_when_requested() {
+        thread_local! {
+            static INVOCATIONS: Cell<usize> = Cell::new(0);
+        }
+
+        let mut composition = Composition::new(MemoryApplier::new());
+        let runtime = composition.runtime_handle();
+        let state = MutableState::with_runtime(0, runtime.clone());
+        let root_key = location_key(file!(), line!(), column!());
+        let slot_key = location_key(file!(), line!(), column!());
+
+        let mut render_with_options = |options: RecomposeOptions| {
+            let state_clone = state.clone();
+            composition
+                .render(root_key, || {
+                    let local_state = state_clone.clone();
+                    with_current_composer(|composer| {
+                        composer.compose_with_reuse(slot_key, options, |composer| {
+                            let scope =
+                                composer.current_recompose_scope().expect("scope available");
+                            let changed = scope.should_recompose();
+                            let has_previous = composer.remember(|| false);
+                            if !changed && *has_previous {
+                                composer.skip_current_group();
+                                return;
+                            }
+                            *has_previous = true;
+                            INVOCATIONS.with(|count| count.set(count.get() + 1));
+                            let _ = local_state.value();
+                        });
+                    });
+                })
+                .expect("render with options");
+        };
+
+        render_with_options(RecomposeOptions::default());
+
+        assert_eq!(INVOCATIONS.with(|count| count.get()), 1);
+
+        render_with_options(RecomposeOptions {
+            force_recompose: true,
+            ..Default::default()
+        });
+
+        assert_eq!(INVOCATIONS.with(|count| count.get()), 2);
+    }
+
+    #[test]
+    fn inactive_scopes_delay_invalidation_until_reactivated() {
+        thread_local! {
+            static CAPTURED_SCOPE: RefCell<Option<RecomposeScope>> = RefCell::new(None);
+            static INVOCATIONS: Cell<usize> = Cell::new(0);
+        }
+
+        let mut composition = Composition::new(MemoryApplier::new());
+        let runtime = composition.runtime_handle();
+        let state = MutableState::with_runtime(0, runtime.clone());
+        let root_key = location_key(file!(), line!(), column!());
+
+        #[composable]
+        fn capture_scope(state: MutableState<i32>) {
+            INVOCATIONS.with(|count| count.set(count.get() + 1));
+            with_current_composer(|composer| {
+                let scope = composer.current_recompose_scope().expect("scope available");
+                CAPTURED_SCOPE.with(|slot| slot.replace(Some(scope)));
+            });
+            let _ = state.value();
+        }
+
+        composition
+            .render(root_key, || capture_scope(state.clone()))
+            .expect("initial composition");
+
+        assert_eq!(INVOCATIONS.with(|count| count.get()), 1);
+
+        let scope = CAPTURED_SCOPE
+            .with(|slot| slot.borrow().clone())
+            .expect("captured scope");
+        assert!(scope.is_active());
+
+        scope.deactivate();
+        state.set_value(1);
+
+        composition
+            .process_invalid_scopes()
+            .expect("no recomposition while inactive");
+
+        assert_eq!(INVOCATIONS.with(|count| count.get()), 1);
+
+        scope.reactivate();
+
+        composition
+            .process_invalid_scopes()
+            .expect("recomposition after reactivation");
+
+        assert_eq!(INVOCATIONS.with(|count| count.get()), 2);
     }
 }
