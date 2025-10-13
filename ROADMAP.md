@@ -8,7 +8,7 @@ Naming and API normalization
 - [x] Public API uses lowerCamelCase names that mirror Kotlin closely.
 - [x] Provide remember, mutableStateOf, derivedStateOf, State<T>, MutableState<T>.
 - [x] Replace use_state with remember { mutableStateOf(...) } (keep a temporary alias useState for migration if desired).
-- [ ] Replace emit_node and similar internals from the public surface. Node creation happens inside composables; any remaining low-level helpers are internal-only.
+- [x] Replace emit_node and similar internals from the public surface. Node creation happens inside composables; any remaining low-level helpers are internal-only.
 - [x] Functions like with_key -> withKey; with_current_composer -> withCurrentComposer kept internal; public API is composables and Modifiers.
 - [ ] Prefer Rust ergonomics where it doesn't change behavior, but match Kotlin naming and call shapes for public API.
 
