@@ -5,12 +5,12 @@ Goal
 - No feature flags. Each phase lands complete, with tests mirroring official Compose docs examples and semantics.
 
 Naming and API normalization
-- Public API uses lowerCamelCase names that mirror Kotlin closely.
-- Provide remember, mutableStateOf, derivedStateOf, State<T>, MutableState<T>.
-- Replace use_state with remember { mutableStateOf(...) } (keep a temporary alias useState for migration if desired).
-- Replace emit_node and similar internals from the public surface. Node creation happens inside composables; any remaining low-level helpers are internal-only.
-- Functions like with_key -> withKey; with_current_composer -> withCurrentComposer kept internal; public API is composables and Modifiers.
-- Prefer Rust ergonomics where it doesn't change behavior, but match Kotlin naming and call shapes for public API.
+- [x] Public API uses lowerCamelCase names that mirror Kotlin closely.
+- [x] Provide remember, mutableStateOf, derivedStateOf, State<T>, MutableState<T>.
+- [x] Replace use_state with remember { mutableStateOf(...) } (keep a temporary alias useState for migration if desired).
+- [ ] Replace emit_node and similar internals from the public surface. Node creation happens inside composables; any remaining low-level helpers are internal-only.
+- [x] Functions like with_key -> withKey; with_current_composer -> withCurrentComposer kept internal; public API is composables and Modifiers.
+- [ ] Prefer Rust ergonomics where it doesn't change behavior, but match Kotlin naming and call shapes for public API.
 
 Phase 0 — Lifecycle, change ops, and slot robustness (must land before Phase 1)
 Context and why

@@ -139,6 +139,10 @@ pub fn with_current_composer<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
         f(composer)
     })
 }
+#[allow(non_snake_case)]
+pub fn withCurrentComposer<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
+    with_current_composer(f)
+}
 fn with_current_composer_opt<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> Option<R> {
     CURRENT_COMPOSER.with(|stack| {
         let ptr = *stack.borrow().last()?;
@@ -154,6 +158,10 @@ pub fn emit_node<N: Node + 'static>(init: impl FnOnce() -> N) -> NodeId {
 pub fn with_key<K: Hash>(key: &K, content: impl FnOnce()) {
     with_current_composer(|composer| composer.with_key(key, |_| content()));
 }
+#[allow(non_snake_case)]
+pub fn withKey<K: Hash>(key: &K, content: impl FnOnce()) {
+    with_key(key, content)
+}
 pub fn remember<T: 'static>(init: impl FnOnce() -> T) -> &'static mut T {
     with_current_composer(|composer| {
         let value = composer.remember(init);
@@ -163,6 +171,18 @@ pub fn remember<T: 'static>(init: impl FnOnce() -> T) -> &'static mut T {
 #[allow(non_snake_case)]
 pub fn mutableStateOf<T: 'static>(initial: T) -> MutableState<T> {
     with_current_composer(|composer| composer.mutable_state_of(initial))
+}
+#[allow(non_snake_case)]
+pub fn useState<T: 'static>(init: impl FnOnce() -> T) -> MutableState<T> {
+    remember(|| mutableStateOf(init())).clone()
+}
+#[allow(deprecated)]
+#[deprecated(
+    since = "0.1.0",
+    note = "use useState(|| value) instead of use_state(|| value)"
+)]
+pub fn use_state<T: 'static>(init: impl FnOnce() -> T) -> MutableState<T> {
+    useState(init)
 }
 #[allow(non_snake_case)]
 pub fn derivedStateOf<T: 'static + Clone>(compute: impl Fn() -> T + 'static) -> State<T> {
@@ -358,9 +378,6 @@ pub fn push_parent(id: NodeId) {
 }
 pub fn pop_parent() {
     with_current_composer(|composer| composer.pop_parent());
-}
-pub fn use_state<T: 'static>(init: impl FnOnce() -> T) -> MutableState<T> {
-    remember(|| mutableStateOf(init())).clone()
 }
 pub fn animate_float_as_state(target: f32, label: &str) -> State<f32> {
     with_current_composer(|composer| composer.animate_float_as_state(target, label))
@@ -1357,7 +1374,7 @@ fn hash_key<K: Hash>(key: &K) -> Key {
     #[composable]
     fn parent_passes_state() -> NodeId {
         PARENT_RECOMPOSITIONS.with(|calls| calls.set(calls.get() + 1));
-        let state = compose_core::use_state(|| 0);
+        let state = compose_core::useState(|| 0);
         CAPTURED_PARENT_STATE.with(|slot| {
             if slot.borrow().is_none() {
                 *slot.borrow_mut() = Some(state.clone());
@@ -1368,7 +1385,7 @@ fn hash_key<K: Hash>(key: &K) -> Key {
     #[composable]
     fn side_effect_component() -> NodeId {
         SIDE_EFFECT_LOG.with(|log| log.borrow_mut().push("compose"));
-        let state = compose_core::use_state(|| 0);
+        let state = compose_core::useState(|| 0);
         let _ = state.value();
         SIDE_EFFECT_STATE.with(|slot| {
             if slot.borrow().is_none() {
@@ -1382,7 +1399,7 @@ fn hash_key<K: Hash>(key: &K) -> Key {
     }
     #[composable]
     fn disposable_effect_host() -> NodeId {
-        let state = compose_core::use_state(|| 0);
+        let state = compose_core::useState(|| 0);
         DISPOSABLE_STATE.with(|slot| *slot.borrow_mut() = Some(state.clone()));
         compose_core::DisposableEffect(state.value(), |scope| {
             DISPOSABLE_EFFECT_LOG.with(|log| log.borrow_mut().push("start"));
@@ -3300,9 +3317,9 @@ impl ComposeDesktopApp {
 }
 #[composable]
 fn counter_app() {
-    let counter = compose_core::use_state(|| 0);
-    let pointer_position = compose_core::use_state(|| Point { x: 0.0, y: 0.0 });
-    let pointer_down = compose_core::use_state(|| false);
+    let counter = compose_core::useState(|| 0);
+    let pointer_position = compose_core::useState(|| Point { x: 0.0, y: 0.0 });
+    let pointer_down = compose_core::useState(|| false);
     let wave_state = animation_state();
     let wave = wave_state.get();
     Column(

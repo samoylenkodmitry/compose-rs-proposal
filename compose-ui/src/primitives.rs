@@ -382,7 +382,7 @@ mod tests {
         let mut button_id = None;
         composition
             .render(location_key(file!(), line!(), column!()), || {
-                let counter = compose_core::use_state(|| 0);
+                let counter = compose_core::useState(|| 0);
                 if button_state.is_none() {
                     button_state = Some(counter.clone());
                 }
@@ -428,7 +428,7 @@ mod tests {
         composition
             .render(root_key, || {
                 Column(Modifier::empty(), || {
-                    let count = compose_core::use_state(|| 0);
+                    let count = compose_core::useState(|| 0);
                     if captured_state.is_none() {
                         captured_state = Some(count.clone());
                     }
@@ -483,7 +483,7 @@ mod tests {
 
         composition
             .render(root_key, || {
-                let count = compose_core::use_state(|| 0);
+                let count = compose_core::useState(|| 0);
                 if captured_state.is_none() {
                     captured_state = Some(count.clone());
                 }
