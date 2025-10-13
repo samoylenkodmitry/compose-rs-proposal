@@ -7,7 +7,9 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::mem;
 use std::rc::{Rc, Weak};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::thread;
 use std::thread_local;
 
 pub type Key = u64;
@@ -464,6 +466,63 @@ impl Default for DisposableEffectResult {
     }
 }
 
+#[derive(Default)]
+struct LaunchedEffectState {
+    key: Option<Key>,
+    cancel_flag: Option<Arc<AtomicBool>>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl LaunchedEffectState {
+    fn should_run(&self, key: Key) -> bool {
+        match self.key {
+            Some(current) => current != key,
+            None => true,
+        }
+    }
+
+    fn set_key(&mut self, key: Key) {
+        self.key = Some(key);
+    }
+
+    fn launch(&mut self, effect: impl FnOnce(LaunchedEffectScope) + Send + 'static) {
+        self.cancel_current();
+        let active = Arc::new(AtomicBool::new(true));
+        let scope = LaunchedEffectScope {
+            active: Arc::clone(&active),
+        };
+        let handle = thread::spawn(move || effect(scope));
+        self.cancel_flag = Some(active);
+        self.handle = Some(handle);
+    }
+
+    fn cancel_current(&mut self) {
+        if let Some(flag) = self.cancel_flag.take() {
+            flag.store(false, Ordering::SeqCst);
+        }
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for LaunchedEffectState {
+    fn drop(&mut self) {
+        self.cancel_current();
+    }
+}
+
+#[derive(Clone)]
+pub struct LaunchedEffectScope {
+    active: Arc<AtomicBool>,
+}
+
+impl LaunchedEffectScope {
+    pub fn is_active(&self) -> bool {
+        self.active.load(Ordering::SeqCst)
+    }
+}
+
 #[allow(non_snake_case)]
 pub fn SideEffect(effect: impl FnOnce() + 'static) {
     with_current_composer(|composer| composer.register_side_effect(effect));
@@ -488,6 +547,30 @@ where
                     let result = effect(DisposableEffectScope);
                     unsafe {
                         (*state_ptr).set_cleanup(result.into_cleanup());
+                    }
+                }
+            });
+        }
+    });
+}
+
+#[allow(non_snake_case)]
+pub fn LaunchedEffect<K, F>(keys: K, effect: F)
+where
+    K: Hash,
+    F: FnOnce(LaunchedEffectScope) + Send + 'static,
+{
+    with_current_composer(|composer| {
+        let key_hash = hash_key(&keys);
+        let state = composer.remember(LaunchedEffectState::default);
+        if state.should_run(key_hash) {
+            state.set_key(key_hash);
+            let state_ptr: *mut LaunchedEffectState = &mut *state;
+            let mut effect_opt = Some(effect);
+            composer.register_side_effect(move || {
+                if let Some(effect) = effect_opt.take() {
+                    unsafe {
+                        (*state_ptr).launch(effect);
                     }
                 }
             });
@@ -1732,6 +1815,9 @@ mod tests {
     use compose_macros::composable;
     use std::cell::Cell;
     use std::rc::Rc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
 
     #[derive(Default)]
     struct TextNode {
@@ -1811,6 +1897,78 @@ mod tests {
             assert_eq!(second_nodes.len(), 1);
             assert_eq!(second_nodes[0], first_id);
         }
+    }
+
+    #[test]
+    fn launched_effect_runs_and_cancels() {
+        let mut composition = Composition::new(MemoryApplier::new());
+        let runtime = composition.runtime_handle();
+        let state = MutableState::with_runtime(0i32, runtime.clone());
+        let runs = Arc::new(AtomicUsize::new(0));
+        let cancels = Arc::new(AtomicUsize::new(0));
+
+        let render = |composition: &mut Composition<MemoryApplier>,
+                      key_state: &MutableState<i32>| {
+            let runs = Arc::clone(&runs);
+            let cancels = Arc::clone(&cancels);
+            let state = key_state.clone();
+            composition
+                .render(0, move || {
+                    let key = state.value();
+                    let runs = Arc::clone(&runs);
+                    let cancels = Arc::clone(&cancels);
+                    compose_core::LaunchedEffect(key, move |scope| {
+                        runs.fetch_add(1, Ordering::SeqCst);
+                        while scope.is_active() {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        cancels.fetch_add(1, Ordering::SeqCst);
+                    });
+                })
+                .expect("render succeeds");
+        };
+
+        render(&mut composition, &state);
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        assert_eq!(cancels.load(Ordering::SeqCst), 0);
+
+        state.set_value(1);
+        render(&mut composition, &state);
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(runs.load(Ordering::SeqCst), 2);
+        assert_eq!(cancels.load(Ordering::SeqCst), 1);
+
+        drop(composition);
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(cancels.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn launched_effect_runs_side_effect_body() {
+        let mut composition = Composition::new(MemoryApplier::new());
+        let runtime = composition.runtime_handle();
+        let state = MutableState::with_runtime(0i32, runtime);
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        composition
+            .render(0, move || {
+                let key = state.value();
+                let tx = tx.clone();
+                compose_core::LaunchedEffect(key, move |scope| {
+                    let _ = tx.send("start");
+                    while scope.is_active() {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    let _ = tx.send("cancel");
+                });
+            })
+            .expect("render succeeds");
+
+        assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap(), "start");
+
+        drop(composition);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap(), "cancel");
     }
 
     #[test]
