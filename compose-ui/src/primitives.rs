@@ -9,6 +9,10 @@ use indexmap::IndexSet;
 use crate::composable;
 use crate::modifier::{Modifier, Size};
 
+fn compose_node<N: Node + 'static>(init: impl FnOnce() -> N) -> NodeId {
+    compose_core::with_current_composer(|composer| composer.emit_node(init))
+}
+
 #[derive(Clone, Default)]
 pub struct ColumnNode {
     pub modifier: Modifier,
@@ -157,7 +161,7 @@ pub fn Column<F>(modifier: Modifier, mut content: F) -> NodeId
 where
     F: FnMut(),
 {
-    let id = compose_core::emit_node(|| ColumnNode {
+    let id = compose_node(|| ColumnNode {
         modifier: modifier.clone(),
         children: IndexSet::new(),
     });
@@ -177,7 +181,7 @@ pub fn Row<F>(modifier: Modifier, mut content: F) -> NodeId
 where
     F: FnMut(),
 {
-    let id = compose_core::emit_node(|| RowNode {
+    let id = compose_node(|| RowNode {
         modifier: modifier.clone(),
         children: IndexSet::new(),
     });
@@ -288,7 +292,7 @@ where
     S: IntoTextSource + Clone + PartialEq + 'static,
 {
     let current = value.into_text_source().resolve();
-    let id = compose_core::emit_node(|| TextNode {
+    let id = compose_node(|| TextNode {
         modifier: modifier.clone(),
         text: current.clone(),
     });
@@ -305,7 +309,7 @@ where
 
 #[composable(no_skip)]
 pub fn Spacer(size: Size) -> NodeId {
-    let id = compose_core::emit_node(|| SpacerNode { size });
+    let id = compose_node(|| SpacerNode { size });
     if let Err(err) = compose_core::with_node_mut(id, |node: &mut SpacerNode| {
         node.size = size;
     }) {
@@ -321,7 +325,7 @@ where
     G: FnMut(),
 {
     let on_click_rc: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(on_click));
-    let id = compose_core::emit_node(|| ButtonNode {
+    let id = compose_node(|| ButtonNode {
         modifier: modifier.clone(),
         on_click: on_click_rc.clone(),
         children: IndexSet::new(),

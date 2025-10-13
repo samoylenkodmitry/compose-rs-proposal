@@ -164,10 +164,6 @@ fn with_current_composer_opt<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> Optio
     })
 }
 
-pub fn emit_node<N: Node + 'static>(init: impl FnOnce() -> N) -> NodeId {
-    with_current_composer(|composer| composer.emit_node(init))
-}
-
 pub fn with_key<K: Hash>(key: &K, content: impl FnOnce()) {
     with_current_composer(|composer| composer.with_key(key, |_| content()));
 }
@@ -1570,6 +1566,10 @@ mod tests {
             RefCell::new(None);
     }
 
+    fn compose_test_node<N: Node + 'static>(init: impl FnOnce() -> N) -> NodeId {
+        compose_core::with_current_composer(|composer| composer.emit_node(init))
+    }
+
     #[test]
     fn slot_table_remember_replaces_mismatched_type() {
         let mut slots = SlotTable::new();
@@ -1597,7 +1597,7 @@ mod tests {
     #[composable]
     fn counted_text(value: i32) -> NodeId {
         INVOCATIONS.with(|calls| calls.set(calls.get() + 1));
-        let id = emit_node(|| TextNode::default());
+        let id = compose_test_node(|| TextNode::default());
         with_node_mut(id, |node: &mut TextNode| {
             node.text = format!("{}", value);
         })
@@ -1636,7 +1636,7 @@ mod tests {
         compose_core::SideEffect(|| {
             SIDE_EFFECT_LOG.with(|log| log.borrow_mut().push("effect"));
         });
-        emit_node(|| TextNode::default())
+        compose_test_node(|| TextNode::default())
     }
 
     #[composable]
@@ -1649,7 +1649,7 @@ mod tests {
                 DISPOSABLE_EFFECT_LOG.with(|log| log.borrow_mut().push("dispose"));
             })
         });
-        emit_node(|| TextNode::default())
+        compose_test_node(|| TextNode::default())
     }
 
     #[test]
