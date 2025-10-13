@@ -10,7 +10,7 @@ Naming and API normalization
 - Replace use_state with remember { mutableStateOf(...) } (keep a temporary alias useState for migration if desired).
 - Replace emit_node and similar internals from the public surface. Node creation happens inside composables; any remaining low-level helpers are internal-only.
 - Functions like with_key -> withKey; with_current_composer -> withCurrentComposer kept internal; public API is composables and Modifiers.
-- Prefer Rust ergonomics where it doesn’t change behavior, but match Kotlin naming and call shapes for public API.
+- Prefer Rust ergonomics where it doesn't change behavior, but match Kotlin naming and call shapes for public API.
 
 Phase 0 — Lifecycle, change ops, and slot robustness (must land before Phase 1)
 Context and why
@@ -57,7 +57,7 @@ Tests / definition of done
 - A composable with stable, equal params is not re-invoked between frames (changed bit masks verified).
 - Slot model handles 10k inserts/deletes without pathological slowdown.
 
-Phase 2 — Intrinsic layout (replace Taffy; adopt Compose’s model)
+Phase 2 — Intrinsic layout (replace Taffy; adopt Compose's model)
 Context and why
 - Compose layouts use Constraints → measure → place, intrinsics, alignment lines, and baseline alignment. This is necessary for parity with Row, Column, Box, Spacer, and custom Layout behavior.
 
@@ -76,6 +76,70 @@ Tests / definition of done
 - IntrinsicSize.Min/Max behaviors match Compose examples.
 - Baseline alignment matches Compose behavior for text.
 - Visual and layout regression of existing demos pass after the swap.
+
+Phase 2.5 — SubcomposeLayout (measure-time composition)
+Context and why
+- SubcomposeLayout inverts the normal Composition → Measurement → Layout flow, allowing composition during the measure pass. This is foundational for LazyColumn, BoxWithConstraints, adaptive layouts, and any scenario where you need constraints before deciding what to compose. Without this, we cannot achieve Compose parity for dynamic, constraint-aware UIs.
+
+Deliverables (Core Infrastructure)
+- [ ] Create `compose-core/src/subcompose.rs` with `SubcomposeState` struct
+  - [ ] Three-tier node organization: active, reusable, precomposed
+  - [ ] `slot_id_to_node: HashMap<SlotId, NodeId>` for active tracking
+  - [ ] `reusable_nodes: Vec<NodeId>` and `precomposed_nodes: HashMap<SlotId, NodeId>`
+  - [ ] Tracking indices: `current_index`, `reusable_count`, `precomposed_count`
+- [ ] Define `SlotReusePolicy` trait with `get_slots_to_retain()` and `are_compatible()`
+  - [ ] Implement default policy: exact match → type-compatible match
+- [ ] Extend `Composer` with subcompose capability
+  - [ ] Add `subcompose(slot_id, content) -> (R, Vec<NodeId>)` method
+  - [ ] Implement `take_node_from_reusables(slot_id)` with two-phase matching
+  - [ ] Implement `dispose_or_reuse_starting_from_index(start_index)`
+  - [ ] Ensure `subcompose()` only callable during measure/layout (panic otherwise)
+- [ ] Extend `RecomposeScope` with reuse lifecycle
+  - [ ] Add `deactivate()` method (mark inactive without disposing)
+  - [ ] Add `reactivate()` method (mark active, trigger recomposition)
+  - [ ] Add `compose_with_reuse()` for maximizing state reuse
+  - [ ] Implement `forceReuse` and `forceRecompose` flags
+
+Deliverables (SubcomposeLayout Primitive)
+- [ ] Create `SubcomposeMeasureScope` trait extending `MeasureScope`
+  - [ ] Add `subcompose(slot_id, content) -> Vec<Measurable>` method
+- [ ] Implement `SubcomposeMeasureScopeImpl` struct
+  - [ ] Holds reference to `Composer` and measurement state
+  - [ ] Converts `NodeId`s to `Measurable` list
+- [ ] Create `SubcomposeLayoutNode` implementing `Node`
+  - [ ] Store `modifier`, `measure_policy`, and `subcompose_state`
+  - [ ] Override `measure()` to invoke policy with `SubcomposeMeasureScope`
+  - [ ] Call `dispose_or_reuse_starting_from_index()` after measure completes
+- [ ] Implement `SubcomposeLayout` composable in `compose-ui/src/primitives.rs`
+  - [ ] Accept `modifier` and `measure_policy` parameters
+  - [ ] Emit `SubcomposeLayoutNode`
+  - [ ] Do NOT use `push_parent`/`pop_parent` (children managed by `subcompose()`)
+
+Deliverables (BoxWithConstraints)
+- [ ] Define `BoxWithConstraintsScope` trait extending `BoxScope`
+  - [ ] Add `constraints()` method returning `Constraints`
+  - [ ] Add `min_width()`, `max_width()`, `min_height()`, `max_height()` as `Dp`
+- [ ] Implement `BoxWithConstraintsScopeImpl` struct
+  - [ ] Store `constraints` and `density` for conversions
+  - [ ] Implement all scope methods
+- [ ] Implement `BoxWithConstraints` composable
+  - [ ] Use `SubcomposeLayout` internally
+  - [ ] Create `BoxWithConstraintsScopeImpl` in measure policy
+  - [ ] Call `subcompose()` with scope as receiver
+  - [ ] Delegate to box measure policy for layout
+
+Tests / definition of done
+- [ ] Test: Basic subcomposition during measure creates nodes correctly
+- [ ] Test: Calling `subcompose()` during composition panics with clear error
+- [ ] Test: Reordering keyed subcomposed children preserves nodes (no recreate)
+- [ ] Test: Removing subcomposed slots calls `unmount()` and disposes remembered values
+- [ ] Test: Compatible slot reuse reactivates composition without full recreate
+- [ ] Test: `BoxWithConstraints` composes different content based on constraints
+- [ ] Test: Constraint changes trigger recomposition in `BoxWithConstraints`
+- [ ] Test: Adaptive layout pattern (wide vs narrow) works correctly
+- [ ] Test: 100+ subcomposed items with reordering has no pathological slowdown
+- [ ] Example: Port Compose docs example for `BoxWithConstraints` verbatim
+- [ ] Example: Implement TabRow-like pattern (measure tabs, then position indicator)
 
 Phase 3 — Effects and CompositionLocal
 Context and why
@@ -98,7 +162,7 @@ Tests / definition of done
 
 Phase 4 — Modifier.Node chain (persistent chain, per-phase traversal)
 Context and why
-- Compose’s modifier chain is persistent and node-based. This enables efficient traversal for layout, draw, input, and semantics. The current Vec-based approach won’t scale.
+- Compose's modifier chain is persistent and node-based. This enables efficient traversal for layout, draw, input, and semantics. The current Vec-based approach won't scale.
 
 Deliverables
 - Modifier as a persistent chain (cons-list). then is O(1), preserves order.
@@ -131,7 +195,7 @@ Context and why
 - LazyColumn/LazyRow rely on subcomposition to compose only visible items and reuse item content.
 
 Deliverables
-- SubcomposeLayout API and engine.
+- SubcomposeLayout API and engine. (Covered in Phase 2.5)
 - LazyColumn and LazyRow built on SubcomposeLayout with item reuse windows.
 - Compose/measure only visible items plus lookahead buffer.
 
@@ -151,7 +215,7 @@ Deliverables
 Tests / definition of done
 - Drawing primitives render correctly and in the right order.
 - Pointer input flows through the modifier node chain with correct hit-testing and clipping.
-- Overlays don’t affect measure/placement or input hits.
+- Overlays don't affect measure/placement or input hits.
 
 Cross-cutting implementation notes
 - Replace ad-hoc signal-based Text updates with tracked State reads once Phase 1 lands.
@@ -164,6 +228,7 @@ Migration plan from current codebase
 - Add remember/mutableStateOf/derivedStateOf; keep temporary aliases for current APIs (use_state -> remember+mutableStateOf).
 - Switch Text and other primitives to read State via .value (or value()/setValue()) and rely on tracked reads. Remove out-of-band node patches.
 - Swap Taffy with the Constraints model; reimplement Row/Column/Spacer/Box.
+- Implement SubcomposeLayout and BoxWithConstraints (Phase 2.5).
 - Transition Modifier to persistent chain; then to node elements without breaking public APIs.
 
 Key acceptance tests to add early
@@ -171,11 +236,14 @@ Key acceptance tests to add early
 - Reorder with keys: state preserved in moved items; no recreation.
 - Subtree removal: unmount and disposal run exactly once; MemoryApplier count decreases accordingly.
 - Intrinsics parity: mirror official Compose examples verbatim for width(IntrinsicSize.Min/Max) and baseline alignment.
+- Subcompose reuse: reordering subcomposed slots preserves nodes and state; only moves occur.
+- BoxWithConstraints reactivity: different content composed based on constraints; updates when constraints change.
 
 Performance guardrails
 - Compose 10k nodes with long modifier chains without quadratic behavior.
 - Recompose a single leaf in O(depth) time with minimal allocations.
 - Modifier.then O(1) and persistent.
+- Subcompose 100+ items and reorder without pathological slowdown.
 
 No feature flags
 - Each phase lands atomically with updates to existing primitives/tests. No temporary switches.
