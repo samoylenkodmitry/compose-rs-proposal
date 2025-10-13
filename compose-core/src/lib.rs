@@ -141,6 +141,13 @@ pub mod subcompose;
 pub use signals::{create_signal, IntoSignal, ReadSignal, WriteSignal};
 pub use subcompose::{DefaultSlotReusePolicy, SlotId, SlotReusePolicy, SubcomposeState};
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Phase {
+    Compose,
+    Measure,
+    Layout,
+}
+
 pub fn with_current_composer<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
     CURRENT_COMPOSER.with(|stack| {
         let ptr = *stack.borrow().last().expect("no composer installed");
@@ -845,11 +852,13 @@ pub struct Composer<'a> {
     applier: &'a mut dyn Applier,
     runtime: RuntimeHandle,
     parent_stack: Vec<ParentFrame>,
+    subcompose_stack: Vec<SubcomposeFrame>,
     pub(crate) root: Option<NodeId>,
     commands: Vec<Command>,
     scope_stack: Vec<RecomposeScope>,
     local_stack: Vec<LocalContext>,
     side_effects: Vec<Box<dyn FnOnce()>>,
+    phase: Phase,
 }
 
 #[derive(Default, Clone)]
@@ -862,6 +871,11 @@ struct ParentFrame {
     remembered: *mut ParentChildren,
     previous: Vec<NodeId>,
     new_children: Vec<NodeId>,
+}
+
+#[derive(Default)]
+struct SubcomposeFrame {
+    nodes: Vec<NodeId>,
 }
 
 #[derive(Default)]
@@ -881,11 +895,13 @@ impl<'a> Composer<'a> {
             applier,
             runtime,
             parent_stack: Vec::new(),
+            subcompose_stack: Vec::new(),
             root,
             commands: Vec::new(),
             scope_stack: Vec::new(),
             local_stack: Vec::new(),
             side_effects: Vec::new(),
+            phase: Phase::Compose,
         }
     }
 
@@ -953,6 +969,69 @@ impl<'a> Composer<'a> {
 
     pub fn current_recompose_scope(&self) -> Option<RecomposeScope> {
         self.scope_stack.last().cloned()
+    }
+
+    #[inline(always)]
+    pub fn phase(&self) -> Phase {
+        self.phase
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    #[inline(always)]
+    pub(crate) fn set_phase(&mut self, phase: Phase) {
+        self.phase = phase;
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    #[inline(always)]
+    pub(crate) fn subcompose<R>(
+        &mut self,
+        state: &mut SubcomposeState,
+        slot_id: SlotId,
+        content: impl FnOnce(&mut Composer<'_>) -> R,
+    ) -> (R, Vec<NodeId>) {
+        match self.phase {
+            Phase::Measure | Phase::Layout => {}
+            current => panic!(
+                "subcompose() may only be called during measure or layout; current phase: {:?}",
+                current
+            ),
+        }
+
+        self.subcompose_stack.push(SubcomposeFrame::default());
+        struct StackGuard {
+            stack: *mut Vec<SubcomposeFrame>,
+            leaked: bool,
+        }
+        impl StackGuard {
+            fn new(stack: *mut Vec<SubcomposeFrame>) -> Self {
+                Self {
+                    stack,
+                    leaked: false,
+                }
+            }
+
+            unsafe fn into_frame(mut self) -> SubcomposeFrame {
+                self.leaked = true;
+                (*self.stack).pop().expect("subcompose stack underflow")
+            }
+        }
+        impl Drop for StackGuard {
+            fn drop(&mut self) {
+                if !self.leaked {
+                    unsafe {
+                        (*self.stack).pop();
+                    }
+                }
+            }
+        }
+
+        let guard = StackGuard::new(&mut self.subcompose_stack as *mut _);
+        let result = self.with_group(slot_id.raw(), |composer| content(composer));
+        let frame = unsafe { guard.into_frame() };
+        let nodes = frame.nodes;
+        state.register_active(slot_id, &nodes);
+        (result, nodes)
     }
 
     pub fn skip_current_group(&mut self) {
@@ -1049,6 +1128,10 @@ impl<'a> Composer<'a> {
     }
 
     fn attach_to_parent(&mut self, id: NodeId) {
+        if let Some(frame) = self.subcompose_stack.last_mut() {
+            frame.nodes.push(id);
+            return;
+        }
         if let Some(frame) = self.parent_stack.last_mut() {
             frame.new_children.push(id);
         } else {
@@ -1551,6 +1634,16 @@ mod tests {
 
     impl Node for TextNode {}
 
+    #[derive(Default)]
+    struct DummyNode;
+
+    impl Node for DummyNode {}
+
+    fn runtime_handle() -> (RuntimeHandle, Rc<RuntimeInner>) {
+        let runtime = Rc::new(RuntimeInner::default());
+        (RuntimeHandle(Rc::downgrade(&runtime)), runtime)
+    }
+
     thread_local! {
         static INVOCATIONS: Cell<usize> = Cell::new(0);
     }
@@ -1570,6 +1663,48 @@ mod tests {
 
     fn compose_test_node<N: Node + 'static>(init: impl FnOnce() -> N) -> NodeId {
         compose_core::with_current_composer(|composer| composer.emit_node(init))
+    }
+
+    #[test]
+    #[should_panic(expected = "subcompose() may only be called during measure or layout")]
+    fn subcompose_panics_outside_measure_or_layout() {
+        let (handle, _runtime) = runtime_handle();
+        let mut slots = SlotTable::new();
+        let mut applier = MemoryApplier::new();
+        let mut composer = Composer::new(&mut slots, &mut applier, handle, None);
+        let mut state = SubcomposeState::default();
+        let _ = composer.subcompose(&mut state, SlotId::new(1), |_| {});
+    }
+
+    #[test]
+    fn subcompose_reuses_nodes_across_calls() {
+        let (handle, _runtime) = runtime_handle();
+        let mut slots = SlotTable::new();
+        let mut applier = MemoryApplier::new();
+        let mut state = SubcomposeState::default();
+        let first_id;
+
+        {
+            let mut composer = Composer::new(&mut slots, &mut applier, handle.clone(), None);
+            composer.set_phase(Phase::Measure);
+            let (_, first_nodes) = composer.subcompose(&mut state, SlotId::new(7), |composer| {
+                composer.emit_node(|| DummyNode::default())
+            });
+            assert_eq!(first_nodes.len(), 1);
+            first_id = first_nodes[0];
+        }
+
+        slots.reset();
+
+        {
+            let mut composer = Composer::new(&mut slots, &mut applier, handle.clone(), None);
+            composer.set_phase(Phase::Measure);
+            let (_, second_nodes) = composer.subcompose(&mut state, SlotId::new(7), |composer| {
+                composer.emit_node(|| DummyNode::default())
+            });
+            assert_eq!(second_nodes.len(), 1);
+            assert_eq!(second_nodes[0], first_id);
+        }
     }
 
     #[test]

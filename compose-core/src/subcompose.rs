@@ -1,3 +1,11 @@
+//! State tracking for measure-time subcomposition.
+//!
+//! The [`SubcomposeState`] keeps book of which slots are active, which nodes can
+//! be reused, and which precompositions need to be disposed. Reuse follows a
+//! two-phase lookup: first [`SlotId`]s that match exactly are preferred. If no
+//! exact match exists, the [`SlotReusePolicy`] is consulted to determine whether
+//! a node produced for another slot is compatible with the requested slot.
+
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
@@ -30,8 +38,13 @@ pub trait SlotReusePolicy: Send + Sync + 'static {
     /// will be disposed.
     fn get_slots_to_retain(&self, active: &[SlotId]) -> HashSet<SlotId>;
 
-    /// Determines whether a node that previously rendered `existing` is
-    /// compatible with `requested`.
+    /// Determines whether a node that previously rendered the slot `existing`
+    /// can be reused when the caller requests `requested`.
+    ///
+    /// Implementations should document what constitutes compatibility (for
+    /// example, identical slot identifiers, matching layout classes, or node
+    /// types). Returning `true` allows [`SubcomposeState`] to migrate the node
+    /// across slots instead of disposing it.
     fn are_compatible(&self, existing: SlotId, requested: SlotId) -> bool;
 }
 
@@ -54,27 +67,41 @@ impl SlotReusePolicy for DefaultSlotReusePolicy {
 
 #[derive(Debug, Default, Clone)]
 struct NodeSlotMapping {
-    slot_to_node: HashMap<SlotId, NodeId>,
+    slot_to_nodes: HashMap<SlotId, Vec<NodeId>>,
     node_to_slot: HashMap<NodeId, SlotId>,
 }
 
 impl NodeSlotMapping {
-    fn insert(&mut self, slot: SlotId, node: NodeId) {
-        self.slot_to_node.insert(slot, node);
+    fn set_nodes(&mut self, slot: SlotId, nodes: &[NodeId]) {
+        self.slot_to_nodes.insert(slot, nodes.to_vec());
+        for node in nodes {
+            self.node_to_slot.insert(*node, slot);
+        }
+    }
+
+    fn add_node(&mut self, slot: SlotId, node: NodeId) {
+        self.slot_to_nodes.entry(slot).or_default().push(node);
         self.node_to_slot.insert(node, slot);
     }
 
     fn remove_by_node(&mut self, node: &NodeId) -> Option<SlotId> {
         if let Some(slot) = self.node_to_slot.remove(node) {
-            self.slot_to_node.remove(&slot);
+            if let Some(nodes) = self.slot_to_nodes.get_mut(&slot) {
+                if let Some(index) = nodes.iter().position(|candidate| candidate == node) {
+                    nodes.remove(index);
+                }
+                if nodes.is_empty() {
+                    self.slot_to_nodes.remove(&slot);
+                }
+            }
             Some(slot)
         } else {
             None
         }
     }
 
-    fn get_node(&self, slot: &SlotId) -> Option<NodeId> {
-        self.slot_to_node.get(slot).copied()
+    fn get_nodes(&self, slot: &SlotId) -> Option<&[NodeId]> {
+        self.slot_to_nodes.get(slot).map(|nodes| nodes.as_slice())
     }
 
     fn get_slot(&self, node: &NodeId) -> Option<SlotId> {
@@ -88,7 +115,7 @@ pub struct SubcomposeState {
     mapping: NodeSlotMapping,
     active_order: Vec<SlotId>,
     reusable_nodes: Vec<NodeId>,
-    precomposed_nodes: HashMap<SlotId, NodeId>,
+    precomposed_nodes: HashMap<SlotId, Vec<NodeId>>,
     policy: Box<dyn SlotReusePolicy>,
     pub(crate) current_index: usize,
     pub(crate) reusable_count: usize,
@@ -135,10 +162,24 @@ impl SubcomposeState {
         self.policy = policy;
     }
 
-    /// Records that a node with `node_id` is currently rendering the provided
+    /// Records that the nodes in `node_ids` are currently rendering the provided
     /// `slot_id`.
-    pub fn register_active(&mut self, slot_id: SlotId, node_id: NodeId) {
-        self.mapping.insert(slot_id, node_id);
+    pub fn register_active(&mut self, slot_id: SlotId, node_ids: &[NodeId]) {
+        if let Some(position) = self.active_order.iter().position(|slot| *slot == slot_id) {
+            self.active_order.remove(position);
+        }
+        self.mapping.set_nodes(slot_id, node_ids);
+        if let Some(nodes) = self.precomposed_nodes.get_mut(&slot_id) {
+            nodes.retain(|node| !node_ids.contains(node));
+            if nodes.is_empty() {
+                self.precomposed_nodes.remove(&slot_id);
+            }
+        }
+        self.precomposed_count = self
+            .precomposed_nodes
+            .values()
+            .map(|nodes| nodes.len())
+            .sum();
         self.active_order.push(slot_id);
         self.current_index = self.active_order.len();
     }
@@ -146,23 +187,30 @@ impl SubcomposeState {
     /// Stores a precomposed node for the provided slot. Precomposed nodes stay
     /// detached from the tree until they are activated by `register_active`.
     pub fn register_precomposed(&mut self, slot_id: SlotId, node_id: NodeId) {
-        self.precomposed_nodes.insert(slot_id, node_id);
-        self.precomposed_count = self.precomposed_nodes.len();
+        self.precomposed_nodes
+            .entry(slot_id)
+            .or_default()
+            .push(node_id);
+        self.precomposed_count = self
+            .precomposed_nodes
+            .values()
+            .map(|nodes| nodes.len())
+            .sum();
     }
 
     /// Returns the node that previously rendered this slot, if it is still
     /// considered reusable. This performs a two-step lookup: first an exact
     /// slot match, then compatibility using the policy.
     pub fn take_node_from_reusables(&mut self, slot_id: SlotId) -> Option<NodeId> {
-        if let Some(node_id) = self.mapping.get_node(&slot_id) {
-            if let Some(position) = self
+        if let Some(nodes) = self.mapping.get_nodes(&slot_id) {
+            if let Some((position, _)) = self
                 .reusable_nodes
                 .iter()
-                .position(|candidate| *candidate == node_id)
+                .enumerate()
+                .find(|(_, candidate)| nodes.contains(candidate))
             {
-                self.reusable_nodes.remove(position);
+                let node_id = self.reusable_nodes.remove(position);
                 self.reusable_count = self.reusable_nodes.len();
-                self.mapping.insert(slot_id, node_id);
                 return Some(node_id);
             }
         }
@@ -178,8 +226,13 @@ impl SubcomposeState {
             let node_id = self.reusable_nodes.remove(index);
             self.reusable_count = self.reusable_nodes.len();
             if let Some(previous_slot) = self.mapping.remove_by_node(&node_id) {
-                self.mapping.insert(slot_id, node_id);
-                self.precomposed_nodes.remove(&previous_slot);
+                self.mapping.add_node(slot_id, node_id);
+                if let Some(nodes) = self.precomposed_nodes.get_mut(&previous_slot) {
+                    nodes.retain(|candidate| *candidate != node_id);
+                    if nodes.is_empty() {
+                        self.precomposed_nodes.remove(&previous_slot);
+                    }
+                }
             }
             node_id
         })
@@ -203,9 +256,11 @@ impl SubcomposeState {
                 retained.push(slot);
                 continue;
             }
-            if let Some(node) = self.mapping.get_node(&slot) {
-                self.reusable_nodes.push(node);
-                moved.push(node);
+            if let Some(nodes) = self.mapping.get_nodes(&slot) {
+                for node in nodes {
+                    self.reusable_nodes.push(*node);
+                    moved.push(*node);
+                }
             }
         }
         retained.reverse();
@@ -220,8 +275,31 @@ impl SubcomposeState {
     }
 
     /// Returns a snapshot of precomposed nodes.
-    pub fn precomposed(&self) -> &HashMap<SlotId, NodeId> {
+    pub fn precomposed(&self) -> &HashMap<SlotId, Vec<NodeId>> {
         &self.precomposed_nodes
+    }
+
+    /// Removes any precomposed nodes whose slots were not activated during the
+    /// current pass and returns their identifiers for disposal.
+    pub fn drain_inactive_precomposed(&mut self) -> Vec<NodeId> {
+        let active: HashSet<SlotId> = self.active_order.iter().copied().collect();
+        let mut disposed = Vec::new();
+        let mut empty_slots = Vec::new();
+        for (slot, nodes) in self.precomposed_nodes.iter_mut() {
+            if !active.contains(slot) {
+                disposed.extend(nodes.iter().copied());
+                empty_slots.push(*slot);
+            }
+        }
+        for slot in empty_slots {
+            self.precomposed_nodes.remove(&slot);
+        }
+        self.precomposed_count = self
+            .precomposed_nodes
+            .values()
+            .map(|nodes| nodes.len())
+            .sum();
+        disposed
     }
 }
 
@@ -261,7 +339,7 @@ mod tests {
     #[test]
     fn exact_reuse_wins() {
         let mut state = SubcomposeState::default();
-        state.register_active(SlotId::new(1), 10);
+        state.register_active(SlotId::new(1), &[10]);
         state.dispose_or_reuse_starting_from_index(0);
         assert_eq!(state.reusable(), &[10]);
         let reused = state.take_node_from_reusables(SlotId::new(1));
@@ -271,7 +349,7 @@ mod tests {
     #[test]
     fn policy_based_compatibility() {
         let mut state = SubcomposeState::new(Box::new(ParityPolicy));
-        state.register_active(SlotId::new(2), 42);
+        state.register_active(SlotId::new(2), &[42]);
         state.dispose_or_reuse_starting_from_index(0);
         assert_eq!(state.reusable(), &[42]);
         let reused = state.take_node_from_reusables(SlotId::new(4));
@@ -281,10 +359,29 @@ mod tests {
     #[test]
     fn dispose_or_reuse_respects_policy() {
         let mut state = SubcomposeState::new(Box::new(RetainEvenPolicy));
-        state.register_active(SlotId::new(1), 10);
-        state.register_active(SlotId::new(2), 11);
+        state.register_active(SlotId::new(1), &[10]);
+        state.register_active(SlotId::new(2), &[11]);
         let moved = state.dispose_or_reuse_starting_from_index(0);
         assert_eq!(moved, vec![10]);
         assert_eq!(state.reusable_count, 1);
+    }
+
+    #[test]
+    fn incompatible_reuse_is_rejected() {
+        let mut state = SubcomposeState::default();
+        state.register_active(SlotId::new(1), &[10]);
+        state.dispose_or_reuse_starting_from_index(0);
+        assert_eq!(state.take_node_from_reusables(SlotId::new(2)), None);
+        assert_eq!(state.reusable(), &[10]);
+    }
+
+    #[test]
+    fn draining_inactive_precomposed_returns_nodes() {
+        let mut state = SubcomposeState::default();
+        state.register_precomposed(SlotId::new(7), 77);
+        state.register_active(SlotId::new(8), &[88]);
+        let disposed = state.drain_inactive_precomposed();
+        assert_eq!(disposed, vec![77]);
+        assert!(state.precomposed().is_empty());
     }
 }

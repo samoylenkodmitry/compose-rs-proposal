@@ -84,16 +84,16 @@ Context and why
 Deliverables (Core Infrastructure)
 - [x] Create `compose-core/src/subcompose.rs` with `SubcomposeState` struct
   - [x] Three-tier node organization: active, reusable, precomposed
-  - [x] `slot_id_to_node: HashMap<SlotId, NodeId>` for active tracking
-  - [x] `reusable_nodes: Vec<NodeId>` and `precomposed_nodes: HashMap<SlotId, NodeId>`
+  - [x] `slot_id_to_nodes: HashMap<SlotId, Vec<NodeId>>` for active tracking
+  - [x] `reusable_nodes: Vec<NodeId>` and `precomposed_nodes: HashMap<SlotId, Vec<NodeId>>`
   - [x] Tracking indices: `current_index`, `reusable_count`, `precomposed_count`
 - [x] Define `SlotReusePolicy` trait with `get_slots_to_retain()` and `are_compatible()`
   - [x] Implement default policy: exact match → type-compatible match
-- [ ] Extend `Composer` with subcompose capability
-  - [ ] Add `subcompose(slot_id, content) -> (R, Vec<NodeId>)` method
+- [x] Extend `Composer` with subcompose capability
+  - [x] Add `subcompose(slot_id, content) -> (R, Vec<NodeId>)` method
   - [x] Implement `take_node_from_reusables(slot_id)` with two-phase matching
   - [x] Implement `dispose_or_reuse_starting_from_index(start_index)`
-  - [ ] Ensure `subcompose()` only callable during measure/layout (panic otherwise)
+  - [x] Ensure `subcompose()` only callable during measure/layout (panic otherwise)
 - [ ] Extend `RecomposeScope` with reuse lifecycle
   - [ ] Add `deactivate()` method (mark inactive without disposing)
   - [ ] Add `reactivate()` method (mark active, trigger recomposition)
