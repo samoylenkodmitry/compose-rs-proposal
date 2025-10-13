@@ -148,7 +148,7 @@ Context and why
 Deliverables
 - SideEffect: runs after applyChanges in the same frame. (Implemented)
 - DisposableEffect(vararg keys): cleanup runs on key change and on scope disposal; effect re-runs with new keys. (Implemented)
-- LaunchedEffect(vararg keys): coroutine/tick scope tied to composition lifecycle; cancels and restarts on key changes.
+- [x] LaunchedEffect(vararg keys): coroutine/tick scope tied to composition lifecycle; cancels and restarts on key changes.
 - CompositionLocal:
   - compositionLocalOf/staticCompositionLocalOf
   - CompositionLocalProvider(vararg values, content)
@@ -157,7 +157,7 @@ Deliverables
 
 Tests / definition of done
 - DisposableEffect cleanup runs on key change and disposal.
-- LaunchedEffect cancels and restarts correctly.
+- [x] LaunchedEffect cancels and restarts correctly.
 - CompositionLocal changes recompose only consumers, not siblings.
 
 Phase 4 — Modifier.Node chain (persistent chain, per-phase traversal)
