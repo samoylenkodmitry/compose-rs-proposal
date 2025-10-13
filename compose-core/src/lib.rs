@@ -136,8 +136,10 @@ thread_local! {
 }
 
 pub mod signals;
+pub mod subcompose;
 
 pub use signals::{create_signal, IntoSignal, ReadSignal, WriteSignal};
+pub use subcompose::{DefaultSlotReusePolicy, SlotId, SlotReusePolicy, SubcomposeState};
 
 pub fn with_current_composer<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
     CURRENT_COMPOSER.with(|stack| {
