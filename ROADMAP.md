@@ -82,8 +82,8 @@ Context and why
 - Side effects and locals are required to write real apps and to match Compose behavior.
 
 Deliverables
-- SideEffect: runs after applyChanges in the same frame.
-- DisposableEffect(vararg keys): cleanup runs on key change and on scope disposal; effect re-runs with new keys.
+- SideEffect: runs after applyChanges in the same frame. (Implemented)
+- DisposableEffect(vararg keys): cleanup runs on key change and on scope disposal; effect re-runs with new keys. (Implemented)
 - LaunchedEffect(vararg keys): coroutine/tick scope tied to composition lifecycle; cancels and restarts on key changes.
 - CompositionLocal:
   - compositionLocalOf/staticCompositionLocalOf

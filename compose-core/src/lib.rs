@@ -295,6 +295,103 @@ pub fn staticCompositionLocalOf<T: Clone + 'static>(value: T) -> CompositionLoca
     compositionLocalOf(move || value.clone())
 }
 
+#[derive(Default)]
+struct DisposableEffectState {
+    key: Option<Key>,
+    cleanup: Option<Box<dyn FnOnce()>>,
+}
+
+impl DisposableEffectState {
+    fn should_run(&self, key: Key) -> bool {
+        match self.key {
+            Some(current) => current != key,
+            None => true,
+        }
+    }
+
+    fn set_key(&mut self, key: Key) {
+        self.key = Some(key);
+    }
+
+    fn set_cleanup(&mut self, cleanup: Option<Box<dyn FnOnce()>>) {
+        self.cleanup = cleanup;
+    }
+
+    fn run_cleanup(&mut self) {
+        if let Some(cleanup) = self.cleanup.take() {
+            cleanup();
+        }
+    }
+}
+
+impl Drop for DisposableEffectState {
+    fn drop(&mut self) {
+        self.run_cleanup();
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DisposableEffectScope;
+
+pub struct DisposableEffectResult {
+    cleanup: Option<Box<dyn FnOnce()>>,
+}
+
+impl DisposableEffectScope {
+    pub fn on_dispose(&self, cleanup: impl FnOnce() + 'static) -> DisposableEffectResult {
+        DisposableEffectResult::new(cleanup)
+    }
+}
+
+impl DisposableEffectResult {
+    pub fn new(cleanup: impl FnOnce() + 'static) -> Self {
+        Self {
+            cleanup: Some(Box::new(cleanup)),
+        }
+    }
+
+    fn into_cleanup(self) -> Option<Box<dyn FnOnce()>> {
+        self.cleanup
+    }
+}
+
+impl Default for DisposableEffectResult {
+    fn default() -> Self {
+        Self { cleanup: None }
+    }
+}
+
+#[allow(non_snake_case)]
+pub fn SideEffect(effect: impl FnOnce() + 'static) {
+    with_current_composer(|composer| composer.register_side_effect(effect));
+}
+
+#[allow(non_snake_case)]
+pub fn DisposableEffect<K, F>(keys: K, effect: F)
+where
+    K: Hash,
+    F: FnOnce(DisposableEffectScope) -> DisposableEffectResult + 'static,
+{
+    with_current_composer(|composer| {
+        let key_hash = hash_key(&keys);
+        let state = composer.remember(DisposableEffectState::default);
+        if state.should_run(key_hash) {
+            state.run_cleanup();
+            state.set_key(key_hash);
+            let state_ptr: *mut DisposableEffectState = &mut *state;
+            let mut effect_opt = Some(effect);
+            composer.register_side_effect(move || {
+                if let Some(effect) = effect_opt.take() {
+                    let result = effect(DisposableEffectScope);
+                    unsafe {
+                        (*state_ptr).set_cleanup(result.into_cleanup());
+                    }
+                }
+            });
+        }
+    });
+}
+
 pub fn with_node_mut<N: Node + 'static, R>(
     id: NodeId,
     f: impl FnOnce(&mut N) -> R,
@@ -734,6 +831,7 @@ pub struct Composer<'a> {
     commands: Vec<Command>,
     scope_stack: Vec<RecomposeScope>,
     local_stack: Vec<LocalContext>,
+    side_effects: Vec<Box<dyn FnOnce()>>,
 }
 
 #[derive(Default, Clone)]
@@ -769,6 +867,7 @@ impl<'a> Composer<'a> {
             commands: Vec::new(),
             scope_stack: Vec::new(),
             local_stack: Vec::new(),
+            side_effects: Vec::new(),
         }
     }
 
@@ -1036,6 +1135,14 @@ impl<'a> Composer<'a> {
     pub fn take_commands(&mut self) -> Vec<Command> {
         std::mem::take(&mut self.commands)
     }
+
+    pub fn register_side_effect(&mut self, effect: impl FnOnce() + 'static) {
+        self.side_effects.push(Box::new(effect));
+    }
+
+    pub fn take_side_effects(&mut self) -> Vec<Box<dyn FnOnce()>> {
+        std::mem::take(&mut self.side_effects)
+    }
 }
 
 struct MutableStateInner<T> {
@@ -1287,7 +1394,7 @@ impl<A: Applier> Composition<A> {
     pub fn render(&mut self, key: Key, mut content: impl FnMut()) -> Result<(), NodeError> {
         self.slots.reset();
         let runtime_handle = self.runtime_handle();
-        let (root, commands) = {
+        let (root, commands, side_effects) = {
             let mut composer = Composer::new(
                 &mut self.slots,
                 &mut self.applier,
@@ -1298,7 +1405,8 @@ impl<A: Applier> Composition<A> {
                 composer.with_group(key, |_| content());
                 let root = composer.root;
                 let commands = composer.take_commands();
-                (root, commands)
+                let side_effects = composer.take_side_effects();
+                (root, commands, side_effects)
             })
         };
         for mut command in commands {
@@ -1306,6 +1414,9 @@ impl<A: Applier> Composition<A> {
         }
         for mut command in runtime_handle.take_updates() {
             command(&mut self.applier)?;
+        }
+        for effect in side_effects {
+            effect();
         }
         self.root = root;
         self.slots.trim_to_cursor();
@@ -1351,7 +1462,7 @@ impl<A: Applier> Composition<A> {
                 continue;
             }
             let runtime_clone = runtime_handle.clone();
-            let (root, commands) = {
+            let (root, commands, side_effects) = {
                 self.slots.reset();
                 let mut composer =
                     Composer::new(&mut self.slots, &mut self.applier, runtime_clone, self.root);
@@ -1361,7 +1472,8 @@ impl<A: Applier> Composition<A> {
                     }
                     let root = composer.root;
                     let commands = composer.take_commands();
-                    (root, commands)
+                    let side_effects = composer.take_side_effects();
+                    (root, commands, side_effects)
                 })
             };
             self.root = root;
@@ -1370,6 +1482,9 @@ impl<A: Applier> Composition<A> {
             }
             for mut update in runtime_handle.take_updates() {
                 update(&mut self.applier)?;
+            }
+            for effect in side_effects {
+                effect();
             }
             self.slots.trim_to_cursor();
         }
@@ -1427,6 +1542,12 @@ mod tests {
         static CHILD_RECOMPOSITIONS: Cell<usize> = Cell::new(0);
         static CAPTURED_PARENT_STATE: RefCell<Option<compose_core::MutableState<i32>>> =
             RefCell::new(None);
+        static SIDE_EFFECT_LOG: RefCell<Vec<&'static str>> = RefCell::new(Vec::new());
+        static DISPOSABLE_EFFECT_LOG: RefCell<Vec<&'static str>> = RefCell::new(Vec::new());
+        static DISPOSABLE_STATE: RefCell<Option<compose_core::MutableState<i32>>> =
+            RefCell::new(None);
+        static SIDE_EFFECT_STATE: RefCell<Option<compose_core::MutableState<i32>>> =
+            RefCell::new(None);
     }
 
     #[test]
@@ -1482,6 +1603,35 @@ mod tests {
         child_reads_state(state.as_state())
     }
 
+    #[composable]
+    fn side_effect_component() -> NodeId {
+        SIDE_EFFECT_LOG.with(|log| log.borrow_mut().push("compose"));
+        let state = compose_core::use_state(|| 0);
+        let _ = state.value();
+        SIDE_EFFECT_STATE.with(|slot| {
+            if slot.borrow().is_none() {
+                *slot.borrow_mut() = Some(state.clone());
+            }
+        });
+        compose_core::SideEffect(|| {
+            SIDE_EFFECT_LOG.with(|log| log.borrow_mut().push("effect"));
+        });
+        emit_node(|| TextNode::default())
+    }
+
+    #[composable]
+    fn disposable_effect_host() -> NodeId {
+        let state = compose_core::use_state(|| 0);
+        DISPOSABLE_STATE.with(|slot| *slot.borrow_mut() = Some(state.clone()));
+        compose_core::DisposableEffect(state.value(), |scope| {
+            DISPOSABLE_EFFECT_LOG.with(|log| log.borrow_mut().push("start"));
+            scope.on_dispose(|| {
+                DISPOSABLE_EFFECT_LOG.with(|log| log.borrow_mut().push("dispose"));
+            })
+        });
+        emit_node(|| TextNode::default())
+    }
+
     #[test]
     fn remember_state_roundtrip() {
         let mut composition = Composition::new(MemoryApplier::new());
@@ -1527,6 +1677,71 @@ mod tests {
         assert!(!composition.should_render());
         state.set(11);
         assert!(composition.should_render());
+    }
+
+    #[test]
+    fn side_effect_runs_after_composition() {
+        let mut composition = Composition::new(MemoryApplier::new());
+        SIDE_EFFECT_LOG.with(|log| log.borrow_mut().clear());
+        SIDE_EFFECT_STATE.with(|slot| *slot.borrow_mut() = None);
+        let key = location_key(file!(), line!(), column!());
+        composition
+            .render(key, || {
+                side_effect_component();
+            })
+            .expect("render succeeds");
+        SIDE_EFFECT_LOG.with(|log| {
+            assert_eq!(&*log.borrow(), &["compose", "effect"]);
+        });
+        SIDE_EFFECT_STATE.with(|slot| {
+            if let Some(state) = slot.borrow().as_ref() {
+                state.set_value(1);
+            }
+        });
+        assert!(composition.should_render());
+        composition
+            .process_invalid_scopes()
+            .expect("process invalid scopes succeeds");
+        SIDE_EFFECT_LOG.with(|log| {
+            assert_eq!(&*log.borrow(), &["compose", "effect", "compose", "effect"]);
+        });
+    }
+
+    #[test]
+    fn disposable_effect_reacts_to_key_changes() {
+        let mut composition = Composition::new(MemoryApplier::new());
+        DISPOSABLE_EFFECT_LOG.with(|log| log.borrow_mut().clear());
+        DISPOSABLE_STATE.with(|slot| *slot.borrow_mut() = None);
+        let key = location_key(file!(), line!(), column!());
+        composition
+            .render(key, || {
+                disposable_effect_host();
+            })
+            .expect("render succeeds");
+        DISPOSABLE_EFFECT_LOG.with(|log| {
+            assert_eq!(&*log.borrow(), &["start"]);
+        });
+        composition
+            .render(key, || {
+                disposable_effect_host();
+            })
+            .expect("render succeeds");
+        DISPOSABLE_EFFECT_LOG.with(|log| {
+            assert_eq!(&*log.borrow(), &["start"]);
+        });
+        DISPOSABLE_STATE.with(|slot| {
+            if let Some(state) = slot.borrow().as_ref() {
+                state.set_value(1);
+            }
+        });
+        composition
+            .render(key, || {
+                disposable_effect_host();
+            })
+            .expect("render succeeds");
+        DISPOSABLE_EFFECT_LOG.with(|log| {
+            assert_eq!(&*log.borrow(), &["start", "dispose", "start"]);
+        });
     }
 
     #[test]
