@@ -68,8 +68,8 @@ marks whether another frame is needed based on `State<T>` updates that occur via
 The `Composer` offers higher-level helpers that map to slot-table operations:
 
 - `with_group` wraps `SlotTable::start`/`end` around a closure.
-- `remember` and `use_state` build on `SlotTable::remember` to manage retained
-  values; `use_state` stores a `State<T>` whose setter schedules recomposition.
+- `remember` and `useState` build on `SlotTable::remember` to manage retained
+  values; `useState` stores a `State<T>` whose setter schedules recomposition.
 - `emit_node` uses `read_node`/`record_node` plus the `Applier` to create or
   update actual nodes, while `with_node_mut` fetches the underlying node for
   mutation.【F:compose-core/src/lib.rs†L329-L399】

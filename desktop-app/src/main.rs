@@ -259,9 +259,9 @@ impl ComposeDesktopApp {
 
 #[composable]
 fn counter_app() {
-    let counter = compose_core::use_state(|| 0);
-    let pointer_position = compose_core::use_state(|| Point { x: 0.0, y: 0.0 });
-    let pointer_down = compose_core::use_state(|| false);
+    let counter = compose_core::useState(|| 0);
+    let pointer_position = compose_core::useState(|| Point { x: 0.0, y: 0.0 });
+    let pointer_down = compose_core::useState(|| false);
     let wave_state = animation_state();
     let wave = wave_state.get();
 
