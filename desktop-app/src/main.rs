@@ -5,6 +5,7 @@ use std::time::Instant;
 use compose_core::{
     self, location_key, Composition, Key, LaunchedEffect, MemoryApplier, Node, NodeError, NodeId,
 };
+use compose_runtime_std::StdRuntime;
 use compose_ui::{
     composable, Brush, Button, ButtonNode, Color, Column, ColumnNode, CornerRadii, DrawCommand,
     DrawPrimitive, GraphicsLayer, LayoutBox, LayoutEngine, Modifier, Point, PointerEvent,
@@ -152,9 +153,10 @@ struct ComposeDesktopApp {
 
 impl ComposeDesktopApp {
     fn new(root_key: Key) -> Self {
-        let mut composition = Composition::new(MemoryApplier::new());
-        let runtime = composition.runtime_handle();
-        let animation_state = compose_core::MutableState::with_runtime(0.0, runtime.clone());
+        let mut composition =
+            Composition::with_runtime(MemoryApplier::new(), StdRuntime::new().runtime());
+        let runtime_handle = composition.runtime_handle();
+        let animation_state = compose_core::MutableState::with_runtime(0.0, runtime_handle.clone());
         if let Err(err) = composition.render(root_key, || {
             with_animation_state(&animation_state, || counter_app())
         }) {

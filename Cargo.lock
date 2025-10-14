@@ -348,6 +348,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "compose-runtime-std"
+version = "0.1.0"
+dependencies = [
+ "compose-core",
+]
+
+[[package]]
 name = "compose-ui"
 version = "0.1.0"
 dependencies = [
@@ -490,6 +497,7 @@ name = "desktop-app"
 version = "0.1.0"
 dependencies = [
  "compose-core",
+ "compose-runtime-std",
  "compose-ui",
  "env_logger",
  "log",

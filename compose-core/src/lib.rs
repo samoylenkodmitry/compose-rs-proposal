@@ -1,5 +1,9 @@
 #![doc = r"Core runtime pieces for the Compose-RS experiment."]
 
+pub mod platform;
+
+pub use platform::{Clock, RuntimeScheduler};
+
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
@@ -9,7 +13,6 @@ use std::mem;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::thread;
 use std::thread_local;
 
 pub type Key = u64;
@@ -477,7 +480,6 @@ impl Default for DisposableEffectResult {
 struct LaunchedEffectState {
     key: Option<Key>,
     cancel_flag: Option<Arc<AtomicBool>>,
-    handle: Option<thread::JoinHandle<()>>,
 }
 
 impl LaunchedEffectState {
@@ -492,23 +494,23 @@ impl LaunchedEffectState {
         self.key = Some(key);
     }
 
-    fn launch(&mut self, effect: impl FnOnce(LaunchedEffectScope) + Send + 'static) {
+    fn launch(
+        &mut self,
+        runtime: RuntimeHandle,
+        effect: impl FnOnce(LaunchedEffectScope) + Send + 'static,
+    ) {
         self.cancel_current();
         let active = Arc::new(AtomicBool::new(true));
         let scope = LaunchedEffectScope {
             active: Arc::clone(&active),
         };
-        let handle = thread::spawn(move || effect(scope));
         self.cancel_flag = Some(active);
-        self.handle = Some(handle);
+        runtime.spawn_task(Box::new(move || effect(scope)));
     }
 
     fn cancel_current(&mut self) {
         if let Some(flag) = self.cancel_flag.take() {
             flag.store(false, Ordering::SeqCst);
-        }
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
         }
     }
 }
@@ -573,11 +575,12 @@ where
         if state.should_run(key_hash) {
             state.set_key(key_hash);
             let state_ptr: *mut LaunchedEffectState = &mut *state;
+            let runtime = composer.runtime_handle();
             let mut effect_opt = Some(effect);
             composer.register_side_effect(move || {
                 if let Some(effect) = effect_opt.take() {
                     unsafe {
-                        (*state_ptr).launch(effect);
+                        (*state_ptr).launch(runtime.clone(), effect);
                     }
                 }
             });
@@ -877,8 +880,8 @@ impl Applier for MemoryApplier {
     }
 }
 
-#[derive(Default)]
 struct RuntimeInner {
+    scheduler: Arc<dyn RuntimeScheduler>,
     needs_frame: RefCell<bool>,
     node_updates: RefCell<Vec<Command>>,
     invalid_scopes: RefCell<HashSet<ScopeId>>,
@@ -886,8 +889,19 @@ struct RuntimeInner {
 }
 
 impl RuntimeInner {
+    fn new(scheduler: Arc<dyn RuntimeScheduler>) -> Self {
+        Self {
+            scheduler,
+            needs_frame: RefCell::new(false),
+            node_updates: RefCell::new(Vec::new()),
+            invalid_scopes: RefCell::new(HashSet::new()),
+            scope_queue: RefCell::new(Vec::new()),
+        }
+    }
+
     fn schedule(&self) {
         *self.needs_frame.borrow_mut() = true;
+        self.scheduler.schedule_frame();
     }
 
     fn enqueue_update(&self, command: Command) {
@@ -921,23 +935,80 @@ impl RuntimeInner {
     fn has_invalid_scopes(&self) -> bool {
         !self.invalid_scopes.borrow().is_empty()
     }
+
+    fn spawn_task(&self, task: Box<dyn FnOnce() + Send + 'static>) {
+        self.scheduler.spawn_task(task);
+    }
+}
+
+#[derive(Clone)]
+pub struct Runtime {
+    inner: Rc<RuntimeInner>,
+}
+
+impl Runtime {
+    pub fn new(scheduler: Arc<dyn RuntimeScheduler>) -> Self {
+        Self {
+            inner: Rc::new(RuntimeInner::new(scheduler)),
+        }
+    }
+
+    pub fn handle(&self) -> RuntimeHandle {
+        RuntimeHandle(Rc::downgrade(&self.inner))
+    }
+
+    pub fn has_updates(&self) -> bool {
+        self.inner.has_updates()
+    }
+
+    pub fn needs_frame(&self) -> bool {
+        *self.inner.needs_frame.borrow()
+    }
+
+    pub fn set_needs_frame(&self, value: bool) {
+        *self.inner.needs_frame.borrow_mut() = value;
+    }
+}
+
+#[derive(Default)]
+struct DefaultScheduler;
+
+impl RuntimeScheduler for DefaultScheduler {
+    fn schedule_frame(&self) {}
+
+    fn spawn_task(&self, task: Box<dyn FnOnce() + Send + 'static>) {
+        std::thread::spawn(move || task());
+    }
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct TestScheduler;
+
+#[cfg(test)]
+impl RuntimeScheduler for TestScheduler {
+    fn schedule_frame(&self) {}
+
+    fn spawn_task(&self, task: Box<dyn FnOnce() + Send + 'static>) {
+        std::thread::spawn(move || task());
+    }
 }
 
 #[cfg(test)]
 pub struct TestRuntime {
-    inner: Rc<RuntimeInner>,
+    runtime: Runtime,
 }
 
 #[cfg(test)]
 impl TestRuntime {
     pub fn new() -> Self {
         Self {
-            inner: Rc::new(RuntimeInner::default()),
+            runtime: Runtime::new(Arc::new(TestScheduler::default())),
         }
     }
 
     pub fn handle(&self) -> RuntimeHandle {
-        RuntimeHandle(Rc::downgrade(&self.inner))
+        self.runtime.handle()
     }
 }
 
@@ -954,6 +1025,14 @@ impl RuntimeHandle {
     pub fn enqueue_node_update(&self, command: Command) {
         if let Some(inner) = self.0.upgrade() {
             inner.enqueue_update(command);
+        }
+    }
+
+    pub fn spawn_task(&self, task: Box<dyn FnOnce() + Send + 'static>) {
+        if let Some(inner) = self.0.upgrade() {
+            inner.spawn_task(task);
+        } else {
+            task();
         }
     }
 
@@ -1707,16 +1786,20 @@ impl AnimatedFloatState {
 pub struct Composition<A: Applier> {
     slots: SlotTable,
     applier: A,
-    runtime: Rc<RuntimeInner>,
+    runtime: Runtime,
     root: Option<NodeId>,
 }
 
 impl<A: Applier> Composition<A> {
     pub fn new(applier: A) -> Self {
+        Self::with_runtime(applier, Runtime::new(Arc::new(DefaultScheduler::default())))
+    }
+
+    pub fn with_runtime(applier: A, runtime: Runtime) -> Self {
         Self {
             slots: SlotTable::new(),
             applier,
-            runtime: Rc::new(RuntimeInner::default()),
+            runtime,
             root: None,
         }
     }
@@ -1752,17 +1835,17 @@ impl<A: Applier> Composition<A> {
         self.slots.trim_to_cursor();
         self.process_invalid_scopes()?;
         if !self.runtime.has_updates() && !runtime_handle.has_invalid_scopes() {
-            *self.runtime.needs_frame.borrow_mut() = false;
+            self.runtime.set_needs_frame(false);
         }
         Ok(())
     }
 
     pub fn should_render(&self) -> bool {
-        *self.runtime.needs_frame.borrow() || self.runtime.has_updates()
+        self.runtime.needs_frame() || self.runtime.has_updates()
     }
 
     pub fn runtime_handle(&self) -> RuntimeHandle {
-        RuntimeHandle(Rc::downgrade(&self.runtime))
+        self.runtime.handle()
     }
 
     pub fn applier_mut(&mut self) -> &mut A {
@@ -1819,7 +1902,7 @@ impl<A: Applier> Composition<A> {
             self.slots.trim_to_cursor();
         }
         if !self.runtime.has_updates() && !runtime_handle.has_invalid_scopes() {
-            *self.runtime.needs_frame.borrow_mut() = false;
+            self.runtime.set_needs_frame(false);
         }
         Ok(())
     }
@@ -1871,9 +1954,9 @@ mod tests {
 
     impl Node for DummyNode {}
 
-    fn runtime_handle() -> (RuntimeHandle, Rc<RuntimeInner>) {
-        let runtime = Rc::new(RuntimeInner::default());
-        (RuntimeHandle(Rc::downgrade(&runtime)), runtime)
+    fn runtime_handle() -> (RuntimeHandle, Runtime) {
+        let runtime = Runtime::new(Arc::new(TestScheduler::default()));
+        (runtime.handle(), runtime)
     }
 
     thread_local! {
@@ -2353,12 +2436,12 @@ mod tests {
     fn apply_child_diff(
         slots: &mut SlotTable,
         applier: &mut MemoryApplier,
-        runtime: &Rc<RuntimeInner>,
+        runtime: &Runtime,
         parent_id: NodeId,
         previous: Vec<NodeId>,
         new_children: Vec<NodeId>,
     ) -> Vec<Operation> {
-        let handle = RuntimeHandle(Rc::downgrade(runtime));
+        let handle = runtime.handle();
         let mut composer = Composer::new(slots, applier, handle, Some(parent_id));
         composer.push_parent(parent_id);
         {
@@ -2389,7 +2472,7 @@ mod tests {
     fn reorder_keyed_children_emits_moves() {
         let mut slots = SlotTable::new();
         let mut applier = MemoryApplier::new();
-        let runtime = Rc::new(RuntimeInner::default());
+        let runtime = Runtime::new(Arc::new(TestScheduler::default()));
         let parent_id = applier.create(Box::new(RecordingNode::default()));
 
         let child_a = applier.create(Box::new(TrackingChild {
@@ -2451,7 +2534,7 @@ mod tests {
     fn insert_and_remove_emit_expected_ops() {
         let mut slots = SlotTable::new();
         let mut applier = MemoryApplier::new();
-        let runtime = Rc::new(RuntimeInner::default());
+        let runtime = Runtime::new(Arc::new(TestScheduler::default()));
         let parent_id = applier.create(Box::new(RecordingNode::default()));
 
         let child_a = applier.create(Box::new(TrackingChild {
