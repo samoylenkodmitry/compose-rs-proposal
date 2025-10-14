@@ -7,10 +7,11 @@ use compose_core::{
 };
 use compose_runtime_std::StdRuntime;
 use compose_ui::{
-    composable, Brush, Button, ButtonNode, Color, Column, ColumnNode, CornerRadii, DrawCommand,
-    DrawPrimitive, EdgeInsets, GraphicsLayer, LayoutBox, LayoutEngine, LinearArrangement, Modifier,
-    Point, PointerEvent, PointerEventKind, Rect, RoundedCornerShape, Row, RowNode,
-    RowWithAlignment, Size, Spacer, SpacerNode, Text, TextNode, VerticalAlignment,
+    composable, Brush, Button, ButtonNode, Color, Column, ColumnNode, ColumnParams,
+    ColumnWithParams, CornerRadii, DrawCommand, DrawPrimitive, EdgeInsets, GraphicsLayer,
+    HorizontalAlignment, LayoutBox, LayoutEngine, LinearArrangement, Modifier, Point, PointerEvent,
+    PointerEventKind, Rect, RoundedCornerShape, Row, RowNode, RowParams, RowWithParams, Size,
+    Spacer, SpacerNode, Text, TextNode, VerticalAlignment,
 };
 use once_cell::sync::Lazy;
 use pixels::{Pixels, SurfaceTexture};
@@ -306,10 +307,11 @@ fn counter_app() {
                 height: 12.0,
             });
 
-            RowWithAlignment(
+            RowWithParams(
                 Modifier::padding(8.0),
-                LinearArrangement::SpacedBy(12.0),
-                VerticalAlignment::CenterVertically,
+                RowParams::default()
+                    .with_horizontal_arrangement(LinearArrangement::SpacedBy(12.0))
+                    .with_vertical_alignment(VerticalAlignment::CenterVertically),
                 || {
                     Text(
                         format!("Counter: {}", counter.get()),
@@ -337,7 +339,7 @@ fn counter_app() {
                 height: 16.0,
             });
 
-            Column(
+            ColumnWithParams(
                 Modifier::size(Size {
                     width: 360.0,
                     height: 180.0,
@@ -382,7 +384,10 @@ fn counter_app() {
                     let pointer_down = pointer_down.clone();
                     move |_| pointer_down.set(!pointer_down.get())
                 }))
+                .then(Modifier::wrap_content_size())
                 .then(Modifier::padding(12.0)),
+                ColumnParams::default()
+                    .with_horizontal_alignment(HorizontalAlignment::CenterHorizontally),
                 || {
                     Text(
                         "Pointer playground",

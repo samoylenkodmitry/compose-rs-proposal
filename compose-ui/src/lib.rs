@@ -24,8 +24,8 @@ pub use modifier::{
 pub use primitives::{
     Box, BoxNode, BoxScope, BoxWithConstraints, BoxWithConstraintsScope,
     BoxWithConstraintsScopeImpl, BoxWithOptions, Button, ButtonNode, Column, ColumnNode,
-    ColumnWithAlignment, ForEach, Layout, LayoutNode, Row, RowNode, RowWithAlignment, Spacer,
-    SpacerNode, SubcomposeLayout, Text, TextNode,
+    ColumnParams, ColumnWithParams, ForEach, Layout, LayoutNode, Row, RowNode, RowParams,
+    RowWithParams, Spacer, SpacerNode, SubcomposeLayout, Text, TextNode,
 };
 pub use renderer::{HeadlessRenderer, PaintLayer, RenderOp, RenderScene};
 pub use subcompose_layout::{

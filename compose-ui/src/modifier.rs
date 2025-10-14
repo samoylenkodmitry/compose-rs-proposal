@@ -328,6 +328,7 @@ pub enum ModOp {
     FillMaxWidth(f32),
     FillMaxHeight(f32),
     RequiredSize(Size),
+    WrapContent(Alignment),
     Weight { weight: f32, fill: bool },
     RoundedCorners(RoundedCornerShape),
     PointerInput(Rc<dyn Fn(PointerEvent)>),
@@ -462,6 +463,14 @@ impl Modifier {
 
     pub fn required_size(size: Size) -> Self {
         Self::with_op(ModOp::RequiredSize(size))
+    }
+
+    pub fn wrap_content_size() -> Self {
+        Self::wrap_content_size_aligned(Alignment::CENTER)
+    }
+
+    pub fn wrap_content_size_aligned(alignment: Alignment) -> Self {
+        Self::with_op(ModOp::WrapContent(alignment))
     }
 
     pub fn weight(weight: f32) -> Self {
@@ -671,6 +680,7 @@ pub(crate) struct LayoutProperties {
     max_height: Option<f32>,
     weight: Option<LayoutWeight>,
     box_alignment: Option<Alignment>,
+    wrap_alignment: Option<Alignment>,
 }
 
 impl LayoutProperties {
@@ -709,6 +719,10 @@ impl LayoutProperties {
 
     pub fn box_alignment(&self) -> Option<Alignment> {
         self.box_alignment
+    }
+
+    pub fn wrap_alignment(&self) -> Option<Alignment> {
+        self.wrap_alignment
     }
 }
 
@@ -751,6 +765,9 @@ impl Modifier {
                 ModOp::BoxAlign(alignment) => {
                     props.box_alignment = Some(*alignment);
                 }
+                ModOp::WrapContent(alignment) => {
+                    props.wrap_alignment = Some(*alignment);
+                }
                 _ => {}
             }
         }
@@ -764,7 +781,7 @@ impl Modifier {
 
 #[cfg(test)]
 mod tests {
-    use super::{DimensionConstraint, EdgeInsets, Modifier, Point};
+    use super::{Alignment, DimensionConstraint, EdgeInsets, Modifier, Point};
 
     #[test]
     fn padding_values_accumulate_per_edge() {
@@ -799,6 +816,13 @@ mod tests {
         let weight = props.weight().expect("weight to be recorded");
         assert_eq!(weight.weight, 2.0);
         assert!(!weight.fill);
+    }
+
+    #[test]
+    fn wrap_content_records_alignment() {
+        let modifier = Modifier::wrap_content_size_aligned(Alignment::BOTTOM_END);
+        let props = modifier.layout_properties();
+        assert_eq!(props.wrap_alignment(), Some(Alignment::BOTTOM_END));
     }
 
     #[test]

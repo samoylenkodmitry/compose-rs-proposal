@@ -207,10 +207,10 @@ impl MeasurePolicy for RowMeasurePolicy {
 
 - [x] Implement RowMeasurePolicy with intrinsics
 - [x] Implement ColumnMeasurePolicy with intrinsics
-- [ ] Add horizontalArrangement parameter to Row
-- [ ] Add verticalArrangement parameter to Column
-- [ ] Add alignment parameters
-- [ ] Port existing Row/Column to new system
+- [x] Add horizontalArrangement parameter to Row
+- [x] Add verticalArrangement parameter to Column
+- [x] Add alignment parameters
+- [x] Port existing Row/Column to new system
 - [x] **Remove Taffy dependency**
 
 ### Task 1.6: Layout Modifiers
@@ -222,7 +222,7 @@ Add essential layout modifiers:
 - [x] Modifier.fillMaxSize (fraction parameter)
 - [x] Modifier.fillMaxWidth (fraction parameter)
 - [x] Modifier.fillMaxHeight (fraction parameter)
-- [ ] Modifier.wrapContentSize (align parameter)
+- [x] Modifier.wrapContentSize (align parameter)
 - [x] Modifier.requiredSize
 - [x] Modifier.weight (for Row/Column children)
 - [x] Modifier.align (for Box children)

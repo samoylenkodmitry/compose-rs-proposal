@@ -102,6 +102,43 @@ pub struct ColumnNode {
     pub children: IndexSet<NodeId>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColumnParams {
+    pub vertical_arrangement: LinearArrangement,
+    pub horizontal_alignment: HorizontalAlignment,
+}
+
+impl ColumnParams {
+    pub fn new(
+        vertical_arrangement: LinearArrangement,
+        horizontal_alignment: HorizontalAlignment,
+    ) -> Self {
+        Self {
+            vertical_arrangement,
+            horizontal_alignment,
+        }
+    }
+
+    pub fn with_vertical_arrangement(mut self, arrangement: LinearArrangement) -> Self {
+        self.vertical_arrangement = arrangement;
+        self
+    }
+
+    pub fn with_horizontal_alignment(mut self, alignment: HorizontalAlignment) -> Self {
+        self.horizontal_alignment = alignment;
+        self
+    }
+}
+
+impl Default for ColumnParams {
+    fn default() -> Self {
+        Self {
+            vertical_arrangement: LinearArrangement::Start,
+            horizontal_alignment: HorizontalAlignment::Start,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct BoxNode {
     pub modifier: Modifier,
@@ -200,6 +237,43 @@ pub struct RowNode {
     pub horizontal_arrangement: LinearArrangement,
     pub vertical_alignment: VerticalAlignment,
     pub children: IndexSet<NodeId>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RowParams {
+    pub horizontal_arrangement: LinearArrangement,
+    pub vertical_alignment: VerticalAlignment,
+}
+
+impl RowParams {
+    pub fn new(
+        horizontal_arrangement: LinearArrangement,
+        vertical_alignment: VerticalAlignment,
+    ) -> Self {
+        Self {
+            horizontal_arrangement,
+            vertical_alignment,
+        }
+    }
+
+    pub fn with_horizontal_arrangement(mut self, arrangement: LinearArrangement) -> Self {
+        self.horizontal_arrangement = arrangement;
+        self
+    }
+
+    pub fn with_vertical_alignment(mut self, alignment: VerticalAlignment) -> Self {
+        self.vertical_alignment = alignment;
+        self
+    }
+}
+
+impl Default for RowParams {
+    fn default() -> Self {
+        Self {
+            horizontal_arrangement: LinearArrangement::Start,
+            vertical_alignment: VerticalAlignment::CenterVertically,
+        }
+    }
 }
 
 impl Default for RowNode {
@@ -370,12 +444,7 @@ pub fn Column<F>(modifier: Modifier, content: F) -> NodeId
 where
     F: FnMut(),
 {
-    ColumnWithAlignment(
-        modifier,
-        LinearArrangement::Start,
-        HorizontalAlignment::Start,
-        content,
-    )
+    ColumnWithParams(modifier, ColumnParams::default(), content)
 }
 
 #[composable(no_skip)]
@@ -416,25 +485,20 @@ where
 }
 
 #[composable(no_skip)]
-pub fn ColumnWithAlignment<F>(
-    modifier: Modifier,
-    vertical_arrangement: LinearArrangement,
-    horizontal_alignment: HorizontalAlignment,
-    mut content: F,
-) -> NodeId
+pub fn ColumnWithParams<F>(modifier: Modifier, params: ColumnParams, mut content: F) -> NodeId
 where
     F: FnMut(),
 {
     let id = compose_node(|| ColumnNode {
         modifier: modifier.clone(),
-        vertical_arrangement,
-        horizontal_alignment,
+        vertical_arrangement: params.vertical_arrangement,
+        horizontal_alignment: params.horizontal_alignment,
         children: IndexSet::new(),
     });
     if let Err(err) = compose_core::with_node_mut(id, |node: &mut ColumnNode| {
         node.modifier = modifier.clone();
-        node.vertical_arrangement = vertical_arrangement;
-        node.horizontal_alignment = horizontal_alignment;
+        node.vertical_arrangement = params.vertical_arrangement;
+        node.horizontal_alignment = params.horizontal_alignment;
     }) {
         debug_assert!(false, "failed to update Column node: {err}");
     }
@@ -449,34 +513,24 @@ pub fn Row<F>(modifier: Modifier, content: F) -> NodeId
 where
     F: FnMut(),
 {
-    RowWithAlignment(
-        modifier,
-        LinearArrangement::Start,
-        VerticalAlignment::CenterVertically,
-        content,
-    )
+    RowWithParams(modifier, RowParams::default(), content)
 }
 
 #[composable(no_skip)]
-pub fn RowWithAlignment<F>(
-    modifier: Modifier,
-    horizontal_arrangement: LinearArrangement,
-    vertical_alignment: VerticalAlignment,
-    mut content: F,
-) -> NodeId
+pub fn RowWithParams<F>(modifier: Modifier, params: RowParams, mut content: F) -> NodeId
 where
     F: FnMut(),
 {
     let id = compose_node(|| RowNode {
         modifier: modifier.clone(),
-        horizontal_arrangement,
-        vertical_alignment,
+        horizontal_arrangement: params.horizontal_arrangement,
+        vertical_alignment: params.vertical_alignment,
         children: IndexSet::new(),
     });
     if let Err(err) = compose_core::with_node_mut(id, |node: &mut RowNode| {
         node.modifier = modifier.clone();
-        node.horizontal_arrangement = horizontal_arrangement;
-        node.vertical_alignment = vertical_alignment;
+        node.horizontal_arrangement = params.horizontal_arrangement;
+        node.vertical_alignment = params.vertical_alignment;
     }) {
         debug_assert!(false, "failed to update Row node: {err}");
     }
@@ -741,10 +795,11 @@ mod tests {
     #[test]
     fn row_with_alignment_updates_node_fields() {
         let mut composition = run_test_composition(|| {
-            RowWithAlignment(
+            RowWithParams(
                 Modifier::empty(),
-                LinearArrangement::SpaceBetween,
-                VerticalAlignment::Bottom,
+                RowParams::default()
+                    .with_horizontal_arrangement(LinearArrangement::SpaceBetween)
+                    .with_vertical_alignment(VerticalAlignment::Bottom),
                 || {},
             );
         });
@@ -761,10 +816,11 @@ mod tests {
     #[test]
     fn column_with_alignment_updates_node_fields() {
         let mut composition = run_test_composition(|| {
-            ColumnWithAlignment(
+            ColumnWithParams(
                 Modifier::empty(),
-                LinearArrangement::SpaceEvenly,
-                HorizontalAlignment::End,
+                ColumnParams::default()
+                    .with_vertical_arrangement(LinearArrangement::SpaceEvenly)
+                    .with_horizontal_alignment(HorizontalAlignment::End),
                 || {},
             );
         });

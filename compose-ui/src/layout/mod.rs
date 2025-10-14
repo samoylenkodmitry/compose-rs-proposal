@@ -5,7 +5,8 @@ use std::{cell::RefCell, collections::HashMap, marker::PhantomData, rc::Rc};
 use compose_core::{MemoryApplier, Node, NodeError, NodeId};
 
 use self::core::{
-    Arrangement, HorizontalAlignment, LinearArrangement, Measurable, Placeable, VerticalAlignment,
+    Alignment, Arrangement, HorizontalAlignment, LinearArrangement, Measurable, Placeable,
+    VerticalAlignment,
 };
 use crate::modifier::{
     DimensionConstraint, EdgeInsets, LayoutWeight, Modifier, Point, Rect as GeometryRect, Size,
@@ -134,10 +135,15 @@ impl<'a> LayoutBuilder<'a> {
     ) -> Result<MeasuredNode, NodeError> {
         let props = node.modifier.layout_properties();
         let padding = props.padding();
+        let wrap_alignment = props.wrap_alignment();
         let offset = node.modifier.total_offset();
         let inner_constraints = subtract_padding(constraints, padding);
         let child_constraints = normalize_constraints(Constraints {
-            min_width: inner_constraints.min_width,
+            min_width: if wrap_alignment.is_some() {
+                0.0
+            } else {
+                inner_constraints.min_width
+            },
             max_width: inner_constraints.max_width,
             min_height: 0.0,
             max_height: inner_constraints.max_height,
@@ -182,8 +188,11 @@ impl<'a> LayoutBuilder<'a> {
             .into_iter()
             .fold(0.0_f32, |acc, value| acc.max(value));
 
-        let mut width = content_width + padding.horizontal_sum();
-        let mut height = content_height + padding.vertical_sum();
+        let natural_width = content_width + padding.horizontal_sum();
+        let natural_height = content_height + padding.vertical_sum();
+
+        let mut width = natural_width;
+        let mut height = natural_height;
 
         width = resolve_dimension(
             width,
@@ -224,6 +233,16 @@ impl<'a> LayoutBuilder<'a> {
             });
         }
 
+        apply_wrap_alignment(
+            &mut children,
+            wrap_alignment,
+            Size { width, height },
+            Size {
+                width: natural_width,
+                height: natural_height,
+            },
+        );
+
         Ok(MeasuredNode::new(
             node_id,
             Size { width, height },
@@ -241,12 +260,17 @@ impl<'a> LayoutBuilder<'a> {
     ) -> Result<MeasuredNode, NodeError> {
         let props = node.modifier.layout_properties();
         let padding = props.padding();
+        let wrap_alignment = props.wrap_alignment();
         let offset = node.modifier.total_offset();
         let inner_constraints = subtract_padding(constraints, padding);
         let child_constraints = normalize_constraints(Constraints {
             min_width: 0.0,
             max_width: inner_constraints.max_width,
-            min_height: inner_constraints.min_height,
+            min_height: if wrap_alignment.is_some() {
+                0.0
+            } else {
+                inner_constraints.min_height
+            },
             max_height: inner_constraints.max_height,
         });
 
@@ -289,8 +313,11 @@ impl<'a> LayoutBuilder<'a> {
             .into_iter()
             .fold(0.0_f32, |acc, value| acc.max(value));
 
-        let mut width = content_width + padding.horizontal_sum();
-        let mut height = content_height + padding.vertical_sum();
+        let natural_width = content_width + padding.horizontal_sum();
+        let natural_height = content_height + padding.vertical_sum();
+
+        let mut width = natural_width;
+        let mut height = natural_height;
 
         width = resolve_dimension(
             width,
@@ -330,6 +357,16 @@ impl<'a> LayoutBuilder<'a> {
                 offset: position,
             });
         }
+
+        apply_wrap_alignment(
+            &mut children,
+            wrap_alignment,
+            Size { width, height },
+            Size {
+                width: natural_width,
+                height: natural_height,
+            },
+        );
 
         Ok(MeasuredNode::new(
             node_id,
@@ -374,8 +411,12 @@ impl<'a> LayoutBuilder<'a> {
             measured_children.push(child);
         }
 
-        let mut width = max_child_width + padding.horizontal_sum();
-        let mut height = max_child_height + padding.vertical_sum();
+        let wrap_alignment = props.wrap_alignment();
+        let natural_width = max_child_width + padding.horizontal_sum();
+        let natural_height = max_child_height + padding.vertical_sum();
+
+        let mut width = natural_width;
+        let mut height = natural_height;
 
         width = resolve_dimension(
             width,
@@ -422,6 +463,16 @@ impl<'a> LayoutBuilder<'a> {
                 offset: position,
             });
         }
+
+        apply_wrap_alignment(
+            &mut children,
+            wrap_alignment,
+            Size { width, height },
+            Size {
+                width: natural_width,
+                height: natural_height,
+            },
+        );
 
         Ok(MeasuredNode::new(
             node_id,
@@ -471,8 +522,12 @@ impl<'a> LayoutBuilder<'a> {
             return Err(err);
         }
 
-        let mut width = policy_result.size.width + padding.horizontal_sum();
-        let mut height = policy_result.size.height + padding.vertical_sum();
+        let wrap_alignment = props.wrap_alignment();
+        let natural_width = policy_result.size.width + padding.horizontal_sum();
+        let natural_height = policy_result.size.height + padding.vertical_sum();
+
+        let mut width = natural_width;
+        let mut height = natural_height;
 
         width = resolve_dimension(
             width,
@@ -516,6 +571,16 @@ impl<'a> LayoutBuilder<'a> {
                 }
             }
         }
+
+        apply_wrap_alignment(
+            &mut children,
+            wrap_alignment,
+            Size { width, height },
+            Size {
+                width: natural_width,
+                height: natural_height,
+            },
+        );
 
         Ok(MeasuredNode::new(
             node_id,
@@ -1023,6 +1088,46 @@ fn align_vertical(alignment: VerticalAlignment, available: f32, child: f32) -> f
     }
 }
 
+fn compute_wrap_shift(alignment: Alignment, outer: Size, inner: Size) -> Point {
+    let extra_width = (outer.width - inner.width).max(0.0);
+    let extra_height = (outer.height - inner.height).max(0.0);
+    let shift_x = match alignment.horizontal {
+        HorizontalAlignment::Start => 0.0,
+        HorizontalAlignment::CenterHorizontally => extra_width / 2.0,
+        HorizontalAlignment::End => extra_width,
+    };
+    let shift_y = match alignment.vertical {
+        VerticalAlignment::Top => 0.0,
+        VerticalAlignment::CenterVertically => extra_height / 2.0,
+        VerticalAlignment::Bottom => extra_height,
+    };
+    Point {
+        x: shift_x,
+        y: shift_y,
+    }
+}
+
+fn apply_wrap_alignment(
+    children: &mut [MeasuredChild],
+    alignment: Option<Alignment>,
+    outer: Size,
+    inner: Size,
+) {
+    let Some(alignment) = alignment else {
+        return;
+    };
+
+    let shift = compute_wrap_shift(alignment, outer, inner);
+    if shift.x == 0.0 && shift.y == 0.0 {
+        return;
+    }
+
+    for child in children.iter_mut() {
+        child.offset.x += shift.x;
+        child.offset.y += shift.y;
+    }
+}
+
 fn subtract_padding(constraints: Constraints, padding: EdgeInsets) -> Constraints {
     let horizontal = padding.horizontal_sum();
     let vertical = padding.vertical_sum();
@@ -1358,6 +1463,40 @@ mod tests {
         let child = measured.children.first().expect("child measured");
         assert!((child.offset.x - 42.0).abs() < f32::EPSILON);
         assert!((child.offset.y - 40.0).abs() < f32::EPSILON);
+        Ok(())
+    }
+
+    #[test]
+    fn wrap_content_modifier_offsets_children() -> Result<(), NodeError> {
+        let mut applier = MemoryApplier::new();
+        let child_id = applier.create(Box::new(SpacerNode {
+            size: Size {
+                width: 40.0,
+                height: 30.0,
+            },
+        }));
+
+        let mut column = ColumnNode::default();
+        column.modifier = Modifier::size_points(200.0, 200.0).then(Modifier::wrap_content_size());
+        column.children.insert(child_id);
+        let column_id = applier.create(Box::new(column));
+
+        let mut builder = LayoutBuilder::new(&mut applier);
+        let measured = builder.measure_node(
+            column_id,
+            Constraints {
+                min_width: 200.0,
+                max_width: 200.0,
+                min_height: 200.0,
+                max_height: 200.0,
+            },
+        )?;
+
+        assert_eq!(measured.size.width, 200.0);
+        assert_eq!(measured.size.height, 200.0);
+        let child = measured.children.first().expect("child measured");
+        assert!((child.offset.x - 80.0).abs() < f32::EPSILON);
+        assert!((child.offset.y - 85.0).abs() < f32::EPSILON);
         Ok(())
     }
 
