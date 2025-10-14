@@ -1,249 +1,1048 @@
-ROADMAP.md — Compose-RS: Foundation-first, Jetpack Compose parity
+# ROADMAP.md — Compose-RS: Core-First, Gradual Expansion
 
-Goal
-- Behavior and user-facing API 1:1 with Jetpack Compose (Kotlin), including naming and call shapes.
-- No feature flags. Each phase lands complete, with tests mirroring official Compose docs examples and semantics.
+## Goal
 
-Naming and API normalization
-- [x] Public API uses lowerCamelCase names that mirror Kotlin closely.
-- [x] Provide remember, mutableStateOf, derivedStateOf, State<T>, MutableState<T>.
-- [x] Replace use_state with remember { mutableStateOf(...) } (keep a temporary alias useState for migration if desired).
-- [x] Replace emit_node and similar internals from the public surface. Node creation happens inside composables; any remaining low-level helpers are internal-only.
-- [x] Functions like with_key -> withKey; with_current_composer -> withCurrentComposer kept internal; public API is composables and Modifiers.
-- [ ] Prefer Rust ergonomics where it doesn't change behavior, but match Kotlin naming and call shapes for public API.
+- Behavior and user-facing API 1:1 with Jetpack Compose (Kotlin)
+- Build core foundations completely before expanding API surface
+- Prove each layer works before building the next layer
+- No feature flags. Each phase lands complete with tests
 
-Phase 0 — Lifecycle, change ops, and slot robustness (must land before Phase 1)
-Context and why
-- Correct node lifecycle and structural change application are prerequisites for recomposition, effects, and subcomposition. Compose parity requires deterministic mount/update/unmount and child insert/move/remove, not just wholesale child list replacement.
+## Current Status Assessment
 
-Deliverables
-- Node lifecycle: mount called on create, update on reuse, unmount on removal (post-order).
-- Change list generation: insert, move, remove child operations (incremental), not only update_children. Expose applier ops for insertChild(index), moveChild(from, to), removeChild(index). (Implemented)
-- Slot model resilience (Implemented):
-  - No panics on type/shape mismatch; dispose old subtree and write new content.
-  - Keys/anchors per group; removing or replacing a group disposes its subtree and remembered values.
-  - Remembered values support disposal when replaced or the group is removed (hook for Phase 3 RememberObserver).
-- Parent diff: during popParent, compute child diff and emit insert/move/remove ops. (Implemented)
-- Thread-local composer safety: replace ad hoc transmute with a scoped thread-local handle.
+### Completed
 
-Tests / definition of done
-- Removing a subtree unmounts all nodes exactly once and MemoryApplier count drops.
-- Reordering keyed children preserves state and nodes; only moves occur (no recreate).
-- remember type change or count change does not panic; old value disposed; new value constructed.
-- Mismatch recovery works for nested keyed groups.
+- [x] Core composition runtime (Composer, SlotTable, RecomposeScope)
+- [x] Smart recomposition with tracked reads
+- [x] State APIs: `remember`, `mutableStateOf`, `derivedStateOf`, `State<T>`, `MutableState<T>`
+- [x] Effects: `SideEffect`, `DisposableEffect`, `LaunchedEffect`
+- [x] CompositionLocal with provider
+- [x] **SubcomposeLayout infrastructure (complete)**
+- [x] **BoxWithConstraints implementation**
+- [x] Phase tracking (Compose, Measure, Layout)
+- [x] Node lifecycle (mount, update, unmount)
+- [x] Incremental child operations (insert, move, remove)
+- [x] Basic primitives: Column, Row, Text, Button, Spacer, ForEach
+- [x] Basic modifiers (~10 working)
+- [x] Desktop renderer with scene graph
+- [x] Hit testing and pointer input
+- [x] Basic drawing with gradients and rounded corners
 
-Phase 1 — Smart recomposition (tracked reads and scopes)
-Context and why
-- Jetpack Compose invalidates and recomposes only scopes that read a changing State. Parents that pass state down without reading do not recompose. This is the crux of Compose performance and must match exactly.
+### Critical Issues
 
-Deliverables
-- RecomposeScope per composed group. Composer maintains a current scope stack. (Implemented)
-- Tracked reads: State<T>.value getter records the current RecomposeScope; writer invalidates only its readers. Passing state through without reading does not register the parent. (Implemented)
-- State and remember APIs: (Implemented)
-  - remember { T } (Implemented)
-  - mutableStateOf(initial): MutableState<T> (Implemented)
-  - interface State<T> { val value: T } (Implemented)
-  - interface MutableState<T> : State<T> { override var value: T } (Implemented)
-  - derivedStateOf { … }: recomputes lazily, invalidates readers when source states change. (Implemented)
-- Skip logic: when parameters are stable and equal and no local invalidations exist, skip the scope and reuse prior result. The macro should generate changed bit masks (ints) like Compose instead of per-param heap allocations. Keep a pragmatic stability model: (Implemented - stability annotations pending)
-  - Provide a Stable marker/derive for pure data types; default to equality for non-stable types. (Planned)
-  - Allow a @stable marker in the macro until stability inference matures. (Planned)
-- ApplyChanges loop: apply change ops (Phase 0), then run SideEffect queue (Phase 3 later) in the same frame.
-- Migrate signal-based updates in Text to tracked State reads (no out-of-band patching). (Implemented)
+- [ ] LaunchedEffect uses `std::thread::spawn` directly (needs platform abstraction)
+- [ ] Layout system uses Taffy (needs Compose intrinsic model)
+- [ ] Modifier is Vec-based (needs persistent node chain for performance)
+- [ ] Animation is rudimentary (just state updates, no interpolation)
+- [ ] No LazyColumn/LazyRow (despite SubcomposeLayout being ready)
 
-Tests / definition of done
-- Changing one leaf MutableState in a 100-node tree recomposes only the readers (and their ancestors needed to reach them), not the whole tree.
-- A parent passing a state to a child without reading it does not recompose when the state changes; only the child does.
-- A composable with stable, equal params is not re-invoked between frames (changed bit masks verified).
-- Slot model handles 10k inserts/deletes without pathological slowdown.
+### Missing for 1.0
 
-Phase 2 — Intrinsic layout (replace Taffy; adopt Compose's model)
-Context and why
-- Compose layouts use Constraints → measure → place, intrinsics, alignment lines, and baseline alignment. This is necessary for parity with Row, Column, Box, Spacer, and custom Layout behavior.
+- [ ] Platform abstraction layer
+- [ ] Proper layout system with intrinsics
+- [ ] LazyColumn/LazyRow
+- [ ] Full animation system
+- [ ] 40+ modifiers
+- [ ] Testing framework
+- [ ] Material 3 components
+- [ ] Performance validation
 
-Deliverables
-- Core types: Constraints, Measurable, Placeable, MeasureScope, MeasureResult, PlacementScope.
-- Layout composable with a MeasurePolicy (trailing lambda):
-  - Layout(modifier = Modifier, content = @Composable() -> Unit) { measurables, constraints -> MeasureResult }
-- Re-implement primitives on top of Layout:
-  - Row, Column, Box, Spacer(modifier) with arrangements, alignments, weight, fill, etc.
-  - Baseline alignment for text and alignment lines propagation.
-- Intrinsics: IntrinsicSize.Min/Max and intrinsic measurement methods.
-- Remove Taffy dependency.
+### Can be Removed
 
-Tests / definition of done
-- Port and mirror examples from the Jetpack Compose layout docs for Row/Column/Box/Spacer with arrangements and alignments.
-- IntrinsicSize.Min/Max behaviors match Compose examples.
-- Baseline alignment matches Compose behavior for text.
-- Visual and layout regression of existing demos pass after the swap.
+- [ ] `signals.rs` module (unused, not part of Compose API)
 
-Phase 2.5 — SubcomposeLayout (measure-time composition)
-Context and why
-- SubcomposeLayout inverts the normal Composition → Measurement → Layout flow, allowing composition during the measure pass. This is foundational for LazyColumn, BoxWithConstraints, adaptive layouts, and any scenario where you need constraints before deciding what to compose. Without this, we cannot achieve Compose parity for dynamic, constraint-aware UIs.
+## Phase 0: Platform Abstraction (Lightweight)
 
-Deliverables (Core Infrastructure)
-- [x] Create `compose-core/src/subcompose.rs` with `SubcomposeState` struct
-  - [x] Three-tier node organization: active, reusable, precomposed
-  - [x] `slot_id_to_nodes: HashMap<SlotId, Vec<NodeId>>` for active tracking
-  - [x] `reusable_nodes: Vec<NodeId>` and `precomposed_nodes: HashMap<SlotId, Vec<NodeId>>`
-  - [x] Tracking indices: `current_index`, `reusable_count`, `precomposed_count`
-- [x] Define `SlotReusePolicy` trait with `get_slots_to_retain()` and `are_compatible()`
-  - [x] Implement default policy: exact match → type-compatible match
-- [x] Extend `Composer` with subcompose capability
-  - [x] Add `subcompose(slot_id, content) -> (R, Vec<NodeId>)` method
-  - [x] Implement `take_node_from_reusables(slot_id)` with two-phase matching
-  - [x] Implement `dispose_or_reuse_starting_from_index(start_index)`
-  - [x] Ensure `subcompose()` only callable during measure/layout (panic otherwise)
-- [x] Extend `RecomposeScope` with reuse lifecycle
-  - [x] Add `deactivate()` method (mark inactive without disposing)
-  - [x] Add `reactivate()` method (mark active, trigger recomposition)
-  - [x] Add `compose_with_reuse()` for maximizing state reuse
-  - [x] Implement `forceReuse` and `forceRecompose` flags
+### Focus: Clean up direct std dependencies
 
-Deliverables (SubcomposeLayout Primitive)
-- [x] Create `SubcomposeMeasureScope` trait extending `MeasureScope`
-  - [x] Add `subcompose(slot_id, content) -> Vec<Measurable>` method
-- [x] Implement `SubcomposeMeasureScopeImpl` struct
-  - [x] Holds reference to `Composer` and measurement state
-  - [x] Converts `NodeId`s to `Measurable` list
-- [x] Create `SubcomposeLayoutNode` implementing `Node`
-  - [x] Store `modifier`, `measure_policy`, and `subcompose_state`
-  - [x] Override `measure()` to invoke policy with `SubcomposeMeasureScope`
-  - [x] Call `dispose_or_reuse_starting_from_index()` after measure completes
-- [x] Implement `SubcomposeLayout` composable in `compose-ui/src/primitives.rs`
-  - [x] Accept `modifier` and `measure_policy` parameters
-  - [x] Emit `SubcomposeLayoutNode`
-  - [x] Do NOT use `push_parent`/`pop_parent` (children managed by `subcompose()`)
+### Task 0.1: Define Runtime Traits
 
-- Deliverables (BoxWithConstraints)
-- [x] Define `BoxWithConstraintsScope` trait extending `BoxScope`
-  - [x] Add `constraints()` method returning `Constraints`
-  - [x] Add `min_width()`, `max_width()`, `min_height()`, `max_height()` as `Dp`
-- [x] Implement `BoxWithConstraintsScopeImpl` struct
-  - [x] Store `constraints` and `density` for conversions
-  - [x] Implement all scope methods
-- [x] Implement `BoxWithConstraints` composable
-  - [x] Use `SubcomposeLayout` internally
-  - [x] Create `BoxWithConstraintsScopeImpl` in measure policy
-  - [x] Call `subcompose()` with scope as receiver
-  - [x] Delegate to box measure policy for layout
+Create `compose-core/src/platform.rs`:
 
-- [x] Test: Basic subcomposition during measure creates nodes correctly
-- [x] Test: Calling `subcompose()` during composition panics with clear error
-- [x] Test: Reordering keyed subcomposed children preserves nodes (no recreate)
-- [x] Test: Removing subcomposed slots calls `unmount()` and disposes remembered values
-- [x] Test: Disposing trailing subcomposed slots moves nodes to the reusable pool without affecting prior siblings
-- [x] Test: Compatible slot reuse reactivates composition without full recreate
-- [x] Test: `BoxWithConstraints` composes different content based on constraints
-- [x] Test: Constraint changes trigger recomposition in `BoxWithConstraints`
-- [ ] Test: Adaptive layout pattern (wide vs narrow) works correctly
-- [ ] Test: 100+ subcomposed items with reordering has no pathological slowdown
-- [ ] Example: Port Compose docs example for `BoxWithConstraints` verbatim
-- [ ] Example: Implement TabRow-like pattern (measure tabs, then position indicator)
+```rust
+pub trait RuntimeScheduler: Send + Sync {
+    fn schedule_frame(&self);
+    fn spawn_task(&self, task: Box<dyn FnOnce() + Send + 'static>);
+}
 
-Phase 3 — Effects and CompositionLocal
-Context and why
-- Side effects and locals are required to write real apps and to match Compose behavior.
+pub trait Clock: Send + Sync {
+    type Instant: Copy + Send + Sync;
+    fn now(&self) -> Self::Instant;
+    fn elapsed_millis(&self, since: Self::Instant) -> u64;
+}
+```
 
-Deliverables
-- SideEffect: runs after applyChanges in the same frame. (Implemented)
-- DisposableEffect(vararg keys): cleanup runs on key change and on scope disposal; effect re-runs with new keys. (Implemented)
-- [x] LaunchedEffect(vararg keys): coroutine/tick scope tied to composition lifecycle; cancels and restarts on key changes.
-- CompositionLocal:
-  - compositionLocalOf/staticCompositionLocalOf
-  - CompositionLocalProvider(vararg values, content)
-  - Built-ins: LocalDensity, LocalLayoutDirection, etc.
-- RememberObserver hook for remembered values to integrate with disposal (invoked at group removal and replacement).
+- [ ] Define RuntimeScheduler trait
+- [ ] Define Clock trait
+- [ ] Add to compose-core public API
 
-Tests / definition of done
-- DisposableEffect cleanup runs on key change and disposal.
-- [x] LaunchedEffect cancels and restarts correctly.
-- CompositionLocal changes recompose only consumers, not siblings.
+### Task 0.2: Create Standard Runtime
 
-Phase 4 — Modifier.Node chain (persistent chain, per-phase traversal)
-Context and why
-- Compose's modifier chain is persistent and node-based. This enables efficient traversal for layout, draw, input, and semantics. The current Vec-based approach won't scale.
+Create `compose-runtime-std/` crate:
 
-Deliverables
-- Modifier as a persistent chain (cons-list). then is O(1), preserves order.
-- Modifier node infrastructure:
-  - ModifierNodeElement<N : ModifierNode>, Modifier.Node.
-  - Role-specific nodes: LayoutModifierNode, DrawModifierNode, PointerInputModifierNode, SemanticsModifierNode.
-- Port existing modifiers (padding, background, clickable, roundedCorners, drawBehind/drawWithContent) as elements/nodes.
-- Phase-specific traversals: layout visit sees layout nodes only; draw visit sees draw nodes only; input dispatch goes through pointer nodes; semantics separated.
+- [ ] Implement StdScheduler using std::thread
+- [ ] Implement StdClock using std::time
+- [ ] Document usage
 
-Tests / definition of done
-- Long modifier chains compose without quadratic behavior.
-- Layout pass ignores draw/input nodes; draw pass ignores layout nodes.
-- Pointer input dispatch and hit-testing match expected order/clipping semantics.
+### Task 0.3: Refactor LaunchedEffect
 
-Phase 5 — Animations (frame clock; interruptible motion)
-Context and why
-- Compose animations are state-driven and interruptible. They depend on effects and a frame clock.
+Update LaunchedEffect to use RuntimeScheduler:
 
-Deliverables
-- Monotonic frame clock integrated with recomposer; requestAnimationFrame-like scheduling.
-- animate*AsState parity (Float, Color, Dp equivalents) with default spring/tween specs.
-- Animatable<T> with animateTo, snapTo, cancel/interrupt semantics.
+- [ ] Remove direct `thread::spawn` from LaunchedEffectState
+- [ ] Use RuntimeScheduler::spawn_task
+- [ ] Update Composition to accept runtime parameter
+- [ ] Update desktop-app to provide StdRuntime
 
-Tests / definition of done
-- animateFloatAsState is smooth, cancels/restarts on target changes.
-- Animatable animateTo/snapTo interop with LaunchedEffect matches Compose behavior.
+### Task 0.4: Document Allocations
 
-Phase 6 — Subcompose and Lazy
-Context and why
-- LazyColumn/LazyRow rely on subcomposition to compose only visible items and reuse item content.
+- [ ] Add `// FUTURE(no_std):` comments to all Vec/HashMap/Rc in compose-core
+- [ ] Create allocation inventory document
+- [ ] Document migration strategy
 
-Deliverables
-- SubcomposeLayout API and engine. (Covered in Phase 2.5)
-- LazyColumn and LazyRow built on SubcomposeLayout with item reuse windows.
-- Compose/measure only visible items plus lookahead buffer.
+### Task 0.5: Remove Signals Module
 
-Tests / definition of done
-- LazyColumn with 10,000 items scrolls without composing everything; invisible items are not composed/measured.
-- Updates/invalidation affect only visible or cached items.
+- [ ] Mark signals.rs as deprecated
+- [ ] Remove from public API
+- [ ] Note: Not part of Jetpack Compose API
 
-Phase 7 — Canvas, input, tooling
-Context and why
-- Canvas and pointer input are core user features; tooling helps validate recomposition and layout.
+### Deliverables
 
-Deliverables
-- Canvas composable and DrawScope parity; Modifier.drawBehind/drawWithContent as draw nodes.
-- Pointer input via pointerInput(keys) with gesture detectors (detectTapGestures) layered on top.
-- Tooling overlays: recomposition counter and layout bounds overlay (draw modifiers) behind a runtime flag.
+- [ ] Platform traits defined
+- [ ] Standard runtime working
+- [ ] LaunchedEffect refactored
+- [ ] Desktop app updated
+- [ ] Signals deprecated
+- [ ] No breaking changes to user code
 
-Tests / definition of done
-- Drawing primitives render correctly and in the right order.
-- Pointer input flows through the modifier node chain with correct hit-testing and clipping.
-- Overlays don't affect measure/placement or input hits.
+## Phase 1: Core Layout System (Critical Blocker)
 
-Cross-cutting implementation notes
-- Replace ad-hoc signal-based Text updates with tracked State reads once Phase 1 lands.
-- Keep scheduleNodeUpdate as an internal escape hatch but do not use it for normal state-driven updates.
-- Ensure applyChanges runs mount/update/unmount and effect phases in the correct order in a single frame.
-- Single-threaded runtime initially; document and enforce via scoped thread-local composer. Multi-thread rendering later.
+### Replace Taffy with Compose intrinsic measurement
 
-Migration plan from current codebase
-- Introduce Phase 0 change ops and lifecycle first; update MemoryApplier to support insert/move/remove and unmount.
-- Add remember/mutableStateOf/derivedStateOf; keep temporary aliases for current APIs (use_state -> remember+mutableStateOf).
-- Switch Text and other primitives to read State via .value (or value()/setValue()) and rely on tracked reads. Remove out-of-band node patches.
-- Swap Taffy with the Constraints model; reimplement Row/Column/Spacer/Box.
-- Implement SubcomposeLayout and BoxWithConstraints (Phase 2.5).
-- Transition Modifier to persistent chain; then to node elements without breaking public APIs.
+### Task 1.1: Study and Design
 
-Key acceptance tests to add early
-- Parent skip-on-pass-through: parent passes state to child without reading; parent does not recompose on child state changes.
-- Reorder with keys: state preserved in moved items; no recreation.
-- Subtree removal: unmount and disposal run exactly once; MemoryApplier count decreases accordingly.
-- Intrinsics parity: mirror official Compose examples verbatim for width(IntrinsicSize.Min/Max) and baseline alignment.
-- Subcompose reuse: reordering subcomposed slots preserves nodes and state; only moves occur.
-- BoxWithConstraints reactivity: different content composed based on constraints; updates when constraints change.
+- [ ] Read Jetpack Compose layout documentation thoroughly
+- [ ] Document Constraints → Measure → Place flow
+- [ ] Document intrinsic measurement contract
+- [ ] Design Rust API matching Compose
+- [ ] Write detailed design document
 
-Performance guardrails
-- Compose 10k nodes with long modifier chains without quadratic behavior.
-- Recompose a single leaf in O(depth) time with minimal allocations.
-- Modifier.then O(1) and persistent.
-- Subcompose 100+ items and reorder without pathological slowdown.
+### Task 1.2: Core Layout Traits
 
-No feature flags
-- Each phase lands atomically with updates to existing primitives/tests. No temporary switches.
+Create `compose-ui/src/layout/core.rs`:
+
+```rust
+pub trait Measurable {
+    fn measure(&self, constraints: Constraints) -> Placeable;
+    fn min_intrinsic_width(&self, height: f32) -> f32;
+    fn max_intrinsic_width(&self, height: f32) -> f32;
+    fn min_intrinsic_height(&self, width: f32) -> f32;
+    fn max_intrinsic_height(&self, width: f32) -> f32;
+}
+
+pub trait Placeable {
+    fn place(&self, x: f32, y: f32);
+    fn width(&self) -> f32;
+    fn height(&self) -> f32;
+}
+
+pub trait MeasurePolicy {
+    fn measure(
+        &self,
+        measurables: &[Box<dyn Measurable>],
+        constraints: Constraints
+    ) -> MeasureResult;
+    
+    fn min_intrinsic_width(&self, measurables: &[Box<dyn Measurable>], height: f32) -> f32;
+    fn max_intrinsic_width(&self, measurables: &[Box<dyn Measurable>], height: f32) -> f32;
+    fn min_intrinsic_height(&self, measurables: &[Box<dyn Measurable>], width: f32) -> f32;
+    fn max_intrinsic_height(&self, measurables: &[Box<dyn Measurable>], width: f32) -> f32;
+}
+```
+
+- [ ] Define Measurable trait with intrinsics
+- [ ] Define Placeable trait
+- [ ] Define MeasurePolicy trait
+- [ ] Add Alignment enum (Start, Center, End, Top, Bottom, etc.)
+- [ ] Add Arrangement trait (spacedBy, SpaceBetween, SpaceAround, SpaceEvenly)
+
+### Task 1.3: Layout Composable
+
+```rust
+#[composable]
+pub fn Layout(
+    modifier: Modifier,
+    content: impl FnOnce(),
+    measure_policy: impl MeasurePolicy + 'static
+) -> NodeId
+```
+
+- [ ] Create LayoutNode type
+- [ ] Implement measure pass
+- [ ] Implement place pass
+- [ ] Integrate with existing Composer
+- [ ] Handle modifier chain in layout
+
+### Task 1.4: Alignment and Arrangement
+
+- [ ] Implement Alignment.Horizontal (Start, CenterHorizontally, End)
+- [ ] Implement Alignment.Vertical (Top, CenterVertically, Bottom)
+- [ ] Implement Arrangement.Horizontal (Start, Center, End, SpaceBetween, SpaceAround, SpaceEvenly, spacedBy)
+- [ ] Implement Arrangement.Vertical (Top, Center, Bottom, SpaceBetween, SpaceAround, SpaceEvenly, spacedBy)
+
+### Task 1.5: Rebuild Row/Column
+
+Reimplement using new layout system:
+
+```rust
+struct RowMeasurePolicy {
+    horizontal_arrangement: Arrangement.Horizontal,
+    vertical_alignment: Alignment.Vertical,
+}
+
+impl MeasurePolicy for RowMeasurePolicy {
+    fn measure(&self, measurables: &[Box<dyn Measurable>], constraints: Constraints) -> MeasureResult {
+        // Implement proper Row layout with arrangement and alignment
+    }
+}
+```
+
+- [ ] Implement RowMeasurePolicy with intrinsics
+- [ ] Implement ColumnMeasurePolicy with intrinsics
+- [ ] Add horizontalArrangement parameter to Row
+- [ ] Add verticalArrangement parameter to Column
+- [ ] Add alignment parameters
+- [ ] Port existing Row/Column to new system
+- [ ] **Remove Taffy dependency**
+
+### Task 1.6: Layout Modifiers
+
+Add essential layout modifiers:
+
+- [ ] Modifier.padding (all variants: uniform, horizontal/vertical, each side)
+- [ ] Modifier.size (width, height, size)
+- [ ] Modifier.fillMaxSize (fraction parameter)
+- [ ] Modifier.fillMaxWidth (fraction parameter)
+- [ ] Modifier.fillMaxHeight (fraction parameter)
+- [ ] Modifier.wrapContentSize (align parameter)
+- [ ] Modifier.requiredSize
+- [ ] Modifier.weight (for Row/Column children)
+- [ ] Modifier.align (for Box children)
+
+### Task 1.7: Box Primitive
+
+```rust
+#[composable]
+pub fn Box(
+    modifier: Modifier,
+    contentAlignment: Alignment,
+    propagateMinConstraints: bool,
+    content: impl FnOnce()
+)
+```
+
+- [ ] Implement BoxMeasurePolicy
+- [ ] Handle z-ordering of children
+- [ ] Handle alignment
+- [ ] Add BoxScope trait
+- [ ] Add Modifier.align for BoxScope
+
+### Task 1.8: Validation
+
+- [ ] Port all existing examples to new layout
+- [ ] Create complex nested layout tests
+- [ ] Test intrinsic size measurements
+- [ ] Compare behavior with Jetpack Compose examples
+- [ ] Profile layout performance
+- [ ] Fix any discrepancies
+
+### Deliverables
+
+- [ ] Complete intrinsic measurement system
+- [ ] Layout composable working
+- [ ] Row/Column/Box with proper arrangement/alignment
+- [ ] Essential layout modifiers
+- [ ] **Taffy dependency removed**
+- [ ] All examples still functional
+- [ ] Performance acceptable
+- [ ] Behavior matches Jetpack Compose
+
+## Phase 2: LazyColumn/LazyRow
+
+### Leverage existing SubcomposeLayout infrastructure
+
+### Task 2.1: Design LazyList Architecture
+
+- [ ] Study Jetpack Compose LazyColumn implementation
+- [ ] Design LazyListScope DSL
+- [ ] Design visible range calculation
+- [ ] Design scroll state tracking
+- [ ] Write design document
+
+### Task 2.2: LazyListState
+
+```rust
+pub struct LazyListState {
+    first_visible_item_index: MutableState<usize>,
+    first_visible_item_scroll_offset: MutableState<f32>,
+}
+
+impl LazyListState {
+    pub fn scroll_to_item(&self, index: usize);
+    pub fn animate_scroll_to_item(&self, index: usize);
+}
+```
+
+- [ ] Implement state structure
+- [ ] Add scroll position tracking
+- [ ] Add scroll methods
+- [ ] Persist state across recomposition
+
+### Task 2.3: LazyListScope DSL
+
+```rust
+pub trait LazyListScope {
+    fn item(&mut self, key: Option<impl Hash>, content: impl FnOnce());
+    fn items(&mut self, count: usize, key: Option<impl Fn(usize) -> impl Hash>, content: impl Fn(usize));
+    fn items_indexed(&mut self, items: &[T], key: Option<impl Fn(&T) -> impl Hash>, content: impl Fn(usize, &T));
+}
+```
+
+- [ ] Define LazyListScope trait
+- [ ] Implement item() function
+- [ ] Implement items() function
+- [ ] Implement items_indexed() function
+- [ ] Add key support for state preservation
+
+### Task 2.4: LazyColumn Core
+
+```rust
+#[composable]
+pub fn LazyColumn(
+    modifier: Modifier,
+    state: LazyListState,
+    contentPadding: PaddingValues,
+    reverseLayout: bool,
+    verticalArrangement: Arrangement.Vertical,
+    horizontalAlignment: Alignment.Horizontal,
+    content: impl FnOnce(&mut LazyListScope)
+) -> NodeId
+```
+
+- [ ] Implement LazyColumn using SubcomposeLayout
+- [ ] Calculate visible item range
+- [ ] Compose only visible items via subcompose
+- [ ] Measure and place items
+- [ ] Handle contentPadding
+- [ ] Handle reverseLayout
+
+### Task 2.5: Scroll Handling
+
+- [ ] Implement ScrollableState
+- [ ] Add verticalScroll modifier using ScrollableState
+- [ ] Implement fling physics
+- [ ] Add velocity tracking
+- [ ] Handle touch/mouse input
+- [ ] Handle mouse wheel
+
+### Task 2.6: Item Keys and Reuse
+
+- [ ] Use keys for SubcomposeLayout slot IDs
+- [ ] Preserve item state during scroll
+- [ ] Test with item reordering
+- [ ] Validate state preservation
+
+### Task 2.7: Optimization
+
+- [ ] Profile with 1,000 items
+- [ ] Profile with 10,000 items
+- [ ] Add prefetch/lookahead buffer
+- [ ] Optimize recomposition scopes
+- [ ] Ensure 60 FPS scrolling
+- [ ] Fix memory leaks
+
+### Task 2.8: LazyRow
+
+- [ ] Port LazyColumn pattern to horizontal
+- [ ] Implement horizontal scroll
+- [ ] Add horizontalArrangement support
+
+### Deliverables
+
+- [ ] LazyColumn fully functional
+- [ ] LazyRow fully functional
+- [ ] Smooth scrolling with 10,000+ items
+- [ ] Item key support working
+- [ ] State preservation working
+- [ ] Performance validated
+- [ ] Comprehensive tests
+- [ ] Examples demonstrating features
+
+## Phase 3: Core Animation System
+
+### Build foundation only, not full API surface
+
+### Task 3.1: Frame Clock
+
+- [ ] Integrate Clock trait with Composer
+- [ ] Add MonotonicFrameClock
+- [ ] Add withFrameMillis {} block
+- [ ] Request frames via RuntimeScheduler
+- [ ] Test frame timing accuracy
+
+### Task 3.2: AnimationVector
+
+```rust
+pub trait AnimationVector: Clone {
+    fn lerp(&self, other: &Self, fraction: f32) -> Self;
+    fn distance_to(&self, other: &Self) -> f32;
+}
+```
+
+- [ ] Define AnimationVector trait
+- [ ] Implement for f32
+- [ ] Implement for Color
+- [ ] Implement for Dp
+- [ ] Implement for Offset
+- [ ] Implement for Size
+
+### Task 3.3: AnimationSpec
+
+```rust
+pub enum AnimationSpec<T> {
+    Tween { duration_millis: u32, easing: Easing },
+    Spring { dampingRatio: f32, stiffness: f32 },
+}
+
+pub enum Easing {
+    Linear,
+    FastOutSlowIn,
+    FastOutLinearIn,
+    LinearOutSlowIn,
+}
+```
+
+- [ ] Define AnimationSpec enum
+- [ ] Implement Tween
+- [ ] Implement Spring physics
+- [ ] Add easing functions
+
+### Task 3.4: Animatable
+
+```rust
+pub struct Animatable<T: AnimationVector> {
+    value: MutableState<T>,
+    target: MutableState<T>,
+    spec: MutableState<AnimationSpec<T>>,
+}
+
+impl<T: AnimationVector> Animatable<T> {
+    pub fn animate_to(&self, target: T, spec: AnimationSpec<T>);
+    pub fn snap_to(&self, target: T);
+    pub fn stop(&self);
+}
+```
+
+- [ ] Implement Animatable struct
+- [ ] Add animate_to with frame callbacks
+- [ ] Add snap_to for instant updates
+- [ ] Add stop for cancellation
+- [ ] Handle interruption correctly
+
+### Task 3.5: animate*AsState
+
+```rust
+pub fn animateFloatAsState(
+    target: f32,
+    spec: AnimationSpec<f32>
+) -> State<f32>
+
+pub fn animateColorAsState(
+    target: Color,
+    spec: AnimationSpec<Color>
+) -> State<Color>
+```
+
+- [ ] Implement animateFloatAsState
+- [ ] Implement animateColorAsState
+- [ ] Use default spring spec
+- [ ] Handle cancellation
+- [ ] Test smooth interpolation
+
+### Task 3.6: Validation
+
+- [ ] Create animation examples
+- [ ] Test smooth 60 FPS updates
+- [ ] Test interruption
+- [ ] Profile performance
+- [ ] Compare with Jetpack Compose
+
+### Deliverables
+
+- [ ] Frame clock integrated
+- [ ] AnimationVector and specs working
+- [ ] Animatable functional
+- [ ] animateFloatAsState working
+- [ ] animateColorAsState working
+- [ ] Smooth 60 FPS animations
+- [ ] Interruptible animations
+- [ ] Examples demonstrating usage
+- [ ] NOT implementing full Transition API yet
+- [ ] NOT implementing all animate*AsState variants yet
+
+## Phase 4: Desktop Production Quality
+
+### Polish existing features before expanding
+
+### Task 4.1: Text Improvements
+
+- [ ] Evaluate cosmic-text vs current rusttype
+- [ ] Implement proper font loading
+- [ ] Add multi-line text support
+- [ ] Improve text measurement accuracy
+- [ ] Add text baseline alignment
+- [ ] Test complex text layouts
+
+### Task 4.2: Basic Input
+
+- [ ] Implement TextField (basic version)
+- [ ] Add text cursor rendering
+- [ ] Add simple text selection
+- [ ] Add keyboard input handling
+- [ ] Implement basic FocusManager
+- [ ] Add focus traversal
+
+### Task 4.3: Essential Modifiers
+
+Add most commonly used modifiers:
+
+- [ ] Modifier.offset (x, y)
+- [ ] Modifier.absoluteOffset
+- [ ] Modifier.clip(shape)
+- [ ] Modifier.border (width, brush, shape)
+- [ ] Modifier.alpha
+- [ ] Modifier.shadow (elevation, shape)
+- [ ] Modifier.rotate
+- [ ] Modifier.scale
+- [ ] Modifier.aspectRatio
+- [ ] Modifier.zIndex
+
+### Task 4.4: Gesture System
+
+- [ ] Implement pointerInput modifier properly
+- [ ] Add detectTapGestures
+- [ ] Add detectDragGestures
+- [ ] Test gesture reliability
+- [ ] Add gesture examples
+
+### Task 4.5: Image Support
+
+```rust
+#[composable]
+pub fn Image(
+    bitmap: ImageBitmap,
+    contentDescription: String,
+    modifier: Modifier,
+    contentScale: ContentScale
+)
+```
+
+- [ ] Define ImageBitmap type
+- [ ] Implement Image composable
+- [ ] Add PNG loading (image crate)
+- [ ] Add JPEG loading
+- [ ] Add ContentScale modes (Crop, Fit, Fill, Inside, None)
+- [ ] Add examples
+
+### Task 4.6: Testing Framework
+
+```rust
+pub struct ComposeTestRule {
+    composition: Composition<TestApplier>,
+}
+
+impl ComposeTestRule {
+    pub fn on_node_with_text(&self, text: &str) -> SemanticsNodeInteraction;
+    pub fn on_node_with_tag(&self, tag: &str) -> SemanticsNodeInteraction;
+}
+
+impl SemanticsNodeInteraction {
+    pub fn assert_exists(&self);
+    pub fn assert_is_displayed(&self);
+    pub fn perform_click(&self);
+}
+```
+
+- [ ] Implement ComposeTestRule
+- [ ] Build basic semantics tree
+- [ ] Add node finders (by text, tag)
+- [ ] Add assertions (exists, displayed)
+- [ ] Add actions (click, input)
+- [ ] Write example tests
+
+### Task 4.7: Development Tools
+
+- [ ] Implement recomposition counter overlay
+- [ ] Implement layout bounds overlay
+- [ ] Add runtime toggle
+- [ ] Document usage
+
+### Task 4.8: Performance Validation
+
+- [ ] Profile real applications
+- [ ] Optimize hot paths in Composer
+- [ ] Fix memory leaks
+- [ ] Reduce allocations
+- [ ] Document performance characteristics
+- [ ] Create performance benchmarks
+
+### Task 4.9: Example Applications
+
+Build 5 complete applications:
+
+- [ ] Counter app (enhance existing)
+- [ ] Todo list with LazyColumn
+- [ ] Form with TextField and validation
+- [ ] Image gallery with LazyGrid
+- [ ] Simple game with Canvas
+
+### Deliverables
+
+- [ ] Text rendering excellent
+- [ ] Basic TextField working
+- [ ] Essential modifiers complete
+- [ ] Gesture detection working
+- [ ] Image loading functional
+- [ ] Testing framework operational
+- [ ] Dev tools working
+- [ ] Performance acceptable
+- [ ] 5 polished example apps
+- [ ] Desktop platform production-ready
+
+## Phase 5: Modifier Node Architecture
+
+### Make modifier chain persistent and efficient
+
+### Task 5.1: Design Study
+
+- [ ] Read Jetpack Compose Modifier.Node documentation
+- [ ] Study persistent chain structure
+- [ ] Design node lifecycle
+- [ ] Design phase-specific traversal
+- [ ] Write detailed design document
+
+### Task 5.2: Core Infrastructure
+
+```rust
+pub trait ModifierNodeElement: Clone {
+    type Node: ModifierNode;
+    fn create(&self) -> Self::Node;
+    fn update(&self, node: &mut Self::Node);
+}
+
+pub trait ModifierNode {
+    fn on_attach(&mut self);
+    fn on_detach(&mut self);
+}
+```
+
+- [ ] Implement ModifierNodeElement trait
+- [ ] Implement ModifierNode trait
+- [ ] Implement persistent chain structure
+- [ ] Implement node lifecycle
+- [ ] Add node traversal
+
+### Task 5.3: Node Types
+
+```rust
+pub trait LayoutModifierNode: ModifierNode {
+    fn measure(&self, measurable: &dyn Measurable, constraints: Constraints) -> Placeable;
+}
+
+pub trait DrawModifierNode: ModifierNode {
+    fn draw(&self, canvas: &mut DrawScope);
+}
+
+pub trait PointerInputModifierNode: ModifierNode {
+    fn on_pointer_event(&self, event: PointerEvent);
+}
+
+pub trait SemanticsModifierNode: ModifierNode {
+    fn apply_semantics(&self, receiver: &mut SemanticsReceiver);
+}
+```
+
+- [ ] Define LayoutModifierNode
+- [ ] Define DrawModifierNode
+- [ ] Define PointerInputModifierNode
+- [ ] Define SemanticsModifierNode
+
+### Task 5.4: Migrate Core Modifiers
+
+- [ ] Migrate padding to LayoutModifierNode
+- [ ] Migrate size to LayoutModifierNode
+- [ ] Migrate background to DrawModifierNode
+- [ ] Migrate clickable to PointerInputModifierNode
+- [ ] Verify behavior unchanged
+
+### Task 5.5: Performance Validation
+
+- [ ] Test with long modifier chains (100+)
+- [ ] Verify O(1) chain operations
+- [ ] Profile modifier creation
+- [ ] Profile traversal
+- [ ] Compare with Vec-based approach
+
+### Deliverables
+
+- [ ] Persistent modifier chain working
+- [ ] Node lifecycle correct
+- [ ] Phase-specific traversal working
+- [ ] Core modifiers migrated
+- [ ] Performance improved
+- [ ] All tests passing
+- [ ] No breaking changes to user code
+
+## Phase 6: Expand Desktop API
+
+### Now that core is solid, expand to full API
+
+### Task 6.1: Complete Modifier API
+
+Add remaining commonly-used modifiers (~30 more):
+
+**Size/Layout**
+- [ ] sizeIn, widthIn, heightIn
+- [ ] defaultMinSize
+- [ ] wrapContentWidth, wrapContentHeight
+- [ ] All fill* variants with fraction
+
+**Visual**
+- [ ] drawWithCache (already exists, improve)
+- [ ] graphicsLayer (enhance existing)
+
+**Scroll**
+- [ ] verticalScroll
+- [ ] horizontalScroll
+- [ ] scrollable (low-level)
+
+**Interaction**
+- [ ] selectable
+- [ ] toggleable
+- [ ] draggable
+
+**Focus**
+- [ ] focusable
+- [ ] focusRequester
+- [ ] onFocusChanged
+- [ ] focusTarget
+
+**Semantics**
+- [ ] semantics
+- [ ] clearAndSetSemantics
+- [ ] testTag
+
+### Task 6.2: Complete Animation API
+
+- [ ] Implement Transition struct
+- [ ] Implement updateTransition
+- [ ] Implement InfiniteTransition
+- [ ] Implement rememberInfiniteTransition
+- [ ] Add animateDpAsState
+- [ ] Add animateOffsetAsState
+- [ ] Add animateSizeAsState
+- [ ] Add Keyframes spec
+- [ ] Add Repeatable spec
+
+### Task 6.3: Canvas and Drawing
+
+```rust
+#[composable]
+pub fn Canvas(modifier: Modifier, onDraw: impl Fn(&mut DrawScope))
+
+pub trait DrawScope {
+    fn draw_rect(&mut self, ...);
+    fn draw_circle(&mut self, ...);
+    fn draw_path(&mut self, ...);
+    fn draw_line(&mut self, ...);
+    fn draw_arc(&mut self, ...);
+}
+```
+
+- [ ] Implement Canvas composable
+- [ ] Add all DrawScope methods
+- [ ] Implement Path API
+- [ ] Add examples (charts, graphs, drawings)
+
+### Task 6.4: Scrollable Containers
+
+- [ ] Enhance ScrollState
+- [ ] Add verticalScroll modifier
+- [ ] Add horizontalScroll modifier
+- [ ] Implement nested scroll
+- [ ] Implement LazyGrid (basic)
+
+### Task 6.5: Advanced Text
+
+- [ ] Implement AnnotatedString
+- [ ] Add text spans with different styles
+- [ ] Add inline content support
+- [ ] Improve text selection
+- [ ] Add BasicText composable
+
+### Task 6.6: Focus System
+
+- [ ] Complete FocusRequester
+- [ ] Complete FocusManager
+- [ ] Add focus traversal (tab navigation)
+- [ ] Add onFocusChanged callback
+- [ ] Add focus indicators
+
+### Deliverables
+
+- [ ] 40+ modifiers implemented
+- [ ] Full animation API
+- [ ] Canvas working
+- [ ] Advanced scrolling
+- [ ] Rich text support
+- [ ] Focus system complete
+- [ ] Examples for all features
+
+## Phase 7: Material 3 Components
+
+### Build component library on solid foundation
+
+### Task 7.1: Theme Foundation
+
+Create `compose-material3/` crate:
+
+```rust
+#[composable]
+pub fn MaterialTheme(
+    colorScheme: ColorScheme,
+    typography: Typography,
+    shapes: Shapes,
+    content: impl FnOnce()
+)
+```
+
+- [ ] Define ColorScheme (primary, secondary, tertiary, etc.)
+- [ ] Define Typography (display, headline, title, body, label)
+- [ ] Define Shapes (small, medium, large, extraLarge)
+- [ ] Implement MaterialTheme composable
+- [ ] Add light color scheme
+- [ ] Add dark color scheme
+- [ ] Add LocalColorScheme, LocalTypography, LocalShapes
+
+### Task 7.2-7.9: Components
+
+Build ~30 Material 3 components in batches:
+
+**Foundation** (Task 7.2)
+- [ ] Surface
+- [ ] Card variants (Card, ElevatedCard, OutlinedCard)
+- [ ] Divider
+
+**Buttons** (Task 7.3)
+- [ ] Button variants (Filled, Tonal, Outlined, Text)
+- [ ] IconButton variants
+- [ ] FloatingActionButton variants
+
+**Input** (Task 7.4)
+- [ ] TextField (enhance existing)
+- [ ] OutlinedTextField
+- [ ] Checkbox, Switch, RadioButton
+- [ ] Slider, RangeSlider
+
+**Selection** (Task 7.5)
+- [ ] Chip variants (Assist, Filter, Input, Suggestion)
+
+**Navigation** (Task 7.6)
+- [ ] TopAppBar variants (Small, Medium, Large)
+- [ ] BottomAppBar
+- [ ] NavigationBar, NavigationRail
+- [ ] Tab, TabRow, ScrollableTabRow
+
+**Feedback** (Task 7.7)
+- [ ] CircularProgressIndicator
+- [ ] LinearProgressIndicator
+- [ ] Snackbar, SnackbarHost
+- [ ] Badge
+
+**Dialogs** (Task 7.8)
+- [ ] AlertDialog
+- [ ] BasicAlertDialog
+- [ ] ModalBottomSheet
+- [ ] BottomSheet
+
+**Other** (Task 7.9)
+- [ ] ListItem
+- [ ] DropdownMenu, DropdownMenuItem
+
+### Deliverables
+
+- [ ] 30+ Material 3 components
+- [ ] Complete theme system
+- [ ] Light and dark themes
+- [ ] Examples for each component
+- [ ] Component documentation
+- [ ] Material 3 example app
+
+## Phase 8: Web Platform
+
+### Prove multi-platform architecture
+
+### Task 8.1: Web Runtime
+
+Create `compose-web/` crate with wasm-bindgen:
+
+- [ ] Implement WebRuntime using requestAnimationFrame
+- [ ] Implement WebClock using Performance API
+- [ ] Add WASM build support
+- [ ] Test in browsers
+
+### Task 8.2: Canvas Renderer
+
+- [ ] Implement CanvasRenderer using Canvas 2D API
+- [ ] Map primitives to canvas operations
+- [ ] Handle text rendering
+- [ ] Handle images
+
+### Task 8.3: Input Handling
+
+- [ ] Map browser events to PointerEvent
+- [ ] Handle keyboard events
+- [ ] Handle focus events
+- [ ] Handle touch events
+
+### Task 8.4: Examples
+
+- [ ] Port counter app to WASM
+- [ ] Port todo list to WASM
+- [ ] Add build/deploy guide
+
+### Deliverables
+
+- [ ] compose-web crate working
+- [ ] Canvas rendering functional
+- [ ] Input working
+- [ ] 3+ WASM examples
+- [ ] Same API as desktop
+
+## Phase 9: Mobile Platforms
+
+### Prove mobile viability
+
+### Task 9.1: Android Integration
+
+- [ ] Create JNI bindings
+- [ ] Implement AndroidRuntime
+- [ ] Implement Android renderer
+- [ ] Port counter to Android
+
+### Task 9.2: iOS Integration
+
+- [ ] Create Swift/ObjC interop
+- [ ] Implement IosRuntime
+- [ ] Implement iOS renderer
+- [ ] Port counter to iOS
+
+### Deliverables
+
+- [ ] Android proof-of-concept
+- [ ] iOS proof-of-concept
+- [ ] Same Compose API
+
+## Phase 10: Embedded/no_std
+
+### Only after all std platforms mature
+
+### Task 10.1: Design no_std Strategy
+
+- [ ] Evaluate allocation requirements
+- [ ] Design arena allocator
+- [ ] Design bounded collections
+- [ ] Document constraints
+
+### Task 10.2: Create Embedded Runtime
+
+Create `compose-embedded/` crate (no_std):
+
+- [ ] Replace dynamic allocations
+- [ ] Implement EmbeddedRuntime
+- [ ] Implement embedded renderer
+
+### Task 10.3: Examples
+
+- [ ] STM32 example
+- [ ] ESP32 example
+- [ ] RP2040 example
+
+### Deliverables
+
+- [ ] compose-embedded working
+- [ ] Running on real hardware
+- [ ] Memory usage documented
+
+## Cross-Cutting Requirements
+
+### Architecture Rules
+
+- [ ] Keep compose-core platform-independent
+- [ ] Document all allocations with `// FUTURE(no_std):`
+- [ ] Use platform traits exclusively
+- [ ] Match Jetpack Compose API exactly
+- [ ] Test thoroughly
+- [ ] No feature flags
+
+### Testing Requirements
+
+- [ ] Unit tests for all public APIs
+- [ ] Integration tests for composables
+- [ ] Tests mirroring Compose documentation
+- [ ] Performance regression tests
+- [ ] Cross-platform test suite
+
+### Documentation Requirements
+
+- [ ] API documentation for all public items
+- [ ] Examples for each composable
+- [ ] Migration guides
+- [ ] Platform-specific guides
+- [ ] Performance tuning guide
+
+## Acceptance Criteria
+
+### Desktop 1.0
+
+- [ ] Phases 0-7 complete
+- [ ] 100% Jetpack Compose core API parity
+- [ ] 40+ modifiers functional
+- [ ] 30+ Material 3 components
+- [ ] LazyColumn/LazyRow performant
+- [ ] Full animation system
+- [ ] Testing framework operational
+- [ ] 10+ example applications
+- [ ] Complete documentation
+- [ ] 60 FPS sustained performance
+
+### Multi-Platform
+
+- [ ] Web (WASM) working
+- [ ] Android proof-of-concept
+- [ ] iOS proof-of-concept
+- [ ] Identical API across platforms
+- [ ] Examples for each platform
+
+### no_std Ready
+
+- [ ] Embedded proof-of-concept
+- [ ] Running on real hardware
+- [ ] Memory usage acceptable
+
+## Migration Notes
+
+### From Current Codebase
+
+- SubcomposeLayout is already complete - leverage it heavily
+- Current modifier API is mostly stable - just need node chain
+- LaunchedEffect change is internal only - no API break
+- Layout system replacement will require updating all examples
