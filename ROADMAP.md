@@ -120,10 +120,10 @@ Update LaunchedEffect to use RuntimeScheduler:
 ### Task 1.1: Study and Design
 
 - [ ] Read Jetpack Compose layout documentation thoroughly
-- [ ] Document Constraints → Measure → Place flow
-- [ ] Document intrinsic measurement contract
-- [ ] Design Rust API matching Compose
-- [ ] Write detailed design document
+- [x] Document Constraints → Measure → Place flow
+- [x] Document intrinsic measurement contract
+- [x] Design Rust API matching Compose
+- [x] Write detailed design document
 
 ### Task 1.2: Core Layout Traits
 
@@ -158,11 +158,11 @@ pub trait MeasurePolicy {
 }
 ```
 
-- [ ] Define Measurable trait with intrinsics
-- [ ] Define Placeable trait
-- [ ] Define MeasurePolicy trait
-- [ ] Add Alignment enum (Start, Center, End, Top, Bottom, etc.)
-- [ ] Add Arrangement trait (spacedBy, SpaceBetween, SpaceAround, SpaceEvenly)
+- [x] Define Measurable trait with intrinsics
+- [x] Define Placeable trait
+- [x] Define MeasurePolicy trait
+- [x] Add Alignment enum (Start, Center, End, Top, Bottom, etc.)
+- [x] Add Arrangement trait (spacedBy, SpaceBetween, SpaceAround, SpaceEvenly)
 
 ### Task 1.3: Layout Composable
 

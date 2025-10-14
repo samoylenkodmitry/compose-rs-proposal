@@ -10,7 +10,13 @@ mod primitives;
 mod renderer;
 mod subcompose_layout;
 
-pub use layout::{LayoutBox, LayoutEngine, LayoutTree};
+pub use layout::{
+    core::{
+        Arrangement, HorizontalAlignment, LinearArrangement, Measurable, MeasurePolicy, Placeable,
+        VerticalAlignment,
+    },
+    LayoutBox, LayoutEngine, LayoutTree,
+};
 pub use modifier::{
     Brush, Color, CornerRadii, DrawCommand, DrawPrimitive, GraphicsLayer, Modifier, Point,
     PointerEvent, PointerEventKind, Rect, RoundedCornerShape, Size,

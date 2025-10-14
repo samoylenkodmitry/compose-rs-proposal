@@ -1,3 +1,5 @@
+pub mod core;
+
 use compose_core::{MemoryApplier, Node, NodeError, NodeId};
 use taffy::prelude::*;
 
