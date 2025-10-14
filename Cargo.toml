@@ -2,6 +2,7 @@
 members = [
     "compose-core",
     "compose-macros",
+    "compose-runtime-std",
     "compose-ui",
     "desktop-app",
 ]

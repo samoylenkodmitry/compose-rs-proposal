@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 compose-core = { path = "../compose-core" }
+compose-runtime-std = { path = "../compose-runtime-std" }
 compose-ui = { path = "../compose-ui" }
 pixels = "0.13"
 winit = "0.28"

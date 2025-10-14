@@ -29,7 +29,7 @@
 
 ### Critical Issues
 
-- [ ] LaunchedEffect uses `std::thread::spawn` directly (needs platform abstraction)
+- [x] LaunchedEffect uses `std::thread::spawn` directly (needs platform abstraction)
 - [ ] Layout system uses Taffy (needs Compose intrinsic model)
 - [ ] Modifier is Vec-based (needs persistent node chain for performance)
 - [ ] Animation is rudimentary (just state updates, no interpolation)
@@ -71,26 +71,26 @@ pub trait Clock: Send + Sync {
 }
 ```
 
-- [ ] Define RuntimeScheduler trait
-- [ ] Define Clock trait
-- [ ] Add to compose-core public API
+- [x] Define RuntimeScheduler trait
+- [x] Define Clock trait
+- [x] Add to compose-core public API
 
 ### Task 0.2: Create Standard Runtime
 
 Create `compose-runtime-std/` crate:
 
-- [ ] Implement StdScheduler using std::thread
-- [ ] Implement StdClock using std::time
-- [ ] Document usage
+- [x] Implement StdScheduler using std::thread
+- [x] Implement StdClock using std::time
+- [x] Document usage
 
 ### Task 0.3: Refactor LaunchedEffect
 
 Update LaunchedEffect to use RuntimeScheduler:
 
-- [ ] Remove direct `thread::spawn` from LaunchedEffectState
-- [ ] Use RuntimeScheduler::spawn_task
-- [ ] Update Composition to accept runtime parameter
-- [ ] Update desktop-app to provide StdRuntime
+- [x] Remove direct `thread::spawn` from LaunchedEffectState
+- [x] Use RuntimeScheduler::spawn_task
+- [x] Update Composition to accept runtime parameter
+- [x] Update desktop-app to provide StdRuntime
 
 ### Task 0.4: Document Allocations
 
@@ -106,10 +106,10 @@ Update LaunchedEffect to use RuntimeScheduler:
 
 ### Deliverables
 
-- [ ] Platform traits defined
-- [ ] Standard runtime working
-- [ ] LaunchedEffect refactored
-- [ ] Desktop app updated
+- [x] Platform traits defined
+- [x] Standard runtime working
+- [x] LaunchedEffect refactored
+- [x] Desktop app updated
 - [ ] Signals deprecated
 - [ ] No breaking changes to user code
 
