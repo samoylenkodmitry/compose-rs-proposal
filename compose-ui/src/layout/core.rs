@@ -57,6 +57,37 @@ pub trait MeasurePolicy {
     fn max_intrinsic_height(&self, measurables: &[Box<dyn Measurable>], width: f32) -> f32;
 }
 
+/// Alignment across both axes used for positioning content within a box.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Alignment {
+    /// Horizontal alignment component.
+    pub horizontal: HorizontalAlignment,
+    /// Vertical alignment component.
+    pub vertical: VerticalAlignment,
+}
+
+impl Alignment {
+    /// Creates a new [`Alignment`] from explicit horizontal and vertical components.
+    pub const fn new(horizontal: HorizontalAlignment, vertical: VerticalAlignment) -> Self {
+        Self {
+            horizontal,
+            vertical,
+        }
+    }
+
+    /// Align children to the top-start corner.
+    pub const TOP_START: Self = Self::new(HorizontalAlignment::Start, VerticalAlignment::Top);
+
+    /// Align children to the center of the parent.
+    pub const CENTER: Self = Self::new(
+        HorizontalAlignment::CenterHorizontally,
+        VerticalAlignment::CenterVertically,
+    );
+
+    /// Align children to the bottom-end corner.
+    pub const BOTTOM_END: Self = Self::new(HorizontalAlignment::End, VerticalAlignment::Bottom);
+}
+
 /// Alignment along the horizontal axis.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HorizontalAlignment {

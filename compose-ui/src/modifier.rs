@@ -1,5 +1,8 @@
+use std::fmt;
 use std::ops::AddAssign;
 use std::rc::Rc;
+
+use crate::layout::core::Alignment;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PointerEventKind {
@@ -332,6 +335,7 @@ pub enum ModOp {
     Offset(Point),
     AbsoluteOffset(Point),
     Draw(DrawCommand),
+    BoxAlign(Alignment),
 }
 
 #[derive(Clone, Default)]
@@ -344,6 +348,12 @@ impl PartialEq for Modifier {
 }
 
 impl Eq for Modifier {}
+
+impl fmt::Debug for Modifier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Modifier").field(&self.0.len()).finish()
+    }
+}
 
 impl Modifier {
     pub fn empty() -> Self {
@@ -460,6 +470,10 @@ impl Modifier {
 
     pub fn weight_with_fill(weight: f32, fill: bool) -> Self {
         Self::with_op(ModOp::Weight { weight, fill })
+    }
+
+    pub fn align(alignment: Alignment) -> Self {
+        Self::with_op(ModOp::BoxAlign(alignment))
     }
 
     pub fn pointer_input(handler: impl Fn(PointerEvent) + 'static) -> Self {
@@ -656,6 +670,7 @@ pub(crate) struct LayoutProperties {
     max_width: Option<f32>,
     max_height: Option<f32>,
     weight: Option<LayoutWeight>,
+    box_alignment: Option<Alignment>,
 }
 
 impl LayoutProperties {
@@ -690,6 +705,10 @@ impl LayoutProperties {
     #[allow(dead_code)]
     pub fn weight(&self) -> Option<LayoutWeight> {
         self.weight
+    }
+
+    pub fn box_alignment(&self) -> Option<Alignment> {
+        self.box_alignment
     }
 }
 
@@ -729,10 +748,17 @@ impl Modifier {
                         fill: *fill,
                     });
                 }
+                ModOp::BoxAlign(alignment) => {
+                    props.box_alignment = Some(*alignment);
+                }
                 _ => {}
             }
         }
         props
+    }
+
+    pub(crate) fn box_alignment(&self) -> Option<Alignment> {
+        self.layout_properties().box_alignment()
     }
 }
 

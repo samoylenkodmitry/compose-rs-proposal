@@ -8,7 +8,7 @@ use indexmap::IndexSet;
 
 use crate::composable;
 use crate::layout::core::{
-    HorizontalAlignment, LinearArrangement, MeasurePolicy, VerticalAlignment,
+    Alignment, HorizontalAlignment, LinearArrangement, MeasurePolicy, VerticalAlignment,
 };
 use crate::modifier::{Modifier, Size};
 use crate::subcompose_layout::MeasureScope;
@@ -100,6 +100,56 @@ pub struct ColumnNode {
     pub vertical_arrangement: LinearArrangement,
     pub horizontal_alignment: HorizontalAlignment,
     pub children: IndexSet<NodeId>,
+}
+
+#[derive(Clone)]
+pub struct BoxNode {
+    pub modifier: Modifier,
+    pub content_alignment: Alignment,
+    pub propagate_min_constraints: bool,
+    pub children: IndexSet<NodeId>,
+}
+
+impl Default for BoxNode {
+    fn default() -> Self {
+        Self {
+            modifier: Modifier::empty(),
+            content_alignment: Alignment::TOP_START,
+            propagate_min_constraints: false,
+            children: IndexSet::new(),
+        }
+    }
+}
+
+impl Node for BoxNode {
+    fn insert_child(&mut self, child: NodeId) {
+        self.children.insert(child);
+    }
+
+    fn remove_child(&mut self, child: NodeId) {
+        self.children.shift_remove(&child);
+    }
+
+    fn move_child(&mut self, from: usize, to: usize) {
+        if from == to || from >= self.children.len() {
+            return;
+        }
+        let mut ordered: Vec<NodeId> = self.children.iter().copied().collect();
+        let child = ordered.remove(from);
+        let target = to.min(ordered.len());
+        ordered.insert(target, child);
+        self.children.clear();
+        for id in ordered {
+            self.children.insert(id);
+        }
+    }
+
+    fn update_children(&mut self, children: &[NodeId]) {
+        self.children.clear();
+        for &child in children {
+            self.children.insert(child);
+        }
+    }
 }
 
 impl Default for ColumnNode {
@@ -326,6 +376,43 @@ where
         HorizontalAlignment::Start,
         content,
     )
+}
+
+#[composable(no_skip)]
+pub fn Box<F>(modifier: Modifier, content: F) -> NodeId
+where
+    F: FnMut(),
+{
+    BoxWithOptions(modifier, Alignment::TOP_START, false, content)
+}
+
+#[composable(no_skip)]
+pub fn BoxWithOptions<F>(
+    modifier: Modifier,
+    content_alignment: Alignment,
+    propagate_min_constraints: bool,
+    mut content: F,
+) -> NodeId
+where
+    F: FnMut(),
+{
+    let id = compose_node(|| BoxNode {
+        modifier: modifier.clone(),
+        content_alignment,
+        propagate_min_constraints,
+        children: IndexSet::new(),
+    });
+    if let Err(err) = compose_core::with_node_mut(id, |node: &mut BoxNode| {
+        node.modifier = modifier.clone();
+        node.content_alignment = content_alignment;
+        node.propagate_min_constraints = propagate_min_constraints;
+    }) {
+        debug_assert!(false, "failed to update Box node: {err}");
+    }
+    compose_core::push_parent(id);
+    content();
+    compose_core::pop_parent();
+    id
 }
 
 #[composable(no_skip)]

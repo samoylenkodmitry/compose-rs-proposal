@@ -225,7 +225,7 @@ Add essential layout modifiers:
 - [ ] Modifier.wrapContentSize (align parameter)
 - [x] Modifier.requiredSize
 - [x] Modifier.weight (for Row/Column children)
-- [ ] Modifier.align (for Box children)
+- [x] Modifier.align (for Box children)
 
 ### Task 1.7: Box Primitive
 
@@ -239,11 +239,11 @@ pub fn Box(
 )
 ```
 
-- [ ] Implement BoxMeasurePolicy
-- [ ] Handle z-ordering of children
-- [ ] Handle alignment
-- [ ] Add BoxScope trait
-- [ ] Add Modifier.align for BoxScope
+- [x] Implement BoxMeasurePolicy
+- [x] Handle z-ordering of children
+- [x] Handle alignment
+- [x] Add BoxScope trait
+- [x] Add Modifier.align for BoxScope
 
 ### Task 1.8: Validation
 
