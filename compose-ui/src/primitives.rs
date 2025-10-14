@@ -7,6 +7,7 @@ use compose_core::{self, MutableState, Node, NodeId, State};
 use indexmap::IndexSet;
 
 use crate::composable;
+use crate::layout::core::{HorizontalAlignment, LinearArrangement, VerticalAlignment};
 use crate::modifier::{Modifier, Size};
 use crate::subcompose_layout::MeasureScope;
 use crate::subcompose_layout::{
@@ -91,10 +92,23 @@ fn compose_node<N: Node + 'static>(init: impl FnOnce() -> N) -> NodeId {
     compose_core::with_current_composer(|composer| composer.emit_node(init))
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct ColumnNode {
     pub modifier: Modifier,
+    pub vertical_arrangement: LinearArrangement,
+    pub horizontal_alignment: HorizontalAlignment,
     pub children: IndexSet<NodeId>,
+}
+
+impl Default for ColumnNode {
+    fn default() -> Self {
+        Self {
+            modifier: Modifier::empty(),
+            vertical_arrangement: LinearArrangement::Start,
+            horizontal_alignment: HorizontalAlignment::Start,
+            children: IndexSet::new(),
+        }
+    }
 }
 
 impl Node for ColumnNode {
@@ -128,10 +142,23 @@ impl Node for ColumnNode {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct RowNode {
     pub modifier: Modifier,
+    pub horizontal_arrangement: LinearArrangement,
+    pub vertical_alignment: VerticalAlignment,
     pub children: IndexSet<NodeId>,
+}
+
+impl Default for RowNode {
+    fn default() -> Self {
+        Self {
+            modifier: Modifier::empty(),
+            horizontal_arrangement: LinearArrangement::Start,
+            vertical_alignment: VerticalAlignment::CenterVertically,
+            children: IndexSet::new(),
+        }
+    }
 }
 
 impl Node for RowNode {
@@ -235,16 +262,38 @@ impl Node for ButtonNode {
 }
 
 #[composable(no_skip)]
-pub fn Column<F>(modifier: Modifier, mut content: F) -> NodeId
+pub fn Column<F>(modifier: Modifier, content: F) -> NodeId
+where
+    F: FnMut(),
+{
+    ColumnWithAlignment(
+        modifier,
+        LinearArrangement::Start,
+        HorizontalAlignment::Start,
+        content,
+    )
+}
+
+#[composable(no_skip)]
+pub fn ColumnWithAlignment<F>(
+    modifier: Modifier,
+    vertical_arrangement: LinearArrangement,
+    horizontal_alignment: HorizontalAlignment,
+    mut content: F,
+) -> NodeId
 where
     F: FnMut(),
 {
     let id = compose_node(|| ColumnNode {
         modifier: modifier.clone(),
+        vertical_arrangement,
+        horizontal_alignment,
         children: IndexSet::new(),
     });
     if let Err(err) = compose_core::with_node_mut(id, |node: &mut ColumnNode| {
-        node.modifier = modifier;
+        node.modifier = modifier.clone();
+        node.vertical_arrangement = vertical_arrangement;
+        node.horizontal_alignment = horizontal_alignment;
     }) {
         debug_assert!(false, "failed to update Column node: {err}");
     }
@@ -255,16 +304,38 @@ where
 }
 
 #[composable(no_skip)]
-pub fn Row<F>(modifier: Modifier, mut content: F) -> NodeId
+pub fn Row<F>(modifier: Modifier, content: F) -> NodeId
+where
+    F: FnMut(),
+{
+    RowWithAlignment(
+        modifier,
+        LinearArrangement::Start,
+        VerticalAlignment::CenterVertically,
+        content,
+    )
+}
+
+#[composable(no_skip)]
+pub fn RowWithAlignment<F>(
+    modifier: Modifier,
+    horizontal_arrangement: LinearArrangement,
+    vertical_alignment: VerticalAlignment,
+    mut content: F,
+) -> NodeId
 where
     F: FnMut(),
 {
     let id = compose_node(|| RowNode {
         modifier: modifier.clone(),
+        horizontal_arrangement,
+        vertical_alignment,
         children: IndexSet::new(),
     });
     if let Err(err) = compose_core::with_node_mut(id, |node: &mut RowNode| {
-        node.modifier = modifier;
+        node.modifier = modifier.clone();
+        node.horizontal_arrangement = horizontal_arrangement;
+        node.vertical_alignment = vertical_alignment;
     }) {
         debug_assert!(false, "failed to update Row node: {err}");
     }
@@ -494,7 +565,7 @@ where
 mod tests {
     use super::*;
     use crate::subcompose_layout::Constraints;
-    use crate::{LayoutEngine, SnapshotState, TestComposition};
+    use crate::{run_test_composition, LayoutEngine, SnapshotState, TestComposition};
     use compose_core::{
         self, location_key, Composer, Composition, MemoryApplier, MutableState, Phase, SlotTable,
         State,
@@ -504,6 +575,46 @@ mod tests {
     thread_local! {
         static COUNTER_ROW_INVOCATIONS: Cell<usize> = Cell::new(0);
         static COUNTER_TEXT_ID: RefCell<Option<NodeId>> = RefCell::new(None);
+    }
+
+    #[test]
+    fn row_with_alignment_updates_node_fields() {
+        let mut composition = run_test_composition(|| {
+            RowWithAlignment(
+                Modifier::empty(),
+                LinearArrangement::SpaceBetween,
+                VerticalAlignment::Bottom,
+                || {},
+            );
+        });
+        let root = composition.root().expect("row root");
+        composition
+            .applier_mut()
+            .with_node::<RowNode, _>(root, |node| {
+                assert_eq!(node.horizontal_arrangement, LinearArrangement::SpaceBetween);
+                assert_eq!(node.vertical_alignment, VerticalAlignment::Bottom);
+            })
+            .expect("row node available");
+    }
+
+    #[test]
+    fn column_with_alignment_updates_node_fields() {
+        let mut composition = run_test_composition(|| {
+            ColumnWithAlignment(
+                Modifier::empty(),
+                LinearArrangement::SpaceEvenly,
+                HorizontalAlignment::End,
+                || {},
+            );
+        });
+        let root = composition.root().expect("column root");
+        composition
+            .applier_mut()
+            .with_node::<ColumnNode, _>(root, |node| {
+                assert_eq!(node.vertical_arrangement, LinearArrangement::SpaceEvenly);
+                assert_eq!(node.horizontal_alignment, HorizontalAlignment::End);
+            })
+            .expect("column node available");
     }
 
     fn measure_subcompose_node(

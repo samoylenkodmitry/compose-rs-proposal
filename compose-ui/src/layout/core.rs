@@ -58,7 +58,7 @@ pub enum HorizontalAlignment {
     /// Align children to the leading edge.
     Start,
     /// Align children to the horizontal center.
-    Center,
+    CenterHorizontally,
     /// Align children to the trailing edge.
     End,
 }
@@ -69,7 +69,7 @@ pub enum VerticalAlignment {
     /// Align children to the top edge.
     Top,
     /// Align children to the vertical center.
-    Center,
+    CenterVertically,
     /// Align children to the bottom edge.
     Bottom,
 }

@@ -2,7 +2,9 @@ pub mod core;
 
 use compose_core::{MemoryApplier, Node, NodeError, NodeId};
 use taffy::prelude::*;
+use taffy::style::{AlignItems, JustifyContent};
 
+use self::core::{HorizontalAlignment, LinearArrangement, VerticalAlignment};
 use crate::modifier::{Modifier, Rect as GeometryRect, Size};
 use crate::primitives::{ButtonNode, ColumnNode, RowNode, SpacerNode, TextNode};
 
@@ -118,7 +120,9 @@ impl<'a> LayoutBuilder<'a> {
     ) -> Result<LayoutHandle, NodeError> {
         let child_handles = self.build_children(node.children.iter().copied())?;
         let child_nodes: Vec<_> = child_handles.iter().map(|child| child.taffy_node).collect();
-        let style = style_from_modifier(&node.modifier, FlexDirection::Column);
+        let mut style = style_from_modifier(&node.modifier, FlexDirection::Column);
+        apply_linear_arrangement(&mut style, node.vertical_arrangement, FlexDirection::Column);
+        style.align_items = Some(map_horizontal_alignment(node.horizontal_alignment));
         let taffy_node = self
             .taffy
             .new_with_children(style, &child_nodes)
@@ -133,7 +137,9 @@ impl<'a> LayoutBuilder<'a> {
     fn build_row(&mut self, node_id: NodeId, node: RowNode) -> Result<LayoutHandle, NodeError> {
         let child_handles = self.build_children(node.children.iter().copied())?;
         let child_nodes: Vec<_> = child_handles.iter().map(|child| child.taffy_node).collect();
-        let style = style_from_modifier(&node.modifier, FlexDirection::Row);
+        let mut style = style_from_modifier(&node.modifier, FlexDirection::Row);
+        apply_linear_arrangement(&mut style, node.horizontal_arrangement, FlexDirection::Row);
+        style.align_items = Some(map_vertical_alignment(node.vertical_alignment));
         let taffy_node = self
             .taffy
             .new_with_children(style, &child_nodes)
@@ -237,6 +243,53 @@ fn try_clone<T: Node + Clone + 'static>(
     }
 }
 
+fn apply_linear_arrangement(
+    style: &mut Style,
+    arrangement: LinearArrangement,
+    direction: FlexDirection,
+) {
+    let (justify, spacing) = map_linear_arrangement(arrangement);
+    style.justify_content = Some(justify);
+    let gap_value = spacing.unwrap_or(0.0).max(0.0);
+    let gap = LengthPercentage::Points(gap_value);
+    match direction {
+        FlexDirection::Row | FlexDirection::RowReverse => {
+            style.gap.width = gap;
+        }
+        FlexDirection::Column | FlexDirection::ColumnReverse => {
+            style.gap.height = gap;
+        }
+    }
+}
+
+fn map_linear_arrangement(arrangement: LinearArrangement) -> (JustifyContent, Option<f32>) {
+    match arrangement {
+        LinearArrangement::Start => (JustifyContent::FlexStart, None),
+        LinearArrangement::End => (JustifyContent::FlexEnd, None),
+        LinearArrangement::Center => (JustifyContent::Center, None),
+        LinearArrangement::SpaceBetween => (JustifyContent::SpaceBetween, None),
+        LinearArrangement::SpaceAround => (JustifyContent::SpaceAround, None),
+        LinearArrangement::SpaceEvenly => (JustifyContent::SpaceEvenly, None),
+        LinearArrangement::SpacedBy(spacing) => (JustifyContent::FlexStart, Some(spacing)),
+    }
+}
+
+fn map_horizontal_alignment(alignment: HorizontalAlignment) -> AlignItems {
+    match alignment {
+        HorizontalAlignment::Start => AlignItems::FlexStart,
+        HorizontalAlignment::CenterHorizontally => AlignItems::Center,
+        HorizontalAlignment::End => AlignItems::FlexEnd,
+    }
+}
+
+fn map_vertical_alignment(alignment: VerticalAlignment) -> AlignItems {
+    match alignment {
+        VerticalAlignment::Top => AlignItems::FlexStart,
+        VerticalAlignment::CenterVertically => AlignItems::Center,
+        VerticalAlignment::Bottom => AlignItems::FlexEnd,
+    }
+}
+
 fn style_from_modifier(modifier: &Modifier, direction: FlexDirection) -> Style {
     let mut style = Style::DEFAULT;
     style.display = Display::Flex;
@@ -299,5 +352,46 @@ fn uniform_padding(padding: f32) -> taffy::prelude::Rect<LengthPercentage> {
 impl LayoutTree {
     pub fn into_root(self) -> LayoutBox {
         self.root
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spaced_by_arrangement_sets_horizontal_gap() {
+        let mut style = Style::DEFAULT;
+        apply_linear_arrangement(
+            &mut style,
+            LinearArrangement::SpacedBy(8.0),
+            FlexDirection::Row,
+        );
+        assert_eq!(style.justify_content, Some(JustifyContent::FlexStart));
+        assert_eq!(style.gap.width, LengthPercentage::Points(8.0));
+    }
+
+    #[test]
+    fn spaced_by_arrangement_sets_vertical_gap() {
+        let mut style = Style::DEFAULT;
+        apply_linear_arrangement(
+            &mut style,
+            LinearArrangement::SpacedBy(12.0),
+            FlexDirection::Column,
+        );
+        assert_eq!(style.justify_content, Some(JustifyContent::FlexStart));
+        assert_eq!(style.gap.height, LengthPercentage::Points(12.0));
+    }
+
+    #[test]
+    fn alignments_map_to_align_items() {
+        assert_eq!(
+            map_horizontal_alignment(HorizontalAlignment::CenterHorizontally),
+            AlignItems::Center
+        );
+        assert_eq!(
+            map_vertical_alignment(VerticalAlignment::Bottom),
+            AlignItems::FlexEnd
+        );
     }
 }
