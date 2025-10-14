@@ -220,10 +220,6 @@ impl std::error::Error for NodeError {}
 thread_local! {
     static CURRENT_COMPOSER: RefCell<Vec<*mut ()>> = RefCell::new(Vec::new()); // FUTURE(no_std): replace Vec with fixed-capacity stack storage.
 }
-
-#[allow(dead_code)]
-#[deprecated(note = "Signals are not part of the Compose public API.")]
-mod signals;
 pub mod subcompose;
 
 pub use subcompose::{DefaultSlotReusePolicy, SlotId, SlotReusePolicy, SubcomposeState};
@@ -2826,37 +2822,5 @@ mod tests {
             .expect("recomposition after reactivation");
 
         assert_eq!(INVOCATIONS.with(|count| count.get()), 2);
-    }
-
-    #[allow(deprecated)]
-    #[test]
-    fn deprecated_signal_write_triggers_callback_on_change() {
-        use std::rc::Rc;
-
-        let triggered = Rc::new(Cell::new(0));
-        let count = triggered.clone();
-        #[allow(deprecated)]
-        let (read, write) =
-            super::signals::create_signal(0, Rc::new(move || count.set(count.get() + 1)));
-        assert_eq!(read.get(), 0);
-
-        write.set(1);
-        assert_eq!(read.get(), 1);
-        assert_eq!(triggered.get(), 1);
-
-        // Setting to the same value should not re-trigger the callback.
-        write.set(1);
-        assert_eq!(triggered.get(), 1);
-    }
-
-    #[allow(deprecated)]
-    #[test]
-    fn deprecated_signal_map_snapshots_value() {
-        use std::rc::Rc;
-
-        #[allow(deprecated)]
-        let (read, _write) = super::signals::create_signal(2, Rc::new(|| {}));
-        let mapped = read.map(|v| v * 2);
-        assert_eq!(mapped.get(), 4);
     }
 }
