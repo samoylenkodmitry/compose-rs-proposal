@@ -1,11 +1,14 @@
+//! Deprecated signal primitives kept only for historical experiments.
+//! Not part of the Compose public API.
+
 use std::any::Any;
 use std::cell::RefCell;
-use std::rc::{Rc, Weak};
+use std::rc::{Rc, Weak}; // FUTURE(no_std): replace Rc/Weak with arena-managed signal handles.
 
 struct SignalCore<T> {
     value: RefCell<T>,
-    listeners: RefCell<Vec<Weak<dyn Fn(&T)>>>,
-    tokens: RefCell<Vec<Box<dyn Any>>>,
+    listeners: RefCell<Vec<Weak<dyn Fn(&T)>>>, // FUTURE(no_std): replace Vec with bounded listener list.
+    tokens: RefCell<Vec<Box<dyn Any>>>, // FUTURE(no_std): store tokens in arena-managed slab.
 }
 
 impl<T> SignalCore<T> {
@@ -38,7 +41,8 @@ impl<T> SignalCore<T> {
     }
 
     fn add_listener(&self, listener: Rc<dyn Fn(&T)>) {
-        self.listeners.borrow_mut().push(Rc::downgrade(&listener));
+        // FUTURE(no_std): accept arena-managed listener handles.
+        self.listeners.borrow_mut().push(Rc::downgrade(&listener)); // FUTURE(no_std): store weak handle without Rc.
     }
 
     fn notify(&self) {
@@ -54,7 +58,7 @@ impl<T> SignalCore<T> {
     }
 
     fn store_token(&self, token: Box<dyn Any>) {
-        self.tokens.borrow_mut().push(token);
+        self.tokens.borrow_mut().push(token); // FUTURE(no_std): replace Vec push with arena allocation.
     }
 }
 
@@ -62,12 +66,12 @@ impl<T> SignalCore<T> {
 ///
 /// Signals are reference-counted so that UI nodes can cheaply clone handles
 /// and read the latest value during recomposition.
-pub struct ReadSignal<T>(Rc<SignalCore<T>>);
+pub struct ReadSignal<T>(Rc<SignalCore<T>>); // FUTURE(no_std): wrap arena-managed signal core.
 
 /// Write handle for a signal value.
 pub struct WriteSignal<T> {
-    inner: Rc<SignalCore<T>>,
-    on_write: Rc<dyn Fn()>,
+    inner: Rc<SignalCore<T>>, // FUTURE(no_std): replace Rc with arena-managed signal core handle.
+    on_write: Rc<dyn Fn()>,   // FUTURE(no_std): replace Rc with arena-managed callback.
 }
 
 impl<T> PartialEq for ReadSignal<T> {
@@ -89,7 +93,8 @@ impl<T> Eq for WriteSignal<T> {}
 /// Create a new signal pair with the provided initial value and callback to
 /// invoke whenever the value changes.
 pub fn create_signal<T>(initial: T, on_write: Rc<dyn Fn()>) -> (ReadSignal<T>, WriteSignal<T>) {
-    let cell = Rc::new(SignalCore::new(initial));
+    // FUTURE(no_std): accept arena-managed callback handle.
+    let cell = Rc::new(SignalCore::new(initial)); // FUTURE(no_std): allocate signal core in arena.
     (
         ReadSignal(cell.clone()),
         WriteSignal {
@@ -118,9 +123,10 @@ impl<T: Clone> ReadSignal<T> {
             let value = self.0.value.borrow();
             f(&value)
         };
-        let (derived_read, derived_write) = create_signal(initial, Rc::new(|| {}));
+        let (derived_read, derived_write) = create_signal(initial, Rc::new(|| {})); // FUTURE(no_std): allocate derived signal without Rc.
         let listener_write = derived_write.clone();
         let listener = Rc::new(move |value: &T| {
+            // FUTURE(no_std): allocate listener in arena.
             listener_write.set(f(value));
         });
         self.subscribe(listener.clone());
@@ -133,6 +139,7 @@ impl<T: Clone> ReadSignal<T> {
     /// The returned listener must be kept alive (e.g. in a slot) for updates to
     /// continue flowing. Dropping the listener automatically unsubscribes it.
     pub fn subscribe(&self, listener: Rc<dyn Fn(&T)>) {
+        // FUTURE(no_std): accept arena-managed listener handle.
         self.0.add_listener(listener);
     }
 
@@ -159,19 +166,19 @@ pub trait IntoSignal<T> {
 
 impl<T: Clone> IntoSignal<T> for T {
     fn into_signal(self) -> ReadSignal<T> {
-        ReadSignal(Rc::new(SignalCore::new(self)))
+        ReadSignal(Rc::new(SignalCore::new(self))) // FUTURE(no_std): allocate signal core in arena.
     }
 }
 
 impl IntoSignal<String> for &str {
     fn into_signal(self) -> ReadSignal<String> {
-        ReadSignal(Rc::new(SignalCore::new(self.to_string())))
+        ReadSignal(Rc::new(SignalCore::new(self.to_string()))) // FUTURE(no_std): allocate signal core in arena.
     }
 }
 
 impl IntoSignal<String> for &String {
     fn into_signal(self) -> ReadSignal<String> {
-        ReadSignal(Rc::new(SignalCore::new(self.clone())))
+        ReadSignal(Rc::new(SignalCore::new(self.clone()))) // FUTURE(no_std): allocate signal core in arena.
     }
 }
 

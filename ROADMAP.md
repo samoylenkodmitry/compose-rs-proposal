@@ -94,15 +94,15 @@ Update LaunchedEffect to use RuntimeScheduler:
 
 ### Task 0.4: Document Allocations
 
-- [ ] Add `// FUTURE(no_std):` comments to all Vec/HashMap/Rc in compose-core
-- [ ] Create allocation inventory document
-- [ ] Document migration strategy
+- [x] Add `// FUTURE(no_std):` comments to all Vec/HashMap/Rc in compose-core
+- [x] Create allocation inventory document
+- [x] Document migration strategy
 
 ### Task 0.5: Remove Signals Module
 
-- [ ] Mark signals.rs as deprecated
-- [ ] Remove from public API
-- [ ] Note: Not part of Jetpack Compose API
+- [x] Mark signals.rs as deprecated
+- [x] Remove from public API
+- [x] Note: Not part of Jetpack Compose API
 
 ### Deliverables
 
@@ -110,7 +110,7 @@ Update LaunchedEffect to use RuntimeScheduler:
 - [x] Standard runtime working
 - [x] LaunchedEffect refactored
 - [x] Desktop app updated
-- [ ] Signals deprecated
+- [x] Signals deprecated
 - [ ] No breaking changes to user code
 
 ## Phase 1: Core Layout System (Critical Blocker)
