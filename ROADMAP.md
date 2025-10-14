@@ -207,10 +207,10 @@ impl MeasurePolicy for RowMeasurePolicy {
 
 - [x] Implement RowMeasurePolicy with intrinsics
 - [x] Implement ColumnMeasurePolicy with intrinsics
-- [x] Add horizontalArrangement parameter to Row
-- [x] Add verticalArrangement parameter to Column
-- [x] Add alignment parameters
-- [x] Port existing Row/Column to new system
+- [ ] Add horizontalArrangement parameter to Row
+- [ ] Add verticalArrangement parameter to Column
+- [ ] Add alignment parameters
+- [ ] Port existing Row/Column to new system
 - [x] **Remove Taffy dependency**
 
 ### Task 1.6: Layout Modifiers
