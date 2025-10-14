@@ -12,8 +12,8 @@ mod subcompose_layout;
 
 pub use layout::{
     core::{
-        Arrangement, HorizontalAlignment, LinearArrangement, Measurable, MeasurePolicy, Placeable,
-        VerticalAlignment,
+        Alignment, Arrangement, HorizontalAlignment, LinearArrangement, Measurable, MeasurePolicy,
+        Placeable, VerticalAlignment,
     },
     LayoutBox, LayoutEngine, LayoutTree,
 };
@@ -22,9 +22,10 @@ pub use modifier::{
     Point, PointerEvent, PointerEventKind, Rect, RoundedCornerShape, Size,
 };
 pub use primitives::{
-    BoxScope, BoxWithConstraints, BoxWithConstraintsScope, BoxWithConstraintsScopeImpl, Button,
-    ButtonNode, Column, ColumnNode, ColumnWithAlignment, ForEach, Layout, LayoutNode, Row, RowNode,
-    RowWithAlignment, Spacer, SpacerNode, SubcomposeLayout, Text, TextNode,
+    Box, BoxNode, BoxScope, BoxWithConstraints, BoxWithConstraintsScope,
+    BoxWithConstraintsScopeImpl, BoxWithOptions, Button, ButtonNode, Column, ColumnNode,
+    ColumnWithAlignment, ForEach, Layout, LayoutNode, Row, RowNode, RowWithAlignment, Spacer,
+    SpacerNode, SubcomposeLayout, Text, TextNode,
 };
 pub use renderer::{HeadlessRenderer, PaintLayer, RenderOp, RenderScene};
 pub use subcompose_layout::{

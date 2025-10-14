@@ -10,7 +10,9 @@ use self::core::{
 use crate::modifier::{
     DimensionConstraint, EdgeInsets, Modifier, Point, Rect as GeometryRect, Size,
 };
-use crate::primitives::{ButtonNode, ColumnNode, LayoutNode, RowNode, SpacerNode, TextNode};
+use crate::primitives::{
+    BoxNode, ButtonNode, ColumnNode, LayoutNode, RowNode, SpacerNode, TextNode,
+};
 use crate::subcompose_layout::Constraints;
 
 /// Result of running layout for a Compose tree.
@@ -100,6 +102,9 @@ impl<'a> LayoutBuilder<'a> {
         if let Some(row) = try_clone::<RowNode>(self.applier_mut(), node_id)? {
             return self.measure_row(node_id, row, constraints);
         }
+        if let Some(b) = try_clone::<BoxNode>(self.applier_mut(), node_id)? {
+            return self.measure_box(node_id, b, constraints);
+        }
         if let Some(layout) = try_clone::<LayoutNode>(self.applier_mut(), node_id)? {
             return self.measure_layout_node(node_id, layout, constraints);
         }
@@ -116,6 +121,7 @@ impl<'a> LayoutBuilder<'a> {
             node_id,
             Size::default(),
             Point { x: 0.0, y: 0.0 },
+            Modifier::empty(),
             Vec::new(),
         ))
     }
@@ -205,6 +211,7 @@ impl<'a> LayoutBuilder<'a> {
             node_id,
             Size { width, height },
             offset,
+            node.modifier.clone(),
             children,
         ))
     }
@@ -294,6 +301,99 @@ impl<'a> LayoutBuilder<'a> {
             node_id,
             Size { width, height },
             offset,
+            node.modifier.clone(),
+            children,
+        ))
+    }
+
+    fn measure_box(
+        &mut self,
+        node_id: NodeId,
+        node: BoxNode,
+        constraints: Constraints,
+    ) -> Result<MeasuredNode, NodeError> {
+        let props = node.modifier.layout_properties();
+        let padding = props.padding();
+        let offset = node.modifier.total_offset();
+        let inner_constraints = subtract_padding(constraints, padding);
+        let child_constraints = if node.propagate_min_constraints {
+            inner_constraints
+        } else {
+            Constraints {
+                min_width: 0.0,
+                max_width: inner_constraints.max_width,
+                min_height: 0.0,
+                max_height: inner_constraints.max_height,
+            }
+        };
+
+        let mut measured_children = Vec::new();
+        let mut max_child_width: f32 = 0.0;
+        let mut max_child_height: f32 = 0.0;
+
+        for child_id in node.children.iter().copied() {
+            let child = self.measure_node(child_id, child_constraints);
+            let mut child = child?;
+            child = enforce_child_constraints(child, child_constraints);
+            max_child_width = max_child_width.max(child.size.width);
+            max_child_height = max_child_height.max(child.size.height);
+            measured_children.push(child);
+        }
+
+        let mut width = max_child_width + padding.horizontal_sum();
+        let mut height = max_child_height + padding.vertical_sum();
+
+        width = resolve_dimension(
+            width,
+            props.width(),
+            props.min_width(),
+            props.max_width(),
+            constraints.min_width,
+            constraints.max_width,
+        );
+        height = resolve_dimension(
+            height,
+            props.height(),
+            props.min_height(),
+            props.max_height(),
+            constraints.min_height,
+            constraints.max_height,
+        );
+
+        let available_width = (width - padding.horizontal_sum()).max(0.0);
+        let available_height = (height - padding.vertical_sum()).max(0.0);
+
+        let mut children = Vec::with_capacity(measured_children.len());
+        for child in measured_children.into_iter() {
+            let child_alignment = child
+                .modifier
+                .box_alignment()
+                .unwrap_or(node.content_alignment);
+            let aligned_x = align_horizontal(
+                child_alignment.horizontal,
+                available_width,
+                child.size.width,
+            );
+            let aligned_y = align_vertical(
+                child_alignment.vertical,
+                available_height,
+                child.size.height,
+            );
+            let position = Point {
+                x: padding.left + aligned_x,
+                y: padding.top + aligned_y,
+            };
+            children.push(MeasuredChild {
+                node: child,
+                offset: position,
+            });
+        }
+
+        Ok(MeasuredNode::new(
+            node_id,
+            Size { width, height },
+            offset,
+            node.modifier.clone(),
             children,
         ))
     }
@@ -387,6 +487,7 @@ impl<'a> LayoutBuilder<'a> {
             node_id,
             Size { width, height },
             offset,
+            node.modifier.clone(),
             children,
         ))
     }
@@ -412,15 +513,23 @@ struct MeasuredNode {
     node_id: NodeId,
     size: Size,
     offset: Point,
+    modifier: Modifier,
     children: Vec<MeasuredChild>,
 }
 
 impl MeasuredNode {
-    fn new(node_id: NodeId, size: Size, offset: Point, children: Vec<MeasuredChild>) -> Self {
+    fn new(
+        node_id: NodeId,
+        size: Size,
+        offset: Point,
+        modifier: Modifier,
+        children: Vec<MeasuredChild>,
+    ) -> Self {
         Self {
             node_id,
             size,
             offset,
+            modifier,
             children,
         }
     }
@@ -665,7 +774,13 @@ fn measure_leaf(
         constraints.max_height,
     );
 
-    MeasuredNode::new(node_id, Size { width, height }, offset, Vec::new())
+    MeasuredNode::new(
+        node_id,
+        Size { width, height },
+        offset,
+        modifier.clone(),
+        Vec::new(),
+    )
 }
 
 fn measure_text_content(text: &str) -> Size {
@@ -897,6 +1012,38 @@ mod tests {
             30.0
         );
         assert_eq!(align_vertical(VerticalAlignment::Bottom, 50.0, 10.0), 40.0);
+    }
+
+    #[test]
+    fn box_respects_child_alignment() -> Result<(), NodeError> {
+        let mut applier = MemoryApplier::new();
+        let child_id = applier.create(Box::new(TextNode {
+            modifier: Modifier::align(core::Alignment::CENTER),
+            text: "hi".to_string(),
+        }));
+
+        let mut box_node = BoxNode::default();
+        box_node.modifier = Modifier::size_points(100.0, 100.0);
+        box_node.children.insert(child_id);
+        let box_id = applier.create(Box::new(box_node));
+
+        let mut builder = LayoutBuilder::new(&mut applier);
+        let measured = builder.measure_node(
+            box_id,
+            Constraints {
+                min_width: 100.0,
+                max_width: 100.0,
+                min_height: 100.0,
+                max_height: 100.0,
+            },
+        )?;
+
+        assert_eq!(measured.size.width, 100.0);
+        assert_eq!(measured.size.height, 100.0);
+        let child = measured.children.first().expect("child measured");
+        assert!((child.offset.x - 42.0).abs() < f32::EPSILON);
+        assert!((child.offset.y - 40.0).abs() < f32::EPSILON);
+        Ok(())
     }
 
     #[test]
