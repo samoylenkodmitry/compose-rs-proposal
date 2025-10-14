@@ -1,3 +1,4 @@
+use std::ops::AddAssign;
 use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,6 +36,81 @@ pub struct Rect {
     pub y: f32,
     pub width: f32,
     pub height: f32,
+}
+
+/// Padding values for each edge of a rectangle.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EdgeInsets {
+    pub left: f32,
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+}
+
+impl EdgeInsets {
+    pub fn uniform(all: f32) -> Self {
+        Self {
+            left: all,
+            top: all,
+            right: all,
+            bottom: all,
+        }
+    }
+
+    pub fn horizontal(horizontal: f32) -> Self {
+        Self {
+            left: horizontal,
+            right: horizontal,
+            ..Self::default()
+        }
+    }
+
+    pub fn vertical(vertical: f32) -> Self {
+        Self {
+            top: vertical,
+            bottom: vertical,
+            ..Self::default()
+        }
+    }
+
+    pub fn symmetric(horizontal: f32, vertical: f32) -> Self {
+        Self {
+            left: horizontal,
+            right: horizontal,
+            top: vertical,
+            bottom: vertical,
+        }
+    }
+
+    pub fn from_components(left: f32, top: f32, right: f32, bottom: f32) -> Self {
+        Self {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    }
+
+    pub fn is_zero(&self) -> bool {
+        self.left == 0.0 && self.top == 0.0 && self.right == 0.0 && self.bottom == 0.0
+    }
+
+    pub fn horizontal_sum(&self) -> f32 {
+        self.left + self.right
+    }
+
+    pub fn vertical_sum(&self) -> f32 {
+        self.top + self.bottom
+    }
+}
+
+impl AddAssign for EdgeInsets {
+    fn add_assign(&mut self, rhs: Self) {
+        self.left += rhs.left;
+        self.top += rhs.top;
+        self.right += rhs.right;
+        self.bottom += rhs.bottom;
+    }
 }
 
 impl Rect {
@@ -240,10 +316,16 @@ impl DrawScope {
 
 #[derive(Clone)]
 pub enum ModOp {
-    Padding(f32),
+    Padding(EdgeInsets),
     Background(Color),
     Clickable(Rc<dyn Fn(Point)>),
     Size(Size),
+    Width(f32),
+    Height(f32),
+    FillMaxWidth(f32),
+    FillMaxHeight(f32),
+    RequiredSize(Size),
+    Weight { weight: f32, fill: bool },
     RoundedCorners(RoundedCornerShape),
     PointerInput(Rc<dyn Fn(PointerEvent)>),
     GraphicsLayer(GraphicsLayer),
@@ -275,7 +357,25 @@ impl Modifier {
     }
 
     pub fn padding(p: f32) -> Self {
-        Self::with_op(ModOp::Padding(p))
+        Self::with_op(ModOp::Padding(EdgeInsets::uniform(p)))
+    }
+
+    pub fn padding_horizontal(horizontal: f32) -> Self {
+        Self::with_op(ModOp::Padding(EdgeInsets::horizontal(horizontal)))
+    }
+
+    pub fn padding_vertical(vertical: f32) -> Self {
+        Self::with_op(ModOp::Padding(EdgeInsets::vertical(vertical)))
+    }
+
+    pub fn padding_symmetric(horizontal: f32, vertical: f32) -> Self {
+        Self::with_op(ModOp::Padding(EdgeInsets::symmetric(horizontal, vertical)))
+    }
+
+    pub fn padding_each(left: f32, top: f32, right: f32, bottom: f32) -> Self {
+        Self::with_op(ModOp::Padding(EdgeInsets::from_components(
+            left, top, right, bottom,
+        )))
     }
 
     pub fn background(color: Color) -> Self {
@@ -290,12 +390,66 @@ impl Modifier {
         Self::with_op(ModOp::Size(size))
     }
 
+    pub fn size_points(width: f32, height: f32) -> Self {
+        Self::size(Size { width, height })
+    }
+
+    pub fn width(width: f32) -> Self {
+        Self::with_op(ModOp::Width(width))
+    }
+
+    pub fn height(height: f32) -> Self {
+        Self::with_op(ModOp::Height(height))
+    }
+
+    pub fn fill_max_size() -> Self {
+        Self::fill_max_size_fraction(1.0)
+    }
+
+    pub fn fill_max_size_fraction(fraction: f32) -> Self {
+        let clamped = fraction.clamp(0.0, 1.0);
+        Self::with_ops(vec![
+            ModOp::FillMaxWidth(clamped),
+            ModOp::FillMaxHeight(clamped),
+        ])
+    }
+
+    pub fn fill_max_width() -> Self {
+        Self::fill_max_width_fraction(1.0)
+    }
+
+    pub fn fill_max_width_fraction(fraction: f32) -> Self {
+        let clamped = fraction.clamp(0.0, 1.0);
+        Self::with_op(ModOp::FillMaxWidth(clamped))
+    }
+
+    pub fn fill_max_height() -> Self {
+        Self::fill_max_height_fraction(1.0)
+    }
+
+    pub fn fill_max_height_fraction(fraction: f32) -> Self {
+        let clamped = fraction.clamp(0.0, 1.0);
+        Self::with_op(ModOp::FillMaxHeight(clamped))
+    }
+
     pub fn rounded_corners(radius: f32) -> Self {
         Self::with_op(ModOp::RoundedCorners(RoundedCornerShape::uniform(radius)))
     }
 
     pub fn rounded_corner_shape(shape: RoundedCornerShape) -> Self {
         Self::with_op(ModOp::RoundedCorners(shape))
+    }
+
+    pub fn required_size(size: Size) -> Self {
+        Self::with_op(ModOp::RequiredSize(size))
+    }
+
+    pub fn weight(weight: f32) -> Self {
+        Self::weight_with_fill(weight, true)
+    }
+
+    pub fn weight_with_fill(weight: f32, fill: bool) -> Self {
+        Self::with_op(ModOp::Weight { weight, fill })
     }
 
     pub fn pointer_input(handler: impl Fn(PointerEvent) + 'static) -> Self {
@@ -356,13 +510,12 @@ impl Modifier {
     }
 
     pub fn total_padding(&self) -> f32 {
-        self.0
-            .iter()
-            .filter_map(|op| match op {
-                ModOp::Padding(p) => Some(*p),
-                _ => None,
-            })
-            .sum()
+        let padding = self.padding_values();
+        padding
+            .left
+            .max(padding.right)
+            .max(padding.top)
+            .max(padding.bottom)
     }
 
     pub fn background_color(&self) -> Option<Color> {
@@ -373,10 +526,17 @@ impl Modifier {
     }
 
     pub fn explicit_size(&self) -> Option<Size> {
-        self.0.iter().rev().find_map(|op| match op {
-            ModOp::Size(size) => Some(*size),
+        let props = self.layout_properties();
+        match (props.width, props.height) {
+            (DimensionConstraint::Points(width), DimensionConstraint::Points(height)) => {
+                Some(Size { width, height })
+            }
             _ => None,
-        })
+        }
+    }
+
+    pub fn padding_values(&self) -> EdgeInsets {
+        self.layout_properties().padding
     }
 
     pub fn click_handler(&self) -> Option<Rc<dyn Fn(Point)>> {
@@ -444,5 +604,148 @@ impl DrawCacheBuilder {
             scope.into_primitives()
         });
         self.overlay.push(func);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) enum DimensionConstraint {
+    #[default]
+    Unspecified,
+    Points(f32),
+    Fraction(f32),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct LayoutWeight {
+    pub weight: f32,
+    pub fill: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct LayoutProperties {
+    padding: EdgeInsets,
+    width: DimensionConstraint,
+    height: DimensionConstraint,
+    min_width: Option<f32>,
+    min_height: Option<f32>,
+    max_width: Option<f32>,
+    max_height: Option<f32>,
+    weight: Option<LayoutWeight>,
+}
+
+impl LayoutProperties {
+    pub fn padding(&self) -> EdgeInsets {
+        self.padding
+    }
+
+    pub fn width(&self) -> DimensionConstraint {
+        self.width
+    }
+
+    pub fn height(&self) -> DimensionConstraint {
+        self.height
+    }
+
+    pub fn min_width(&self) -> Option<f32> {
+        self.min_width
+    }
+
+    pub fn min_height(&self) -> Option<f32> {
+        self.min_height
+    }
+
+    pub fn max_width(&self) -> Option<f32> {
+        self.max_width
+    }
+
+    pub fn max_height(&self) -> Option<f32> {
+        self.max_height
+    }
+
+    pub fn weight(&self) -> Option<LayoutWeight> {
+        self.weight
+    }
+}
+
+impl Modifier {
+    pub(crate) fn layout_properties(&self) -> LayoutProperties {
+        let mut props = LayoutProperties::default();
+        for op in self.0.iter() {
+            match op {
+                ModOp::Padding(padding) => props.padding += *padding,
+                ModOp::Size(size) => {
+                    props.width = DimensionConstraint::Points(size.width);
+                    props.height = DimensionConstraint::Points(size.height);
+                }
+                ModOp::Width(width) => {
+                    props.width = DimensionConstraint::Points(*width);
+                }
+                ModOp::Height(height) => {
+                    props.height = DimensionConstraint::Points(*height);
+                }
+                ModOp::FillMaxWidth(fraction) => {
+                    props.width = DimensionConstraint::Fraction(*fraction);
+                }
+                ModOp::FillMaxHeight(fraction) => {
+                    props.height = DimensionConstraint::Fraction(*fraction);
+                }
+                ModOp::RequiredSize(size) => {
+                    props.width = DimensionConstraint::Points(size.width);
+                    props.height = DimensionConstraint::Points(size.height);
+                    props.min_width = Some(size.width);
+                    props.max_width = Some(size.width);
+                    props.min_height = Some(size.height);
+                    props.max_height = Some(size.height);
+                }
+                ModOp::Weight { weight, fill } => {
+                    props.weight = Some(LayoutWeight {
+                        weight: *weight,
+                        fill: *fill,
+                    });
+                }
+                _ => {}
+            }
+        }
+        props
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DimensionConstraint, EdgeInsets, Modifier};
+
+    #[test]
+    fn padding_values_accumulate_per_edge() {
+        let modifier = Modifier::padding(4.0)
+            .then(Modifier::padding_horizontal(2.0))
+            .then(Modifier::padding_each(1.0, 3.0, 5.0, 7.0));
+        let padding = modifier.padding_values();
+        assert_eq!(
+            padding,
+            EdgeInsets {
+                left: 7.0,
+                top: 7.0,
+                right: 11.0,
+                bottom: 11.0,
+            }
+        );
+        assert_eq!(modifier.total_padding(), 11.0);
+    }
+
+    #[test]
+    fn fill_max_size_sets_fraction_constraints() {
+        let modifier = Modifier::fill_max_size_fraction(0.75);
+        let props = modifier.layout_properties();
+        assert_eq!(props.width(), DimensionConstraint::Fraction(0.75));
+        assert_eq!(props.height(), DimensionConstraint::Fraction(0.75));
+    }
+
+    #[test]
+    fn weight_tracks_fill_flag() {
+        let modifier = Modifier::weight_with_fill(2.0, false);
+        let props = modifier.layout_properties();
+        let weight = props.weight().expect("weight to be recorded");
+        assert_eq!(weight.weight, 2.0);
+        assert!(!weight.fill);
     }
 }
