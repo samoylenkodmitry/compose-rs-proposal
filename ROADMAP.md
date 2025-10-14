@@ -48,7 +48,7 @@
 
 ### Can be Removed
 
-- [ ] `signals.rs` module (unused, not part of Compose API)
+- [x] `signals.rs` module (unused, not part of Compose API)
 
 ## Phase 0: Platform Abstraction (Lightweight)
 
