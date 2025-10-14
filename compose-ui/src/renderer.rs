@@ -5,7 +5,7 @@ use crate::modifier::{
     Brush, DrawCommand as ModifierDrawCommand, DrawPrimitive, Modifier, Rect, RoundedCornerShape,
     Size,
 };
-use crate::primitives::{ButtonNode, ColumnNode, RowNode, TextNode};
+use crate::primitives::{ButtonNode, ColumnNode, LayoutNode, RowNode, TextNode};
 
 /// Layer that a paint operation targets within the rendering pipeline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,6 +123,11 @@ impl<'a> HeadlessRenderer<'a> {
         }
         if let Some(modifier) =
             self.read_node::<RowNode, _>(node_id, |node| node.modifier.clone())?
+        {
+            return Ok(Some(modifier));
+        }
+        if let Some(modifier) =
+            self.read_node::<LayoutNode, _>(node_id, |node| node.modifier.clone())?
         {
             return Ok(Some(modifier));
         }

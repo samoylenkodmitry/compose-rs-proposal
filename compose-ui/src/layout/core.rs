@@ -1,3 +1,5 @@
+use compose_core::NodeId;
+
 use crate::subcompose_layout::{Constraints, MeasureResult};
 
 /// Object capable of measuring a layout child and exposing intrinsic sizes.
@@ -28,6 +30,9 @@ pub trait Placeable {
 
     /// Returns the measured height of the child.
     fn height(&self) -> f32;
+
+    /// Returns the identifier of the underlying layout node.
+    fn node_id(&self) -> NodeId;
 }
 
 /// Policy responsible for measuring and placing children.

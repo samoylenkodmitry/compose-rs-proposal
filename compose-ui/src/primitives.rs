@@ -7,12 +7,14 @@ use compose_core::{self, MutableState, Node, NodeId, State};
 use indexmap::IndexSet;
 
 use crate::composable;
-use crate::layout::core::{HorizontalAlignment, LinearArrangement, VerticalAlignment};
+use crate::layout::core::{
+    HorizontalAlignment, LinearArrangement, MeasurePolicy, VerticalAlignment,
+};
 use crate::modifier::{Modifier, Size};
 use crate::subcompose_layout::MeasureScope;
 use crate::subcompose_layout::{
-    Constraints, Dp, MeasurePolicy, MeasureResult, Placement, SubcomposeLayoutNode,
-    SubcomposeMeasureScope, SubcomposeMeasureScopeImpl,
+    Constraints, Dp, MeasurePolicy as SubcomposeMeasurePolicy, MeasureResult, Placement,
+    SubcomposeLayoutNode, SubcomposeMeasureScope, SubcomposeMeasureScopeImpl,
 };
 use compose_core::SlotId;
 
@@ -162,6 +164,58 @@ impl Default for RowNode {
 }
 
 impl Node for RowNode {
+    fn insert_child(&mut self, child: NodeId) {
+        self.children.insert(child);
+    }
+
+    fn remove_child(&mut self, child: NodeId) {
+        self.children.shift_remove(&child);
+    }
+
+    fn move_child(&mut self, from: usize, to: usize) {
+        if from == to || from >= self.children.len() {
+            return;
+        }
+        let mut ordered: Vec<NodeId> = self.children.iter().copied().collect();
+        let child = ordered.remove(from);
+        let target = to.min(ordered.len());
+        ordered.insert(target, child);
+        self.children.clear();
+        for id in ordered {
+            self.children.insert(id);
+        }
+    }
+
+    fn update_children(&mut self, children: &[NodeId]) {
+        self.children.clear();
+        for &child in children {
+            self.children.insert(child);
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct LayoutNode {
+    pub modifier: Modifier,
+    pub measure_policy: Rc<dyn MeasurePolicy>,
+    pub children: IndexSet<NodeId>,
+}
+
+impl LayoutNode {
+    pub fn new(modifier: Modifier, measure_policy: Rc<dyn MeasurePolicy>) -> Self {
+        Self {
+            modifier,
+            measure_policy,
+            children: IndexSet::new(),
+        }
+    }
+
+    pub fn set_measure_policy(&mut self, policy: Rc<dyn MeasurePolicy>) {
+        self.measure_policy = policy;
+    }
+}
+
+impl Node for LayoutNode {
     fn insert_child(&mut self, child: NodeId) {
         self.children.insert(child);
     }
@@ -346,12 +400,32 @@ where
 }
 
 #[composable(no_skip)]
+pub fn Layout<F, P>(modifier: Modifier, measure_policy: P, mut content: F) -> NodeId
+where
+    F: FnMut(),
+    P: MeasurePolicy + 'static,
+{
+    let policy: Rc<dyn MeasurePolicy> = Rc::new(measure_policy);
+    let id = compose_node(|| LayoutNode::new(modifier.clone(), Rc::clone(&policy)));
+    if let Err(err) = compose_core::with_node_mut(id, |node: &mut LayoutNode| {
+        node.modifier = modifier.clone();
+        node.set_measure_policy(Rc::clone(&policy));
+    }) {
+        debug_assert!(false, "failed to update Layout node: {err}");
+    }
+    compose_core::push_parent(id);
+    content();
+    compose_core::pop_parent();
+    id
+}
+
+#[composable(no_skip)]
 pub fn SubcomposeLayout(
     modifier: Modifier,
     measure_policy: impl for<'scope> Fn(&mut SubcomposeMeasureScopeImpl<'scope>, Constraints) -> MeasureResult
         + 'static,
 ) -> NodeId {
-    let policy: Rc<MeasurePolicy> = Rc::new(measure_policy);
+    let policy: Rc<SubcomposeMeasurePolicy> = Rc::new(measure_policy);
     let id = compose_node(|| SubcomposeLayoutNode::new(modifier.clone(), Rc::clone(&policy)));
     if let Err(err) = compose_core::with_node_mut(id, |node: &mut SubcomposeLayoutNode| {
         node.modifier = modifier.clone();
