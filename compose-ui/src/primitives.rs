@@ -905,6 +905,40 @@ mod tests {
     }
 
     #[test]
+    fn modifier_offset_translates_layout() {
+        let mut composition = Composition::new(MemoryApplier::new());
+        let key = location_key(file!(), line!(), column!());
+        let mut text_id = None;
+
+        composition
+            .render(key, || {
+                Column(Modifier::padding(10.0), || {
+                    text_id = Some(Text("Hello", Modifier::offset(5.0, 7.5)));
+                });
+            })
+            .expect("initial render");
+
+        let root = composition.root().expect("root node");
+        let layout_tree = composition
+            .applier_mut()
+            .compute_layout(
+                root,
+                Size {
+                    width: 200.0,
+                    height: 200.0,
+                },
+            )
+            .expect("compute layout");
+
+        let root_layout = layout_tree.root().clone();
+        assert_eq!(root_layout.children.len(), 1);
+        let text_layout = &root_layout.children[0];
+        assert_eq!(text_layout.node_id, text_id.expect("text node id"));
+        assert!((text_layout.rect.x - 15.0).abs() < 1e-3);
+        assert!((text_layout.rect.y - 17.5).abs() < 1e-3);
+    }
+
+    #[test]
     fn box_with_constraints_composes_different_content() {
         let mut composition = Composition::new(MemoryApplier::new());
         let record = Rc::new(RefCell::new(Vec::new()));
