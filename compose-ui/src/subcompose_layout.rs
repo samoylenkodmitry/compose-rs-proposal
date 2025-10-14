@@ -95,11 +95,11 @@ impl Placement {
 
 /// Representation of a subcomposed child that can later be measured by the policy.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Measurable {
+pub struct SubcomposeChild {
     node_id: usize,
 }
 
-impl Measurable {
+impl SubcomposeChild {
     pub fn new(node_id: usize) -> Self {
         Self { node_id }
     }
@@ -123,7 +123,7 @@ pub trait MeasureScope {
 
 /// Public trait exposed to measure policies for subcomposition.
 pub trait SubcomposeMeasureScope: MeasureScope {
-    fn subcompose<Content>(&mut self, slot_id: SlotId, content: Content) -> Vec<Measurable>
+    fn subcompose<Content>(&mut self, slot_id: SlotId, content: Content) -> Vec<SubcomposeChild>
     where
         Content: FnOnce();
 }
@@ -156,7 +156,7 @@ impl<'a> MeasureScope for SubcomposeMeasureScopeImpl<'a> {
 }
 
 impl<'a> SubcomposeMeasureScope for SubcomposeMeasureScopeImpl<'a> {
-    fn subcompose<Content>(&mut self, slot_id: SlotId, content: Content) -> Vec<Measurable>
+    fn subcompose<Content>(&mut self, slot_id: SlotId, content: Content) -> Vec<SubcomposeChild>
     where
         Content: FnOnce(),
     {
@@ -170,7 +170,7 @@ impl<'a> SubcomposeMeasureScope for SubcomposeMeasureScopeImpl<'a> {
             });
             nodes
         };
-        nodes.into_iter().map(Measurable::new).collect()
+        nodes.into_iter().map(SubcomposeChild::new).collect()
     }
 }
 
