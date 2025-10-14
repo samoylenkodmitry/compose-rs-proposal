@@ -8,7 +8,7 @@ use self::core::{
     Arrangement, HorizontalAlignment, LinearArrangement, Measurable, Placeable, VerticalAlignment,
 };
 use crate::modifier::{
-    DimensionConstraint, EdgeInsets, Modifier, Point, Rect as GeometryRect, Size,
+    DimensionConstraint, EdgeInsets, LayoutWeight, Modifier, Point, Rect as GeometryRect, Size,
 };
 use crate::primitives::{
     BoxNode, ButtonNode, ColumnNode, LayoutNode, RowNode, SpacerNode, TextNode,
@@ -136,30 +136,47 @@ impl<'a> LayoutBuilder<'a> {
         let padding = props.padding();
         let offset = node.modifier.total_offset();
         let inner_constraints = subtract_padding(constraints, padding);
-        let child_constraints = Constraints {
+        let child_constraints = normalize_constraints(Constraints {
             min_width: inner_constraints.min_width,
             max_width: inner_constraints.max_width,
             min_height: 0.0,
             max_height: inner_constraints.max_height,
-        };
+        });
 
-        let mut measured_children = Vec::new();
-        let mut child_heights = Vec::new();
-        let mut child_widths = Vec::new();
+        let mut entries: Vec<PendingChild> = Vec::new();
         for child_id in node.children.iter().copied() {
             let child = self.measure_node(child_id, child_constraints);
             let mut child = child?;
             child = enforce_child_constraints(child, child_constraints);
-            child_heights.push(child.size.height);
-            child_widths.push(child.size.width);
-            measured_children.push(child);
+            let weight = child
+                .modifier
+                .layout_properties()
+                .weight()
+                .filter(|w| w.weight > 0.0);
+            entries.push(PendingChild {
+                node_id: child_id,
+                weight,
+                node: child,
+            });
         }
 
         let spacing = match node.vertical_arrangement {
             LinearArrangement::SpacedBy(value) => value.max(0.0),
             _ => 0.0,
         };
-        let total_spacing = spacing * measured_children.len().saturating_sub(1) as f32;
+        let total_spacing = spacing * entries.len().saturating_sub(1) as f32;
+
+        apply_column_weights(self.applier, &mut entries, inner_constraints, total_spacing)?;
+
+        let mut child_heights = Vec::with_capacity(entries.len());
+        let mut child_widths = Vec::with_capacity(entries.len());
+        let mut measured_children = Vec::with_capacity(entries.len());
+        for entry in entries {
+            child_heights.push(entry.node.size.height);
+            child_widths.push(entry.node.size.width);
+            measured_children.push(entry.node);
+        }
+
         let content_height = sum(&child_heights) + total_spacing;
         let content_width = child_widths
             .into_iter()
@@ -226,30 +243,47 @@ impl<'a> LayoutBuilder<'a> {
         let padding = props.padding();
         let offset = node.modifier.total_offset();
         let inner_constraints = subtract_padding(constraints, padding);
-        let child_constraints = Constraints {
+        let child_constraints = normalize_constraints(Constraints {
             min_width: 0.0,
             max_width: inner_constraints.max_width,
             min_height: inner_constraints.min_height,
             max_height: inner_constraints.max_height,
-        };
+        });
 
-        let mut measured_children = Vec::new();
-        let mut child_widths = Vec::new();
-        let mut child_heights = Vec::new();
+        let mut entries: Vec<PendingChild> = Vec::new();
         for child_id in node.children.iter().copied() {
             let child = self.measure_node(child_id, child_constraints);
             let mut child = child?;
             child = enforce_child_constraints(child, child_constraints);
-            child_widths.push(child.size.width);
-            child_heights.push(child.size.height);
-            measured_children.push(child);
+            let weight = child
+                .modifier
+                .layout_properties()
+                .weight()
+                .filter(|w| w.weight > 0.0);
+            entries.push(PendingChild {
+                node_id: child_id,
+                weight,
+                node: child,
+            });
         }
 
         let spacing = match node.horizontal_arrangement {
             LinearArrangement::SpacedBy(value) => value.max(0.0),
             _ => 0.0,
         };
-        let total_spacing = spacing * measured_children.len().saturating_sub(1) as f32;
+        let total_spacing = spacing * entries.len().saturating_sub(1) as f32;
+
+        apply_row_weights(self.applier, &mut entries, inner_constraints, total_spacing)?;
+
+        let mut child_widths = Vec::with_capacity(entries.len());
+        let mut child_heights = Vec::with_capacity(entries.len());
+        let mut measured_children = Vec::with_capacity(entries.len());
+        for entry in entries {
+            child_widths.push(entry.node.size.width);
+            child_heights.push(entry.node.size.height);
+            measured_children.push(entry.node);
+        }
+
         let content_width = sum(&child_widths) + total_spacing;
         let content_height = child_heights
             .into_iter()
@@ -539,6 +573,172 @@ impl MeasuredNode {
 struct MeasuredChild {
     node: MeasuredNode,
     offset: Point,
+}
+
+struct PendingChild {
+    node_id: NodeId,
+    weight: Option<LayoutWeight>,
+    node: MeasuredNode,
+}
+
+fn apply_column_weights(
+    applier: *mut MemoryApplier,
+    entries: &mut [PendingChild],
+    inner: Constraints,
+    total_spacing: f32,
+) -> Result<(), NodeError> {
+    let mut total_weight = 0.0;
+    let mut fixed_height = 0.0;
+    for entry in entries.iter() {
+        match entry.weight {
+            Some(weight) => {
+                total_weight += weight.weight;
+            }
+            None => {
+                fixed_height += entry.node.size.height;
+            }
+        }
+    }
+
+    if total_weight <= 0.0 {
+        return Ok(());
+    }
+
+    let mut available = if inner.max_height.is_finite() {
+        (inner.max_height - fixed_height - total_spacing).max(0.0)
+    } else {
+        0.0
+    };
+    let required = (inner.min_height - fixed_height - total_spacing).max(0.0);
+    if available < required {
+        available = required;
+    }
+    let distribute = inner.max_height.is_finite() || required > 0.0;
+
+    for entry in entries.iter_mut() {
+        let Some(weight) = entry.weight else {
+            continue;
+        };
+        let mut share = if distribute {
+            if total_weight > 0.0 {
+                available * (weight.weight / total_weight)
+            } else {
+                0.0
+            }
+        } else {
+            entry.node.size.height
+        };
+        if !share.is_finite() || share < 0.0 {
+            share = 0.0;
+        }
+        let min_width = if weight.fill {
+            if inner.max_width.is_finite() {
+                inner.max_width
+            } else {
+                inner.min_width
+            }
+        } else {
+            inner.min_width
+        };
+        let (min_height, max_height) = if distribute {
+            let min = if weight.fill { share } else { 0.0 };
+            (min, share)
+        } else {
+            (0.0, inner.max_height)
+        };
+        let mut constraints = Constraints {
+            min_width: min_width.max(0.0),
+            max_width: inner.max_width,
+            min_height,
+            max_height,
+        };
+        constraints = normalize_constraints(constraints);
+        let measured = unsafe { measure_node_via_ptr(applier, entry.node_id, constraints)? };
+        let measured = enforce_child_constraints(measured, constraints);
+        entry.node = measured;
+    }
+
+    Ok(())
+}
+
+fn apply_row_weights(
+    applier: *mut MemoryApplier,
+    entries: &mut [PendingChild],
+    inner: Constraints,
+    total_spacing: f32,
+) -> Result<(), NodeError> {
+    let mut total_weight = 0.0;
+    let mut fixed_width = 0.0;
+    for entry in entries.iter() {
+        match entry.weight {
+            Some(weight) => {
+                total_weight += weight.weight;
+            }
+            None => {
+                fixed_width += entry.node.size.width;
+            }
+        }
+    }
+
+    if total_weight <= 0.0 {
+        return Ok(());
+    }
+
+    let mut available = if inner.max_width.is_finite() {
+        (inner.max_width - fixed_width - total_spacing).max(0.0)
+    } else {
+        0.0
+    };
+    let required = (inner.min_width - fixed_width - total_spacing).max(0.0);
+    if available < required {
+        available = required;
+    }
+    let distribute = inner.max_width.is_finite() || required > 0.0;
+
+    for entry in entries.iter_mut() {
+        let Some(weight) = entry.weight else {
+            continue;
+        };
+        let mut share = if distribute {
+            if total_weight > 0.0 {
+                available * (weight.weight / total_weight)
+            } else {
+                0.0
+            }
+        } else {
+            entry.node.size.width
+        };
+        if !share.is_finite() || share < 0.0 {
+            share = 0.0;
+        }
+        let min_height = if weight.fill {
+            if inner.max_height.is_finite() {
+                inner.max_height
+            } else {
+                inner.min_height
+            }
+        } else {
+            inner.min_height
+        };
+        let (min_width, max_width) = if distribute {
+            let min = if weight.fill { share } else { 0.0 };
+            (min, share)
+        } else {
+            (0.0, inner.max_width)
+        };
+        let mut constraints = Constraints {
+            min_width,
+            max_width,
+            min_height: min_height.max(0.0),
+            max_height: inner.max_height,
+        };
+        constraints = normalize_constraints(constraints);
+        let measured = unsafe { measure_node_via_ptr(applier, entry.node_id, constraints)? };
+        let measured = enforce_child_constraints(measured, constraints);
+        entry.node = measured;
+    }
+
+    Ok(())
 }
 
 struct ChildRecord {
@@ -927,6 +1127,7 @@ fn try_clone<T: Node + Clone + 'static>(
 mod tests {
     use super::*;
     use compose_core::Applier;
+    use std::rc::Rc;
 
     use crate::modifier::{Modifier, Size};
     use crate::subcompose_layout::{MeasureResult, Placement};
@@ -986,10 +1187,124 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct MaxSizePolicy;
+
+    impl MeasurePolicy for MaxSizePolicy {
+        fn measure(
+            &self,
+            _measurables: &[Box<dyn Measurable>],
+            constraints: Constraints,
+        ) -> MeasureResult {
+            let width = if constraints.max_width.is_finite() {
+                constraints.max_width
+            } else {
+                constraints.min_width
+            };
+            let height = if constraints.max_height.is_finite() {
+                constraints.max_height
+            } else {
+                constraints.min_height
+            };
+            MeasureResult::new(Size { width, height }, Vec::new())
+        }
+
+        fn min_intrinsic_width(&self, _measurables: &[Box<dyn Measurable>], _height: f32) -> f32 {
+            0.0
+        }
+
+        fn max_intrinsic_width(&self, _measurables: &[Box<dyn Measurable>], _height: f32) -> f32 {
+            0.0
+        }
+
+        fn min_intrinsic_height(&self, _measurables: &[Box<dyn Measurable>], _width: f32) -> f32 {
+            0.0
+        }
+
+        fn max_intrinsic_height(&self, _measurables: &[Box<dyn Measurable>], _width: f32) -> f32 {
+            0.0
+        }
+    }
+
     #[test]
     fn clamp_dimension_respects_infinite_max() {
         let clamped = clamp_dimension(50.0, 10.0, f32::INFINITY);
         assert_eq!(clamped, 50.0);
+    }
+
+    #[test]
+    fn column_weight_distributes_remaining_space() -> Result<(), NodeError> {
+        let mut applier = MemoryApplier::new();
+        let spacer_id = applier.create(Box::new(SpacerNode {
+            size: Size {
+                width: 10.0,
+                height: 20.0,
+            },
+        }));
+        let policy: Rc<dyn MeasurePolicy> = Rc::new(MaxSizePolicy);
+        let weighted_id = applier.create(Box::new(LayoutNode::new(
+            Modifier::weight(1.0),
+            Rc::clone(&policy),
+        )));
+
+        let mut column = ColumnNode::default();
+        column.children.insert(spacer_id);
+        column.children.insert(weighted_id);
+        let column_id = applier.create(Box::new(column));
+
+        let mut builder = LayoutBuilder::new(&mut applier);
+        let measured = builder.measure_node(
+            column_id,
+            Constraints {
+                min_width: 0.0,
+                max_width: 100.0,
+                min_height: 0.0,
+                max_height: 100.0,
+            },
+        )?;
+
+        assert_eq!(measured.children.len(), 2);
+        let weighted_child = &measured.children[1].node;
+        assert!((weighted_child.size.height - 80.0).abs() < f32::EPSILON);
+        Ok(())
+    }
+
+    #[test]
+    fn row_weight_distributes_remaining_space() -> Result<(), NodeError> {
+        let mut applier = MemoryApplier::new();
+        let spacer_id = applier.create(Box::new(SpacerNode {
+            size: Size {
+                width: 30.0,
+                height: 10.0,
+            },
+        }));
+        let policy: Rc<dyn MeasurePolicy> = Rc::new(MaxSizePolicy);
+        let weighted_id = applier.create(Box::new(LayoutNode::new(
+            Modifier::weight(1.0),
+            Rc::clone(&policy),
+        )));
+
+        let mut row = RowNode::default();
+        row.children.insert(spacer_id);
+        row.children.insert(weighted_id);
+        let row_id = applier.create(Box::new(row));
+
+        let mut builder = LayoutBuilder::new(&mut applier);
+        let measured = builder.measure_node(
+            row_id,
+            Constraints {
+                min_width: 0.0,
+                max_width: 120.0,
+                min_height: 0.0,
+                max_height: 50.0,
+            },
+        )?;
+
+        assert_eq!(measured.children.len(), 2);
+        let weighted_child = &measured.children[1].node;
+        assert!((weighted_child.size.width - 90.0).abs() < f32::EPSILON);
+        assert!((weighted_child.size.height - 50.0).abs() < f32::EPSILON);
+        Ok(())
     }
 
     #[test]
