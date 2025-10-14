@@ -6,11 +6,11 @@ pub use platform::{Clock, RuntimeScheduler};
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet}; // FUTURE(no_std): replace HashMap/HashSet with arena-backed maps.
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::mem;
-use std::rc::{Rc, Weak};
+use std::rc::{Rc, Weak}; // FUTURE(no_std): replace Rc/Weak with arena-managed handles.
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread_local;
@@ -66,7 +66,7 @@ type RecomposeCallback = Box<dyn for<'a> FnMut(&mut Composer<'a>) + 'static>;
 
 #[derive(Clone)]
 pub struct RecomposeScope {
-    inner: Rc<RecomposeScopeInner>,
+    inner: Rc<RecomposeScopeInner>, // FUTURE(no_std): replace Rc with arena-managed scope handles.
 }
 
 impl RecomposeScope {
@@ -218,13 +218,14 @@ impl std::fmt::Display for NodeError {
 impl std::error::Error for NodeError {}
 
 thread_local! {
-    static CURRENT_COMPOSER: RefCell<Vec<*mut ()>> = RefCell::new(Vec::new());
+    static CURRENT_COMPOSER: RefCell<Vec<*mut ()>> = RefCell::new(Vec::new()); // FUTURE(no_std): replace Vec with fixed-capacity stack storage.
 }
 
-pub mod signals;
+#[allow(dead_code)]
+#[deprecated(note = "Signals are not part of the Compose public API.")]
+mod signals;
 pub mod subcompose;
 
-pub use signals::{create_signal, IntoSignal, ReadSignal, WriteSignal};
 pub use subcompose::{DefaultSlotReusePolicy, SlotId, SlotReusePolicy, SubcomposeState};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -300,7 +301,7 @@ pub fn derivedStateOf<T: 'static + Clone>(compute: impl Fn() -> T + 'static) -> 
         let key = location_key(file!(), line!(), column!());
         composer.with_group(key, |composer| {
             let runtime = composer.runtime_handle();
-            let compute_rc: Rc<dyn Fn() -> T> = Rc::new(compute);
+            let compute_rc: Rc<dyn Fn() -> T> = Rc::new(compute); // FUTURE(no_std): replace Rc with arena-managed callbacks.
             let derived =
                 composer.remember(|| DerivedState::new(runtime.clone(), compute_rc.clone()));
             derived.set_compute(compute_rc.clone());
@@ -312,11 +313,12 @@ pub fn derivedStateOf<T: 'static + Clone>(compute: impl Fn() -> T + 'static) -> 
 
 pub struct ProvidedValue {
     key: LocalKey,
-    apply: Box<dyn Fn(&mut Composer<'_>) -> Rc<dyn Any>>,
+    apply: Box<dyn Fn(&mut Composer<'_>) -> Rc<dyn Any>>, // FUTURE(no_std): return arena-backed local storage pointer.
 }
 
 impl ProvidedValue {
     fn into_entry(self, composer: &mut Composer<'_>) -> (LocalKey, Rc<dyn Any>) {
+        // FUTURE(no_std): avoid Rc allocation per entry.
         let ProvidedValue { key, apply } = self;
         let entry = apply(composer);
         (key, entry)
@@ -329,7 +331,7 @@ pub fn CompositionLocalProvider(
     content: impl FnOnce(),
 ) {
     with_current_composer(|composer| {
-        let provided: Vec<ProvidedValue> = values.into_iter().collect();
+        let provided: Vec<ProvidedValue> = values.into_iter().collect(); // FUTURE(no_std): replace Vec with stack-allocated small vec.
         composer.with_composition_locals(provided, |_composer| content());
     })
 }
@@ -355,7 +357,7 @@ impl<T: Clone + 'static> LocalStateEntry<T> {
 #[derive(Clone)]
 pub struct CompositionLocal<T: Clone + 'static> {
     key: LocalKey,
-    default: Rc<dyn Fn() -> T>,
+    default: Rc<dyn Fn() -> T>, // FUTURE(no_std): store default provider in arena-managed cell.
 }
 
 impl<T: Clone + 'static> PartialEq for CompositionLocal<T> {
@@ -379,9 +381,9 @@ impl<T: Clone + 'static> CompositionLocal<T> {
                         runtime.clone(),
                     )))
                 });
-                let entry = Rc::clone(entry_ref);
+                let entry = Rc::clone(entry_ref); // FUTURE(no_std): clone arena-managed pointer instead of Rc.
                 entry.set(value.clone());
-                entry as Rc<dyn Any>
+                entry as Rc<dyn Any> // FUTURE(no_std): expose erased handle without Rc boxing.
             }),
         }
     }
@@ -401,7 +403,7 @@ pub fn compositionLocalOf<T: Clone + 'static>(
 ) -> CompositionLocal<T> {
     CompositionLocal {
         key: next_local_key(),
-        default: Rc::new(default),
+        default: Rc::new(default), // FUTURE(no_std): allocate default provider in arena storage.
     }
 }
 
@@ -621,10 +623,10 @@ struct GroupFrame {
 
 #[derive(Default)]
 pub struct SlotTable {
-    slots: Vec<Slot>,
-    groups: Vec<GroupEntry>,
+    slots: Vec<Slot>, // FUTURE(no_std): replace Vec with arena-backed slot storage.
+    groups: Vec<GroupEntry>, // FUTURE(no_std): migrate to fixed-capacity collection.
     cursor: usize,
-    group_stack: Vec<GroupFrame>,
+    group_stack: Vec<GroupFrame>, // FUTURE(no_std): switch to small stack buffer.
 }
 
 enum Slot {
@@ -822,7 +824,7 @@ type Command = Box<dyn FnMut(&mut dyn Applier) -> Result<(), NodeError> + 'stati
 
 #[derive(Default)]
 pub struct MemoryApplier {
-    nodes: Vec<Option<Box<dyn Node>>>,
+    nodes: Vec<Option<Box<dyn Node>>>, // FUTURE(no_std): migrate to arena-backed node storage.
 }
 
 impl MemoryApplier {
@@ -883,9 +885,9 @@ impl Applier for MemoryApplier {
 struct RuntimeInner {
     scheduler: Arc<dyn RuntimeScheduler>,
     needs_frame: RefCell<bool>,
-    node_updates: RefCell<Vec<Command>>,
-    invalid_scopes: RefCell<HashSet<ScopeId>>,
-    scope_queue: RefCell<Vec<(ScopeId, Weak<RecomposeScopeInner>)>>,
+    node_updates: RefCell<Vec<Command>>, // FUTURE(no_std): replace Vec with ring buffer.
+    invalid_scopes: RefCell<HashSet<ScopeId>>, // FUTURE(no_std): replace HashSet with sparse bitset.
+    scope_queue: RefCell<Vec<(ScopeId, Weak<RecomposeScopeInner>)>>, // FUTURE(no_std): use smallvec-backed queue.
 }
 
 impl RuntimeInner {
@@ -909,6 +911,7 @@ impl RuntimeInner {
     }
 
     fn take_updates(&self) -> Vec<Command> {
+        // FUTURE(no_std): return stack-allocated smallvec.
         self.node_updates.borrow_mut().drain(..).collect()
     }
 
@@ -929,6 +932,7 @@ impl RuntimeInner {
     }
 
     fn take_invalidated_scopes(&self) -> Vec<(ScopeId, Weak<RecomposeScopeInner>)> {
+        // FUTURE(no_std): return iterator over small array storage.
         self.scope_queue.borrow_mut().drain(..).collect()
     }
 
@@ -943,7 +947,7 @@ impl RuntimeInner {
 
 #[derive(Clone)]
 pub struct Runtime {
-    inner: Rc<RuntimeInner>,
+    inner: Rc<RuntimeInner>, // FUTURE(no_std): replace Rc with arena-managed runtime storage.
 }
 
 impl Runtime {
@@ -1037,6 +1041,7 @@ impl RuntimeHandle {
     }
 
     fn take_updates(&self) -> Vec<Command> {
+        // FUTURE(no_std): return iterator over static buffer.
         self.0
             .upgrade()
             .map(|inner| inner.take_updates())
@@ -1056,6 +1061,7 @@ impl RuntimeHandle {
     }
 
     pub(crate) fn take_invalidated_scopes(&self) -> Vec<(ScopeId, Weak<RecomposeScopeInner>)> {
+        // FUTURE(no_std): expose draining iterator without Vec allocation.
         self.0
             .upgrade()
             .map(|inner| inner.take_invalidated_scopes())
@@ -1071,7 +1077,7 @@ impl RuntimeHandle {
 }
 
 thread_local! {
-    static ACTIVE_RUNTIMES: RefCell<Vec<RuntimeHandle>> = RefCell::new(Vec::new());
+    static ACTIVE_RUNTIMES: RefCell<Vec<RuntimeHandle>> = RefCell::new(Vec::new()); // FUTURE(no_std): move to bounded stack storage.
     static LAST_RUNTIME: RefCell<Option<RuntimeHandle>> = RefCell::new(None);
 }
 
@@ -1112,32 +1118,32 @@ pub struct Composer<'a> {
     slots: &'a mut SlotTable,
     applier: &'a mut dyn Applier,
     runtime: RuntimeHandle,
-    parent_stack: Vec<ParentFrame>,
-    subcompose_stack: Vec<SubcomposeFrame>,
+    parent_stack: Vec<ParentFrame>, // FUTURE(no_std): replace Vec with stack-allocated frames.
+    subcompose_stack: Vec<SubcomposeFrame>, // FUTURE(no_std): migrate to smallvec-backed storage.
     pub(crate) root: Option<NodeId>,
-    commands: Vec<Command>,
-    scope_stack: Vec<RecomposeScope>,
-    local_stack: Vec<LocalContext>,
-    side_effects: Vec<Box<dyn FnOnce()>>,
+    commands: Vec<Command>, // FUTURE(no_std): replace Vec with ring buffer.
+    scope_stack: Vec<RecomposeScope>, // FUTURE(no_std): replace Vec with arena handles.
+    local_stack: Vec<LocalContext>, // FUTURE(no_std): store locals in preallocated slab.
+    side_effects: Vec<Box<dyn FnOnce()>>, // FUTURE(no_std): switch to bounded callback queue.
     phase: Phase,
     pending_scope_options: Option<RecomposeOptions>,
 }
 
 #[derive(Default, Clone)]
 struct ParentChildren {
-    children: Vec<NodeId>,
+    children: Vec<NodeId>, // FUTURE(no_std): store child ids in smallvec.
 }
 
 struct ParentFrame {
     id: NodeId,
     remembered: *mut ParentChildren,
-    previous: Vec<NodeId>,
-    new_children: Vec<NodeId>,
+    previous: Vec<NodeId>, // FUTURE(no_std): replace Vec with fixed-capacity array.
+    new_children: Vec<NodeId>, // FUTURE(no_std): replace Vec with fixed-capacity array.
 }
 
 struct SubcomposeFrame {
-    nodes: Vec<NodeId>,
-    scopes: Vec<RecomposeScope>,
+    nodes: Vec<NodeId>, // FUTURE(no_std): store nodes in bounded scratch space.
+    scopes: Vec<RecomposeScope>, // FUTURE(no_std): store scopes in arena-backed list.
 }
 
 impl Default for SubcomposeFrame {
@@ -1151,7 +1157,7 @@ impl Default for SubcomposeFrame {
 
 #[derive(Default)]
 struct LocalContext {
-    values: HashMap<LocalKey, Rc<dyn Any>>,
+    values: HashMap<LocalKey, Rc<dyn Any>>, // FUTURE(no_std): replace HashMap/Rc with arena-backed storage.
 }
 
 impl<'a> Composer<'a> {
@@ -1287,6 +1293,7 @@ impl<'a> Composer<'a> {
         slot_id: SlotId,
         content: impl FnOnce(&mut Composer<'_>) -> R,
     ) -> (R, Vec<NodeId>) {
+        // FUTURE(no_std): return smallvec-backed node list.
         match self.phase {
             Phase::Measure | Phase::Layout => {}
             current => panic!(
@@ -1297,7 +1304,7 @@ impl<'a> Composer<'a> {
 
         self.subcompose_stack.push(SubcomposeFrame::default());
         struct StackGuard {
-            stack: *mut Vec<SubcomposeFrame>,
+            stack: *mut Vec<SubcomposeFrame>, // FUTURE(no_std): replace Vec with fixed stack buffer.
             leaked: bool,
         }
         impl StackGuard {
@@ -1339,6 +1346,7 @@ impl<'a> Composer<'a> {
         slot_id: SlotId,
         content: impl FnOnce(&mut Composer<'_>) -> R,
     ) -> (R, Vec<NodeId>) {
+        // FUTURE(no_std): return node list without heap allocation.
         self.subcompose(state, slot_id, content)
     }
 
@@ -1361,7 +1369,7 @@ impl<'a> Composer<'a> {
 
     pub fn with_composition_locals<R>(
         &mut self,
-        provided: Vec<ProvidedValue>,
+        provided: Vec<ProvidedValue>, // FUTURE(no_std): accept smallvec-backed provided values.
         f: impl FnOnce(&mut Composer<'_>) -> R,
     ) -> R {
         if provided.is_empty() {
@@ -1542,6 +1550,7 @@ impl<'a> Composer<'a> {
     }
 
     pub fn take_commands(&mut self) -> Vec<Command> {
+        // FUTURE(no_std): provide iterator view without Vec allocation.
         std::mem::take(&mut self.commands)
     }
 
@@ -1550,22 +1559,23 @@ impl<'a> Composer<'a> {
     }
 
     pub fn take_side_effects(&mut self) -> Vec<Box<dyn FnOnce()>> {
+        // FUTURE(no_std): drain into bounded callback buffer.
         std::mem::take(&mut self.side_effects)
     }
 }
 
 struct MutableStateInner<T> {
     value: RefCell<T>,
-    watchers: RefCell<Vec<Weak<RecomposeScopeInner>>>,
+    watchers: RefCell<Vec<Weak<RecomposeScopeInner>>>, // FUTURE(no_std): move to stack-allocated subscription list.
     _runtime: RuntimeHandle,
 }
 
 pub struct State<T> {
-    inner: Rc<MutableStateInner<T>>,
+    inner: Rc<MutableStateInner<T>>, // FUTURE(no_std): replace Rc with arena-managed state handles.
 }
 
 pub struct MutableState<T> {
-    inner: Rc<MutableStateInner<T>>,
+    inner: Rc<MutableStateInner<T>>, // FUTURE(no_std): replace Rc with arena-managed state handles.
 }
 
 impl<T> PartialEq for State<T> {
@@ -1652,12 +1662,13 @@ impl<T: fmt::Debug> fmt::Debug for MutableState<T> {
 }
 
 struct DerivedState<T> {
-    compute: Rc<dyn Fn() -> T>,
+    compute: Rc<dyn Fn() -> T>, // FUTURE(no_std): store compute closures in arena-managed cell.
     state: MutableState<T>,
 }
 
 impl<T: Clone> DerivedState<T> {
     fn new(runtime: RuntimeHandle, compute: Rc<dyn Fn() -> T>) -> Self {
+        // FUTURE(no_std): accept arena-managed compute handle.
         let initial = compute();
         Self {
             compute,
@@ -1666,6 +1677,7 @@ impl<T: Clone> DerivedState<T> {
     }
 
     fn set_compute(&mut self, compute: Rc<dyn Fn() -> T>) {
+        // FUTURE(no_std): accept arena-managed compute handle.
         self.compute = compute;
     }
 
@@ -1937,7 +1949,6 @@ mod tests {
     use crate as compose_core;
     use compose_macros::composable;
     use std::cell::Cell;
-    use std::rc::Rc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -1968,8 +1979,8 @@ mod tests {
         static CHILD_RECOMPOSITIONS: Cell<usize> = Cell::new(0);
         static CAPTURED_PARENT_STATE: RefCell<Option<compose_core::MutableState<i32>>> =
             RefCell::new(None);
-        static SIDE_EFFECT_LOG: RefCell<Vec<&'static str>> = RefCell::new(Vec::new());
-        static DISPOSABLE_EFFECT_LOG: RefCell<Vec<&'static str>> = RefCell::new(Vec::new());
+        static SIDE_EFFECT_LOG: RefCell<Vec<&'static str>> = RefCell::new(Vec::new()); // FUTURE(no_std): replace Vec with ring buffer for testing.
+        static DISPOSABLE_EFFECT_LOG: RefCell<Vec<&'static str>> = RefCell::new(Vec::new()); // FUTURE(no_std): replace Vec with ring buffer for testing.
         static DISPOSABLE_STATE: RefCell<Option<compose_core::MutableState<i32>>> =
             RefCell::new(None);
         static SIDE_EFFECT_STATE: RefCell<Option<compose_core::MutableState<i32>>> =
@@ -2359,29 +2370,6 @@ mod tests {
         assert!(!composition.should_render());
     }
 
-    #[test]
-    fn signal_write_triggers_callback_on_change() {
-        let triggered = Rc::new(Cell::new(0));
-        let count = triggered.clone();
-        let (read, write) = create_signal(0, Rc::new(move || count.set(count.get() + 1)));
-        assert_eq!(read.get(), 0);
-
-        write.set(1);
-        assert_eq!(read.get(), 1);
-        assert_eq!(triggered.get(), 1);
-
-        // Setting to the same value should not re-trigger the callback.
-        write.set(1);
-        assert_eq!(triggered.get(), 1);
-    }
-
-    #[test]
-    fn signal_map_snapshots_value() {
-        let (read, _write) = create_signal(2, Rc::new(|| {}));
-        let mapped = read.map(|v| v * 2);
-        assert_eq!(mapped.get(), 4);
-    }
-
     #[derive(Clone, Debug, PartialEq, Eq)]
     enum Operation {
         Insert(NodeId),
@@ -2391,8 +2379,8 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingNode {
-        children: Vec<NodeId>,
-        operations: Vec<Operation>,
+        children: Vec<NodeId>, // FUTURE(no_std): store children in bounded array for tests.
+        operations: Vec<Operation>, // FUTURE(no_std): store operations in bounded array for tests.
     }
 
     impl Node for RecordingNode {
@@ -2438,9 +2426,10 @@ mod tests {
         applier: &mut MemoryApplier,
         runtime: &Runtime,
         parent_id: NodeId,
-        previous: Vec<NodeId>,
-        new_children: Vec<NodeId>,
+        previous: Vec<NodeId>, // FUTURE(no_std): accept fixed-capacity child buffers.
+        new_children: Vec<NodeId>, // FUTURE(no_std): accept fixed-capacity child buffers.
     ) -> Vec<Operation> {
+        // FUTURE(no_std): return bounded operation log.
         let handle = runtime.handle();
         let mut composer = Composer::new(slots, applier, handle, Some(parent_id));
         composer.push_parent(parent_id);
@@ -2837,5 +2826,37 @@ mod tests {
             .expect("recomposition after reactivation");
 
         assert_eq!(INVOCATIONS.with(|count| count.get()), 2);
+    }
+
+    #[allow(deprecated)]
+    #[test]
+    fn deprecated_signal_write_triggers_callback_on_change() {
+        use std::rc::Rc;
+
+        let triggered = Rc::new(Cell::new(0));
+        let count = triggered.clone();
+        #[allow(deprecated)]
+        let (read, write) =
+            super::signals::create_signal(0, Rc::new(move || count.set(count.get() + 1)));
+        assert_eq!(read.get(), 0);
+
+        write.set(1);
+        assert_eq!(read.get(), 1);
+        assert_eq!(triggered.get(), 1);
+
+        // Setting to the same value should not re-trigger the callback.
+        write.set(1);
+        assert_eq!(triggered.get(), 1);
+    }
+
+    #[allow(deprecated)]
+    #[test]
+    fn deprecated_signal_map_snapshots_value() {
+        use std::rc::Rc;
+
+        #[allow(deprecated)]
+        let (read, _write) = super::signals::create_signal(2, Rc::new(|| {}));
+        let mapped = read.map(|v| v * 2);
+        assert_eq!(mapped.get(), 4);
     }
 }
