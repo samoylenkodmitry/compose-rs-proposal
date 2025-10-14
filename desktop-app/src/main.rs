@@ -264,7 +264,7 @@ fn counter_app() {
     let pointer_down = compose_core::useState(|| false);
     let wave_state = animation_state();
     let wave = wave_state.get();
-    // LaunchedEffect("", |_| counter.set(1337)); // todo: provide a way to change state from this
+    LaunchedEffect(counter.get(), |_| println!("effect call")); // todo: provide a way to use mutablestate from lambda
 
     Column(
         Modifier::padding(32.0)

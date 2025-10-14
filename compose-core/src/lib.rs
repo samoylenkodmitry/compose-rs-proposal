@@ -916,6 +916,24 @@ impl RuntimeInner {
     }
 }
 
+#[cfg(test)]
+pub struct TestRuntime {
+    inner: Rc<RuntimeInner>,
+}
+
+#[cfg(test)]
+impl TestRuntime {
+    pub fn new() -> Self {
+        Self {
+            inner: Rc::new(RuntimeInner::default()),
+        }
+    }
+
+    pub fn handle(&self) -> RuntimeHandle {
+        RuntimeHandle(Rc::downgrade(&self.inner))
+    }
+}
+
 #[derive(Clone)]
 pub struct RuntimeHandle(Weak<RuntimeInner>);
 
@@ -1170,6 +1188,11 @@ impl<'a> Composer<'a> {
         self.phase = phase;
     }
 
+    #[inline(always)]
+    pub fn enter_phase(&mut self, phase: Phase) {
+        self.set_phase(phase);
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     #[inline(always)]
     pub(crate) fn subcompose<R>(
@@ -1221,6 +1244,16 @@ impl<'a> Composer<'a> {
         let scopes = frame.scopes;
         state.register_active(slot_id, &nodes, &scopes);
         (result, nodes)
+    }
+
+    #[inline(always)]
+    pub fn subcompose_measurement<R>(
+        &mut self,
+        state: &mut SubcomposeState,
+        slot_id: SlotId,
+        content: impl FnOnce(&mut Composer<'_>) -> R,
+    ) -> (R, Vec<NodeId>) {
+        self.subcompose(state, slot_id, content)
     }
 
     pub fn skip_current_group(&mut self) {
