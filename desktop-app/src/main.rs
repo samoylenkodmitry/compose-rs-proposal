@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
-use compose_core::{self, location_key, Composition, Key, LaunchedEffect, MemoryApplier, Node, NodeError, NodeId};
+use compose_core::{self, location_key, Composition, Key, MemoryApplier, Node, NodeError, NodeId};
 use compose_ui::{
     composable, Brush, Button, ButtonNode, Color, Column, ColumnNode, CornerRadii, DrawCommand,
     DrawPrimitive, GraphicsLayer, LayoutBox, LayoutEngine, Modifier, Point, PointerEvent,

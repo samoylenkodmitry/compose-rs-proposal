@@ -101,19 +101,19 @@ Deliverables (Core Infrastructure)
   - [x] Implement `forceReuse` and `forceRecompose` flags
 
 Deliverables (SubcomposeLayout Primitive)
-- [ ] Create `SubcomposeMeasureScope` trait extending `MeasureScope`
-  - [ ] Add `subcompose(slot_id, content) -> Vec<Measurable>` method
-- [ ] Implement `SubcomposeMeasureScopeImpl` struct
-  - [ ] Holds reference to `Composer` and measurement state
-  - [ ] Converts `NodeId`s to `Measurable` list
-- [ ] Create `SubcomposeLayoutNode` implementing `Node`
-  - [ ] Store `modifier`, `measure_policy`, and `subcompose_state`
-  - [ ] Override `measure()` to invoke policy with `SubcomposeMeasureScope`
-  - [ ] Call `dispose_or_reuse_starting_from_index()` after measure completes
-- [ ] Implement `SubcomposeLayout` composable in `compose-ui/src/primitives.rs`
-  - [ ] Accept `modifier` and `measure_policy` parameters
-  - [ ] Emit `SubcomposeLayoutNode`
-  - [ ] Do NOT use `push_parent`/`pop_parent` (children managed by `subcompose()`)
+- [x] Create `SubcomposeMeasureScope` trait extending `MeasureScope`
+  - [x] Add `subcompose(slot_id, content) -> Vec<Measurable>` method
+- [x] Implement `SubcomposeMeasureScopeImpl` struct
+  - [x] Holds reference to `Composer` and measurement state
+  - [x] Converts `NodeId`s to `Measurable` list
+- [x] Create `SubcomposeLayoutNode` implementing `Node`
+  - [x] Store `modifier`, `measure_policy`, and `subcompose_state`
+  - [x] Override `measure()` to invoke policy with `SubcomposeMeasureScope`
+  - [x] Call `dispose_or_reuse_starting_from_index()` after measure completes
+- [x] Implement `SubcomposeLayout` composable in `compose-ui/src/primitives.rs`
+  - [x] Accept `modifier` and `measure_policy` parameters
+  - [x] Emit `SubcomposeLayoutNode`
+  - [x] Do NOT use `push_parent`/`pop_parent` (children managed by `subcompose()`)
 
 Deliverables (BoxWithConstraints)
 - [ ] Define `BoxWithConstraintsScope` trait extending `BoxScope`
@@ -128,12 +128,11 @@ Deliverables (BoxWithConstraints)
   - [ ] Call `subcompose()` with scope as receiver
   - [ ] Delegate to box measure policy for layout
 
-Tests / definition of done
-- [ ] Test: Basic subcomposition during measure creates nodes correctly
-- [ ] Test: Calling `subcompose()` during composition panics with clear error
+- [x] Test: Basic subcomposition during measure creates nodes correctly
+- [x] Test: Calling `subcompose()` during composition panics with clear error
 - [ ] Test: Reordering keyed subcomposed children preserves nodes (no recreate)
 - [ ] Test: Removing subcomposed slots calls `unmount()` and disposes remembered values
-- [ ] Test: Compatible slot reuse reactivates composition without full recreate
+- [x] Test: Compatible slot reuse reactivates composition without full recreate
 - [ ] Test: `BoxWithConstraints` composes different content based on constraints
 - [ ] Test: Constraint changes trigger recomposition in `BoxWithConstraints`
 - [ ] Test: Adaptive layout pattern (wide vs narrow) works correctly

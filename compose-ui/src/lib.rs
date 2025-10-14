@@ -8,6 +8,7 @@ mod layout;
 mod modifier;
 mod primitives;
 mod renderer;
+mod subcompose_layout;
 
 pub use layout::{LayoutBox, LayoutEngine, LayoutTree};
 pub use modifier::{
@@ -15,10 +16,14 @@ pub use modifier::{
     PointerEvent, PointerEventKind, Rect, RoundedCornerShape, Size,
 };
 pub use primitives::{
-    Button, ButtonNode, Column, ColumnNode, ForEach, Row, RowNode, Spacer, SpacerNode, Text,
-    TextNode,
+    Button, ButtonNode, Column, ColumnNode, ForEach, Row, RowNode, Spacer, SpacerNode,
+    SubcomposeLayout, Text, TextNode,
 };
 pub use renderer::{HeadlessRenderer, PaintLayer, RenderOp, RenderScene};
+pub use subcompose_layout::{
+    Constraints, MeasureResult, Placement, SubcomposeLayoutNode, SubcomposeMeasureScope,
+    SubcomposeMeasureScopeImpl,
+};
 
 /// Convenience alias used in examples and tests.
 pub type TestComposition = Composition<MemoryApplier>;

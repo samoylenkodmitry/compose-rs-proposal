@@ -8,6 +8,9 @@ use indexmap::IndexSet;
 
 use crate::composable;
 use crate::modifier::{Modifier, Size};
+use crate::subcompose_layout::{
+    Constraints, MeasurePolicy, MeasureResult, SubcomposeLayoutNode, SubcomposeMeasureScopeImpl,
+};
 
 fn compose_node<N: Node + 'static>(init: impl FnOnce() -> N) -> NodeId {
     compose_core::with_current_composer(|composer| composer.emit_node(init))
@@ -193,6 +196,23 @@ where
     compose_core::push_parent(id);
     content();
     compose_core::pop_parent();
+    id
+}
+
+#[composable(no_skip)]
+pub fn SubcomposeLayout(
+    modifier: Modifier,
+    measure_policy: impl for<'scope> Fn(&mut SubcomposeMeasureScopeImpl<'scope>, Constraints) -> MeasureResult
+        + 'static,
+) -> NodeId {
+    let policy: Rc<MeasurePolicy> = Rc::new(measure_policy);
+    let id = compose_node(|| SubcomposeLayoutNode::new(modifier.clone(), Rc::clone(&policy)));
+    if let Err(err) = compose_core::with_node_mut(id, |node: &mut SubcomposeLayoutNode| {
+        node.modifier = modifier.clone();
+        node.set_measure_policy(Rc::clone(&policy));
+    }) {
+        debug_assert!(false, "failed to update SubcomposeLayout node: {err}");
+    }
     id
 }
 
