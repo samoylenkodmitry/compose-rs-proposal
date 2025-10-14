@@ -175,11 +175,11 @@ pub fn Layout(
 ) -> NodeId
 ```
 
-- [ ] Create LayoutNode type
-- [ ] Implement measure pass
-- [ ] Implement place pass
-- [ ] Integrate with existing Composer
-- [ ] Handle modifier chain in layout
+- [x] Create LayoutNode type
+- [x] Implement measure pass
+- [x] Implement place pass
+- [x] Integrate with existing Composer
+- [x] Handle modifier chain in layout
 
 ### Task 1.4: Alignment and Arrangement
 
