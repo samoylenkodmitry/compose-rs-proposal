@@ -182,6 +182,13 @@ impl RecomposeScope {
     }
 }
 
+#[cfg(test)]
+impl RecomposeScope {
+    pub(crate) fn new_for_test(runtime: RuntimeHandle) -> Self {
+        Self::new(runtime)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RecomposeOptions {
     pub force_reuse: bool,
