@@ -8,9 +8,9 @@ use compose_core::{
 use compose_runtime_std::StdRuntime;
 use compose_ui::{
     composable, Brush, Button, ButtonNode, Color, Column, ColumnNode, CornerRadii, DrawCommand,
-    DrawPrimitive, GraphicsLayer, LayoutBox, LayoutEngine, Modifier, Point, PointerEvent,
-    PointerEventKind, Rect, RoundedCornerShape, Row, RowNode, Size, Spacer, SpacerNode, Text,
-    TextNode,
+    DrawPrimitive, GraphicsLayer, LayoutBox, LayoutEngine, LinearArrangement, Modifier, Point,
+    PointerEvent, PointerEventKind, Rect, RoundedCornerShape, Row, RowNode, RowWithAlignment, Size,
+    Spacer, SpacerNode, Text, TextNode, VerticalAlignment,
 };
 use once_cell::sync::Lazy;
 use pixels::{Pixels, SurfaceTexture};
@@ -306,30 +306,31 @@ fn counter_app() {
                 height: 12.0,
             });
 
-            Row(Modifier::padding(8.0), || {
-                Text(
-                    format!("Counter: {}", counter.get()),
-                    Modifier::padding(8.0)
-                        .then(Modifier::background(Color(0.0, 0.0, 0.0, 0.35)))
-                        .then(Modifier::rounded_corners(12.0)),
-                );
-                Spacer(Size {
-                    width: 16.0,
-                    height: 0.0,
-                });
-                Text(
-                    format!("Wave {:.2}", wave),
-                    Modifier::padding(8.0)
-                        .then(Modifier::background(Color(0.35, 0.55, 0.9, 0.5)))
-                        .then(Modifier::rounded_corners(12.0))
-                        .then(Modifier::graphics_layer(GraphicsLayer {
-                            alpha: 0.7 + wave * 0.3,
-                            scale: 0.85 + wave * 0.3,
-                            translation_x: 0.0,
-                            translation_y: (wave - 0.5) * 12.0,
-                        })),
-                );
-            });
+            RowWithAlignment(
+                Modifier::padding(8.0),
+                LinearArrangement::SpacedBy(12.0),
+                VerticalAlignment::CenterVertically,
+                || {
+                    Text(
+                        format!("Counter: {}", counter.get()),
+                        Modifier::padding(8.0)
+                            .then(Modifier::background(Color(0.0, 0.0, 0.0, 0.35)))
+                            .then(Modifier::rounded_corners(12.0)),
+                    );
+                    Text(
+                        format!("Wave {:.2}", wave),
+                        Modifier::padding(8.0)
+                            .then(Modifier::background(Color(0.35, 0.55, 0.9, 0.5)))
+                            .then(Modifier::rounded_corners(12.0))
+                            .then(Modifier::graphics_layer(GraphicsLayer {
+                                alpha: 0.7 + wave * 0.3,
+                                scale: 0.85 + wave * 0.3,
+                                translation_x: 0.0,
+                                translation_y: (wave - 0.5) * 12.0,
+                            })),
+                    );
+                },
+            );
 
             Spacer(Size {
                 width: 0.0,

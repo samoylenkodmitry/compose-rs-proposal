@@ -183,10 +183,10 @@ pub fn Layout(
 
 ### Task 1.4: Alignment and Arrangement
 
-- [ ] Implement Alignment.Horizontal (Start, CenterHorizontally, End)
-- [ ] Implement Alignment.Vertical (Top, CenterVertically, Bottom)
-- [ ] Implement Arrangement.Horizontal (Start, Center, End, SpaceBetween, SpaceAround, SpaceEvenly, spacedBy)
-- [ ] Implement Arrangement.Vertical (Top, Center, Bottom, SpaceBetween, SpaceAround, SpaceEvenly, spacedBy)
+- [x] Implement Alignment.Horizontal (Start, CenterHorizontally, End)
+- [x] Implement Alignment.Vertical (Top, CenterVertically, Bottom)
+- [x] Implement Arrangement.Horizontal (Start, Center, End, SpaceBetween, SpaceAround, SpaceEvenly, spacedBy)
+- [x] Implement Arrangement.Vertical (Top, Center, Bottom, SpaceBetween, SpaceAround, SpaceEvenly, spacedBy)
 
 ### Task 1.5: Rebuild Row/Column
 
