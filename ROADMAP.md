@@ -205,8 +205,8 @@ impl MeasurePolicy for RowMeasurePolicy {
 }
 ```
 
-- [ ] Implement RowMeasurePolicy with intrinsics
-- [ ] Implement ColumnMeasurePolicy with intrinsics
+- [x] Implement RowMeasurePolicy with intrinsics
+- [x] Implement ColumnMeasurePolicy with intrinsics
 - [ ] Add horizontalArrangement parameter to Row
 - [ ] Add verticalArrangement parameter to Column
 - [ ] Add alignment parameters
