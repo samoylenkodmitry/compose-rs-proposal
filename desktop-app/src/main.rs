@@ -8,9 +8,9 @@ use compose_core::{
 use compose_runtime_std::StdRuntime;
 use compose_ui::{
     composable, Brush, Button, ButtonNode, Color, Column, ColumnNode, CornerRadii, DrawCommand,
-    DrawPrimitive, GraphicsLayer, LayoutBox, LayoutEngine, LinearArrangement, Modifier, Point,
-    PointerEvent, PointerEventKind, Rect, RoundedCornerShape, Row, RowNode, RowWithAlignment, Size,
-    Spacer, SpacerNode, Text, TextNode, VerticalAlignment,
+    DrawPrimitive, EdgeInsets, GraphicsLayer, LayoutBox, LayoutEngine, LinearArrangement, Modifier,
+    Point, PointerEvent, PointerEventKind, Rect, RoundedCornerShape, Row, RowNode,
+    RowWithAlignment, Size, Spacer, SpacerNode, Text, TextNode, VerticalAlignment,
 };
 use once_cell::sync::Lazy;
 use pixels::{Pixels, SurfaceTexture};
@@ -616,7 +616,7 @@ impl Scene {
 }
 
 struct NodeStyle {
-    padding: f32,
+    padding: EdgeInsets,
     background: Option<Color>,
     clickable: Option<Rc<dyn Fn(Point)>>,
     shape: Option<RoundedCornerShape>,
@@ -628,7 +628,7 @@ struct NodeStyle {
 impl NodeStyle {
     fn from_modifier(modifier: &Modifier) -> Self {
         Self {
-            padding: modifier.total_padding(),
+            padding: modifier.padding_values(),
             background: modifier.background_color(),
             clickable: modifier.click_handler(),
             shape: modifier.corner_shape(),
@@ -952,8 +952,8 @@ fn render_text(node: TextNode, layout: &LayoutBox, layer: GraphicsLayer, scene: 
     }
     let metrics = measure_text(&node.text);
     let text_rect = Rect {
-        x: rect.x + style.padding,
-        y: rect.y + style.padding,
+        x: rect.x + style.padding.left,
+        y: rect.y + style.padding.top,
         width: metrics.width,
         height: metrics.height,
     };

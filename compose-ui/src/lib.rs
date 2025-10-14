@@ -18,8 +18,8 @@ pub use layout::{
     LayoutBox, LayoutEngine, LayoutTree,
 };
 pub use modifier::{
-    Brush, Color, CornerRadii, DrawCommand, DrawPrimitive, GraphicsLayer, Modifier, Point,
-    PointerEvent, PointerEventKind, Rect, RoundedCornerShape, Size,
+    Brush, Color, CornerRadii, DrawCommand, DrawPrimitive, EdgeInsets, GraphicsLayer, Modifier,
+    Point, PointerEvent, PointerEventKind, Rect, RoundedCornerShape, Size,
 };
 pub use primitives::{
     BoxScope, BoxWithConstraints, BoxWithConstraintsScope, BoxWithConstraintsScopeImpl, Button,

@@ -5,7 +5,7 @@ use taffy::prelude::*;
 use taffy::style::{AlignItems, JustifyContent};
 
 use self::core::{HorizontalAlignment, LinearArrangement, VerticalAlignment};
-use crate::modifier::{Modifier, Rect as GeometryRect, Size};
+use crate::modifier::{DimensionConstraint, EdgeInsets, Modifier, Rect as GeometryRect, Size};
 use crate::primitives::{ButtonNode, ColumnNode, RowNode, SpacerNode, TextNode};
 
 /// Result of running layout for a Compose tree.
@@ -294,18 +294,7 @@ fn style_from_modifier(modifier: &Modifier, direction: FlexDirection) -> Style {
     let mut style = Style::DEFAULT;
     style.display = Display::Flex;
     style.flex_direction = direction;
-    if let Some(size) = modifier.explicit_size() {
-        if size.width > 0.0 {
-            style.size.width = Dimension::Points(size.width);
-        }
-        if size.height > 0.0 {
-            style.size.height = Dimension::Points(size.height);
-        }
-    }
-    let padding = modifier.total_padding();
-    if padding > 0.0 {
-        style.padding = uniform_padding(padding);
-    }
+    apply_layout_properties(&mut style, modifier);
     style
 }
 
@@ -313,21 +302,10 @@ fn text_style(modifier: &Modifier, text: &str) -> Style {
     let mut style = Style::DEFAULT;
     style.display = Display::Flex;
     style.flex_direction = FlexDirection::Row;
-    let padding = modifier.total_padding();
-    if padding > 0.0 {
-        style.padding = uniform_padding(padding);
-    }
-    let mut measured = measure_text(text);
-    if let Some(size) = modifier.explicit_size() {
-        if size.width > 0.0 {
-            measured.width = size.width.max(0.0);
-        }
-        if size.height > 0.0 {
-            measured.height = size.height.max(0.0);
-        }
-    }
+    let measured = measure_text(text);
     style.size.width = Dimension::Points(measured.width.max(0.0));
     style.size.height = Dimension::Points(measured.height.max(0.0));
+    apply_layout_properties(&mut style, modifier);
     style
 }
 
@@ -339,13 +317,54 @@ fn measure_text(text: &str) -> Size {
     }
 }
 
-fn uniform_padding(padding: f32) -> taffy::prelude::Rect<LengthPercentage> {
-    let value = LengthPercentage::Points(padding);
+fn apply_layout_properties(style: &mut Style, modifier: &Modifier) {
+    let props = modifier.layout_properties();
+    if !props.padding().is_zero() {
+        style.padding = rect_from_insets(props.padding());
+    }
+    apply_dimension(&mut style.size.width, props.width());
+    apply_dimension(&mut style.size.height, props.height());
+    if let Some(min_width) = props.min_width() {
+        style.min_size.width = Dimension::Points(min_width.max(0.0));
+    }
+    if let Some(min_height) = props.min_height() {
+        style.min_size.height = Dimension::Points(min_height.max(0.0));
+    }
+    if let Some(max_width) = props.max_width() {
+        style.max_size.width = Dimension::Points(max_width.max(0.0));
+    }
+    if let Some(max_height) = props.max_height() {
+        style.max_size.height = Dimension::Points(max_height.max(0.0));
+    }
+    if let Some(weight) = props.weight() {
+        style.flex_grow = weight.weight.max(0.0);
+        if weight.fill {
+            style.flex_basis = Dimension::Percent(1.0);
+            style.flex_shrink = 0.0;
+        } else if style.flex_basis == Dimension::Auto {
+            style.flex_basis = Dimension::Auto;
+        }
+    }
+}
+
+fn apply_dimension(target: &mut Dimension, constraint: DimensionConstraint) {
+    match constraint {
+        DimensionConstraint::Unspecified => {}
+        DimensionConstraint::Points(value) => {
+            *target = Dimension::Points(value.max(0.0));
+        }
+        DimensionConstraint::Fraction(fraction) => {
+            *target = Dimension::Percent(fraction.clamp(0.0, 1.0));
+        }
+    }
+}
+
+fn rect_from_insets(insets: EdgeInsets) -> taffy::prelude::Rect<LengthPercentage> {
     taffy::prelude::Rect {
-        left: value,
-        right: value,
-        top: value,
-        bottom: value,
+        left: LengthPercentage::Points(insets.left),
+        right: LengthPercentage::Points(insets.right),
+        top: LengthPercentage::Points(insets.top),
+        bottom: LengthPercentage::Points(insets.bottom),
     }
 }
 

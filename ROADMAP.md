@@ -217,14 +217,14 @@ impl MeasurePolicy for RowMeasurePolicy {
 
 Add essential layout modifiers:
 
-- [ ] Modifier.padding (all variants: uniform, horizontal/vertical, each side)
-- [ ] Modifier.size (width, height, size)
-- [ ] Modifier.fillMaxSize (fraction parameter)
-- [ ] Modifier.fillMaxWidth (fraction parameter)
-- [ ] Modifier.fillMaxHeight (fraction parameter)
+- [x] Modifier.padding (all variants: uniform, horizontal/vertical, each side)
+- [x] Modifier.size (width, height, size)
+- [x] Modifier.fillMaxSize (fraction parameter)
+- [x] Modifier.fillMaxWidth (fraction parameter)
+- [x] Modifier.fillMaxHeight (fraction parameter)
 - [ ] Modifier.wrapContentSize (align parameter)
-- [ ] Modifier.requiredSize
-- [ ] Modifier.weight (for Row/Column children)
+- [x] Modifier.requiredSize
+- [x] Modifier.weight (for Row/Column children)
 - [ ] Modifier.align (for Box children)
 
 ### Task 1.7: Box Primitive
