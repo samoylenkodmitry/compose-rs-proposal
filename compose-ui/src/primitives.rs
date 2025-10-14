@@ -8,9 +8,84 @@ use indexmap::IndexSet;
 
 use crate::composable;
 use crate::modifier::{Modifier, Size};
+use crate::subcompose_layout::MeasureScope;
 use crate::subcompose_layout::{
-    Constraints, MeasurePolicy, MeasureResult, SubcomposeLayoutNode, SubcomposeMeasureScopeImpl,
+    Constraints, Dp, MeasurePolicy, MeasureResult, Placement, SubcomposeLayoutNode,
+    SubcomposeMeasureScope, SubcomposeMeasureScopeImpl,
 };
+use compose_core::SlotId;
+
+/// Marker trait matching Jetpack Compose's `BoxScope` API.
+pub trait BoxScope {}
+
+/// Scope exposed to [`BoxWithConstraints`] content.
+pub trait BoxWithConstraintsScope: BoxScope {
+    fn constraints(&self) -> Constraints;
+    fn min_width(&self) -> Dp;
+    fn max_width(&self) -> Dp;
+    fn min_height(&self) -> Dp;
+    fn max_height(&self) -> Dp;
+}
+
+/// Concrete implementation of [`BoxWithConstraintsScope`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BoxWithConstraintsScopeImpl {
+    constraints: Constraints,
+    density: f32,
+}
+
+impl BoxWithConstraintsScopeImpl {
+    pub fn new(constraints: Constraints) -> Self {
+        Self {
+            constraints,
+            density: 1.0,
+        }
+    }
+
+    pub fn with_density(constraints: Constraints, density: f32) -> Self {
+        Self {
+            constraints,
+            density,
+        }
+    }
+
+    fn to_dp(&self, raw: f32) -> Dp {
+        Dp::new(raw / self.density)
+    }
+
+    /// Converts a [`Dp`] value back to raw pixels using the stored density.
+    pub fn to_px(&self, dp: Dp) -> f32 {
+        dp.value() * self.density
+    }
+
+    pub fn density(&self) -> f32 {
+        self.density
+    }
+}
+
+impl BoxScope for BoxWithConstraintsScopeImpl {}
+
+impl BoxWithConstraintsScope for BoxWithConstraintsScopeImpl {
+    fn constraints(&self) -> Constraints {
+        self.constraints
+    }
+
+    fn min_width(&self) -> Dp {
+        self.to_dp(self.constraints.min_width)
+    }
+
+    fn max_width(&self) -> Dp {
+        self.to_dp(self.constraints.max_width)
+    }
+
+    fn min_height(&self) -> Dp {
+        self.to_dp(self.constraints.min_height)
+    }
+
+    fn max_height(&self) -> Dp {
+        self.to_dp(self.constraints.max_height)
+    }
+}
 
 fn compose_node<N: Node + 'static>(init: impl FnOnce() -> N) -> NodeId {
     compose_core::with_current_composer(|composer| composer.emit_node(init))
@@ -216,6 +291,48 @@ pub fn SubcomposeLayout(
     id
 }
 
+#[composable(no_skip)]
+pub fn BoxWithConstraints<F>(modifier: Modifier, content: F) -> NodeId
+where
+    F: FnMut(BoxWithConstraintsScopeImpl) + 'static,
+{
+    let content_ref: Rc<RefCell<F>> = Rc::new(RefCell::new(content));
+    SubcomposeLayout(modifier, move |scope, constraints| {
+        let scope_impl = BoxWithConstraintsScopeImpl::new(constraints);
+        let scope_for_content = scope_impl.clone();
+        let measurables = {
+            let content_ref = Rc::clone(&content_ref);
+            scope.subcompose(SlotId::new(0), move || {
+                let mut content = content_ref.borrow_mut();
+                content(scope_for_content.clone());
+            })
+        };
+        let width_dp = if scope_impl.max_width().is_finite() {
+            scope_impl.max_width()
+        } else {
+            scope_impl.min_width()
+        };
+        let height_dp = if scope_impl.max_height().is_finite() {
+            scope_impl.max_height()
+        } else {
+            scope_impl.min_height()
+        };
+        let width = scope_impl.to_px(width_dp);
+        let height = scope_impl.to_px(height_dp);
+        let placements: Vec<Placement> = measurables
+            .into_iter()
+            .map(|measurable| {
+                Placement::new(
+                    measurable.node_id(),
+                    crate::modifier::Point { x: 0.0, y: 0.0 },
+                    0,
+                )
+            })
+            .collect();
+        scope.layout(width, height, placements)
+    })
+}
+
 #[derive(Clone)]
 struct DynamicTextSource(Rc<dyn Fn() -> String>);
 
@@ -376,13 +493,42 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::subcompose_layout::Constraints;
     use crate::{LayoutEngine, SnapshotState, TestComposition};
-    use compose_core::{self, location_key, Composition, MemoryApplier, MutableState, State};
+    use compose_core::{
+        self, location_key, Composer, Composition, MemoryApplier, MutableState, Phase, SlotTable,
+        State,
+    };
     use std::cell::{Cell, RefCell};
 
     thread_local! {
         static COUNTER_ROW_INVOCATIONS: Cell<usize> = Cell::new(0);
         static COUNTER_TEXT_ID: RefCell<Option<NodeId>> = RefCell::new(None);
+    }
+
+    fn measure_subcompose_node(
+        composition: &mut Composition<MemoryApplier>,
+        slots: &mut SlotTable,
+        handle: &compose_core::RuntimeHandle,
+        root: NodeId,
+        constraints: Constraints,
+    ) {
+        let applier = composition.applier_mut();
+        let applier_ptr: *mut MemoryApplier = applier;
+        // SAFETY: `applier_ptr` references the same `MemoryApplier` currently borrowed via
+        // `applier`. `with_node` executes synchronously and guarantees exclusive access to the
+        // node for the duration of the closure, so reborrowing through the raw pointer is safe.
+        unsafe {
+            applier
+                .with_node(root, |node: &mut SubcomposeLayoutNode| {
+                    let applier_ref: &mut MemoryApplier = &mut *applier_ptr;
+                    let mut composer =
+                        Composer::new(slots, applier_ref, handle.clone(), Some(root));
+                    composer.enter_phase(Phase::Measure);
+                    node.measure(&mut composer, constraints);
+                })
+                .expect("node available");
+        }
     }
 
     #[composable]
@@ -645,5 +791,94 @@ mod tests {
         assert!((text_layout.rect.y - 10.0).abs() < 1e-3);
         assert!((text_layout.rect.width - 40.0).abs() < 1e-3);
         assert!((text_layout.rect.height - 20.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn box_with_constraints_composes_different_content() {
+        let mut composition = Composition::new(MemoryApplier::new());
+        let record = Rc::new(RefCell::new(Vec::new()));
+        let record_capture = Rc::clone(&record);
+        composition
+            .render(location_key(file!(), line!(), column!()), || {
+                BoxWithConstraints(Modifier::empty(), {
+                    let record_capture = Rc::clone(&record_capture);
+                    move |scope| {
+                        let label = if scope.max_width().value() > 100.0 {
+                            "wide"
+                        } else {
+                            "narrow"
+                        };
+                        record_capture.borrow_mut().push(label.to_string());
+                        Text(label, Modifier::empty());
+                    }
+                });
+            })
+            .expect("render succeeds");
+
+        let root = composition.root().expect("root node");
+        let handle = composition.runtime_handle();
+        let mut slots = SlotTable::new();
+
+        measure_subcompose_node(
+            &mut composition,
+            &mut slots,
+            &handle,
+            root,
+            Constraints::tight(Size {
+                width: 200.0,
+                height: 100.0,
+            }),
+        );
+
+        assert_eq!(record.borrow().as_slice(), ["wide"]);
+
+        slots.reset();
+
+        measure_subcompose_node(
+            &mut composition,
+            &mut slots,
+            &handle,
+            root,
+            Constraints::tight(Size {
+                width: 80.0,
+                height: 50.0,
+            }),
+        );
+
+        assert_eq!(record.borrow().as_slice(), ["wide", "narrow"]);
+    }
+
+    #[test]
+    fn box_with_constraints_reacts_to_constraint_changes() {
+        let mut composition = Composition::new(MemoryApplier::new());
+        let invocations = Rc::new(Cell::new(0));
+        let invocations_capture = Rc::clone(&invocations);
+        composition
+            .render(location_key(file!(), line!(), column!()), || {
+                BoxWithConstraints(Modifier::empty(), {
+                    let invocations_capture = Rc::clone(&invocations_capture);
+                    move |scope| {
+                        let _ = scope.max_width();
+                        invocations_capture.set(invocations_capture.get() + 1);
+                        Text("child", Modifier::empty());
+                    }
+                });
+            })
+            .expect("render succeeds");
+
+        let root = composition.root().expect("root node");
+        let handle = composition.runtime_handle();
+        let mut slots = SlotTable::new();
+
+        for width in [120.0, 60.0] {
+            let constraints = Constraints::tight(Size {
+                width,
+                height: 40.0,
+            });
+            measure_subcompose_node(&mut composition, &mut slots, &handle, root, constraints);
+            slots.reset();
+        }
+
+        assert_eq!(invocations.get(), 2);
     }
 }

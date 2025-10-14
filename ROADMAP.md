@@ -115,18 +115,18 @@ Deliverables (SubcomposeLayout Primitive)
   - [x] Emit `SubcomposeLayoutNode`
   - [x] Do NOT use `push_parent`/`pop_parent` (children managed by `subcompose()`)
 
-Deliverables (BoxWithConstraints)
-- [ ] Define `BoxWithConstraintsScope` trait extending `BoxScope`
-  - [ ] Add `constraints()` method returning `Constraints`
-  - [ ] Add `min_width()`, `max_width()`, `min_height()`, `max_height()` as `Dp`
-- [ ] Implement `BoxWithConstraintsScopeImpl` struct
-  - [ ] Store `constraints` and `density` for conversions
-  - [ ] Implement all scope methods
-- [ ] Implement `BoxWithConstraints` composable
-  - [ ] Use `SubcomposeLayout` internally
-  - [ ] Create `BoxWithConstraintsScopeImpl` in measure policy
-  - [ ] Call `subcompose()` with scope as receiver
-  - [ ] Delegate to box measure policy for layout
+- Deliverables (BoxWithConstraints)
+- [x] Define `BoxWithConstraintsScope` trait extending `BoxScope`
+  - [x] Add `constraints()` method returning `Constraints`
+  - [x] Add `min_width()`, `max_width()`, `min_height()`, `max_height()` as `Dp`
+- [x] Implement `BoxWithConstraintsScopeImpl` struct
+  - [x] Store `constraints` and `density` for conversions
+  - [x] Implement all scope methods
+- [x] Implement `BoxWithConstraints` composable
+  - [x] Use `SubcomposeLayout` internally
+  - [x] Create `BoxWithConstraintsScopeImpl` in measure policy
+  - [x] Call `subcompose()` with scope as receiver
+  - [x] Delegate to box measure policy for layout
 
 - [x] Test: Basic subcomposition during measure creates nodes correctly
 - [x] Test: Calling `subcompose()` during composition panics with clear error
@@ -134,8 +134,8 @@ Deliverables (BoxWithConstraints)
 - [x] Test: Removing subcomposed slots calls `unmount()` and disposes remembered values
 - [x] Test: Disposing trailing subcomposed slots moves nodes to the reusable pool without affecting prior siblings
 - [x] Test: Compatible slot reuse reactivates composition without full recreate
-- [ ] Test: `BoxWithConstraints` composes different content based on constraints
-- [ ] Test: Constraint changes trigger recomposition in `BoxWithConstraints`
+- [x] Test: `BoxWithConstraints` composes different content based on constraints
+- [x] Test: Constraint changes trigger recomposition in `BoxWithConstraints`
 - [ ] Test: Adaptive layout pattern (wide vs narrow) works correctly
 - [ ] Test: 100+ subcomposed items with reordering has no pathological slowdown
 - [ ] Example: Port Compose docs example for `BoxWithConstraints` verbatim

@@ -41,6 +41,27 @@ impl Constraints {
     }
 }
 
+/// Density-independent pixels used by layout scopes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Dp(pub f32);
+
+impl Dp {
+    /// Creates a new [`Dp`] value from raw pixels.
+    pub fn new(raw: f32) -> Self {
+        Self(raw)
+    }
+
+    /// Returns the underlying scalar representation.
+    pub fn value(self) -> f32 {
+        self.0
+    }
+
+    /// Returns whether the value is finite.
+    pub fn is_finite(self) -> bool {
+        self.0.is_finite()
+    }
+}
+
 /// Result of measuring a `SubcomposeLayoutNode`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MeasureResult {
