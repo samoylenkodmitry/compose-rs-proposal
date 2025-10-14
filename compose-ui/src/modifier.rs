@@ -329,6 +329,8 @@ pub enum ModOp {
     RoundedCorners(RoundedCornerShape),
     PointerInput(Rc<dyn Fn(PointerEvent)>),
     GraphicsLayer(GraphicsLayer),
+    Offset(Point),
+    AbsoluteOffset(Point),
     Draw(DrawCommand),
 }
 
@@ -438,6 +440,14 @@ impl Modifier {
 
     pub fn rounded_corner_shape(shape: RoundedCornerShape) -> Self {
         Self::with_op(ModOp::RoundedCorners(shape))
+    }
+
+    pub fn offset(x: f32, y: f32) -> Self {
+        Self::with_op(ModOp::Offset(Point { x, y }))
+    }
+
+    pub fn absolute_offset(x: f32, y: f32) -> Self {
+        Self::with_op(ModOp::AbsoluteOffset(Point { x, y }))
     }
 
     pub fn required_size(size: Size) -> Self {
@@ -579,6 +589,21 @@ impl Modifier {
             })
             .collect()
     }
+
+    pub(crate) fn total_offset(&self) -> Point {
+        let mut offset = Point { x: 0.0, y: 0.0 };
+        for op in self.0.iter() {
+            let delta = match op {
+                ModOp::Offset(delta) | ModOp::AbsoluteOffset(delta) => Some(*delta),
+                _ => None,
+            };
+            if let Some(delta) = delta {
+                offset.x += delta.x;
+                offset.y += delta.y;
+            }
+        }
+        offset
+    }
 }
 
 #[derive(Default)]
@@ -712,7 +737,7 @@ impl Modifier {
 
 #[cfg(test)]
 mod tests {
-    use super::{DimensionConstraint, EdgeInsets, Modifier};
+    use super::{DimensionConstraint, EdgeInsets, Modifier, Point};
 
     #[test]
     fn padding_values_accumulate_per_edge() {
@@ -747,5 +772,14 @@ mod tests {
         let weight = props.weight().expect("weight to be recorded");
         assert_eq!(weight.weight, 2.0);
         assert!(!weight.fill);
+    }
+
+    #[test]
+    fn offset_accumulates_across_chain() {
+        let modifier = Modifier::offset(4.0, 6.0)
+            .then(Modifier::absolute_offset(-1.5, 2.5))
+            .then(Modifier::offset(0.5, -3.0));
+        let total = modifier.total_offset();
+        assert_eq!(total, Point { x: 3.0, y: 5.5 });
     }
 }

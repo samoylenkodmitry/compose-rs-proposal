@@ -5,7 +5,9 @@ use taffy::prelude::*;
 use taffy::style::{AlignItems, JustifyContent};
 
 use self::core::{HorizontalAlignment, LinearArrangement, VerticalAlignment};
-use crate::modifier::{DimensionConstraint, EdgeInsets, Modifier, Rect as GeometryRect, Size};
+use crate::modifier::{
+    DimensionConstraint, EdgeInsets, Modifier, Point, Rect as GeometryRect, Size,
+};
 use crate::primitives::{ButtonNode, ColumnNode, RowNode, SpacerNode, TextNode};
 
 /// Result of running layout for a Compose tree.
@@ -76,6 +78,7 @@ struct LayoutHandle {
     node_id: NodeId,
     taffy_node: taffy::node::Node,
     children: Vec<LayoutHandle>,
+    offset: Point,
 }
 
 impl<'a> LayoutBuilder<'a> {
@@ -110,6 +113,7 @@ impl<'a> LayoutBuilder<'a> {
             node_id,
             taffy_node,
             children: Vec::new(),
+            offset: Point { x: 0.0, y: 0.0 },
         })
     }
 
@@ -131,6 +135,7 @@ impl<'a> LayoutBuilder<'a> {
             node_id,
             taffy_node,
             children: child_handles,
+            offset: node.modifier.total_offset(),
         })
     }
 
@@ -148,6 +153,7 @@ impl<'a> LayoutBuilder<'a> {
             node_id,
             taffy_node,
             children: child_handles,
+            offset: node.modifier.total_offset(),
         })
     }
 
@@ -161,6 +167,7 @@ impl<'a> LayoutBuilder<'a> {
             node_id,
             taffy_node,
             children: Vec::new(),
+            offset: node.modifier.total_offset(),
         })
     }
 
@@ -180,6 +187,7 @@ impl<'a> LayoutBuilder<'a> {
             node_id,
             taffy_node,
             children: Vec::new(),
+            offset: Point { x: 0.0, y: 0.0 },
         })
     }
 
@@ -199,6 +207,7 @@ impl<'a> LayoutBuilder<'a> {
             node_id,
             taffy_node,
             children: child_handles,
+            offset: node.modifier.total_offset(),
         })
     }
 
@@ -214,8 +223,8 @@ impl<'a> LayoutBuilder<'a> {
             .taffy
             .layout(handle.taffy_node)
             .expect("layout computed");
-        let x = origin.0 + layout.location.x;
-        let y = origin.1 + layout.location.y;
+        let x = origin.0 + layout.location.x + handle.offset.x;
+        let y = origin.1 + layout.location.y + handle.offset.y;
         let rect = GeometryRect {
             x,
             y,

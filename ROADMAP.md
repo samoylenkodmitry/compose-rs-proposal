@@ -514,8 +514,8 @@ pub fn animateColorAsState(
 
 Add most commonly used modifiers:
 
-- [ ] Modifier.offset (x, y)
-- [ ] Modifier.absoluteOffset
+- [x] Modifier.offset (x, y)
+- [x] Modifier.absoluteOffset
 - [ ] Modifier.clip(shape)
 - [ ] Modifier.border (width, brush, shape)
 - [ ] Modifier.alpha
