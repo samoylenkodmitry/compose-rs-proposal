@@ -130,8 +130,9 @@ Deliverables (BoxWithConstraints)
 
 - [x] Test: Basic subcomposition during measure creates nodes correctly
 - [x] Test: Calling `subcompose()` during composition panics with clear error
-- [ ] Test: Reordering keyed subcomposed children preserves nodes (no recreate)
-- [ ] Test: Removing subcomposed slots calls `unmount()` and disposes remembered values
+- [x] Test: Reordering keyed subcomposed children preserves nodes (no recreate)
+- [x] Test: Removing subcomposed slots calls `unmount()` and disposes remembered values
+- [x] Test: Disposing trailing subcomposed slots moves nodes to the reusable pool without affecting prior siblings
 - [x] Test: Compatible slot reuse reactivates composition without full recreate
 - [ ] Test: `BoxWithConstraints` composes different content based on constraints
 - [ ] Test: Constraint changes trigger recomposition in `BoxWithConstraints`

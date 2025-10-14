@@ -338,6 +338,7 @@ impl SubcomposeState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TestRuntime;
 
     struct RetainEvenPolicy;
 
@@ -399,12 +400,67 @@ mod tests {
     }
 
     #[test]
+    fn dispose_from_middle_moves_trailing_slots() {
+        let mut state = SubcomposeState::default();
+        state.register_active(SlotId::new(1), &[10], &[]);
+        state.register_active(SlotId::new(2), &[20], &[]);
+        state.register_active(SlotId::new(3), &[30], &[]);
+        let moved = state.dispose_or_reuse_starting_from_index(2);
+        assert_eq!(moved, vec![30]);
+        assert_eq!(state.reusable(), &[30]);
+        assert_eq!(state.reusable_count, 1);
+        assert!(state.dispose_or_reuse_starting_from_index(5).is_empty());
+    }
+
+    #[test]
     fn incompatible_reuse_is_rejected() {
         let mut state = SubcomposeState::default();
         state.register_active(SlotId::new(1), &[10], &[]);
         state.dispose_or_reuse_starting_from_index(0);
         assert_eq!(state.take_node_from_reusables(SlotId::new(2)), None);
         assert_eq!(state.reusable(), &[10]);
+    }
+
+    #[test]
+    fn reordering_keyed_children_preserves_nodes() {
+        let mut state = SubcomposeState::default();
+        state.register_active(SlotId::new(1), &[11], &[]);
+        state.register_active(SlotId::new(2), &[22], &[]);
+        state.register_active(SlotId::new(3), &[33], &[]);
+
+        let moved = state.dispose_or_reuse_starting_from_index(0);
+        assert_eq!(moved, vec![33, 22, 11]);
+
+        let reordered = [SlotId::new(3), SlotId::new(1), SlotId::new(2)];
+        let mut reused_nodes = Vec::new();
+        for slot in reordered {
+            let node = state
+                .take_node_from_reusables(slot)
+                .expect("expected node for reordered slot");
+            reused_nodes.push(node);
+            state.register_active(slot, &[node], &[]);
+        }
+
+        assert_eq!(reused_nodes, vec![33, 11, 22]);
+        assert!(state.reusable().is_empty());
+        assert_eq!(state.reusable_count, 0);
+    }
+
+    #[test]
+    fn removing_slots_deactivates_scopes() {
+        let runtime = TestRuntime::new();
+        let scope_a = RecomposeScope::new_for_test(runtime.handle());
+        let scope_b = RecomposeScope::new_for_test(runtime.handle());
+
+        let mut state = SubcomposeState::default();
+        state.register_active(SlotId::new(1), &[10], &[scope_a.clone()]);
+        state.register_active(SlotId::new(2), &[20], &[scope_b.clone()]);
+
+        let moved = state.dispose_or_reuse_starting_from_index(1);
+        assert_eq!(moved, vec![20]);
+        assert!(scope_a.is_active());
+        assert!(!scope_b.is_active());
+        assert_eq!(state.reusable(), &[20]);
     }
 
     #[test]
