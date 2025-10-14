@@ -687,6 +687,7 @@ impl LayoutProperties {
         self.max_height
     }
 
+    #[allow(dead_code)]
     pub fn weight(&self) -> Option<LayoutWeight> {
         self.weight
     }

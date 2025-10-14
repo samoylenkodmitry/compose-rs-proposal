@@ -861,7 +861,7 @@ mod tests {
     }
 
     #[test]
-    fn layout_column_uses_taffy_measurements() {
+    fn layout_column_produces_expected_measurements() {
         let mut composition = Composition::new(MemoryApplier::new());
         let key = location_key(file!(), line!(), column!());
         let mut text_id = None;

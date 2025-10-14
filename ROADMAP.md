@@ -30,7 +30,7 @@
 ### Critical Issues
 
 - [x] LaunchedEffect uses `std::thread::spawn` directly (needs platform abstraction)
-- [ ] Layout system uses Taffy (needs Compose intrinsic model)
+- [x] Layout system uses Taffy (needs Compose intrinsic model)
 - [ ] Modifier is Vec-based (needs persistent node chain for performance)
 - [ ] Animation is rudimentary (just state updates, no interpolation)
 - [ ] No LazyColumn/LazyRow (despite SubcomposeLayout being ready)
@@ -211,7 +211,7 @@ impl MeasurePolicy for RowMeasurePolicy {
 - [ ] Add verticalArrangement parameter to Column
 - [ ] Add alignment parameters
 - [ ] Port existing Row/Column to new system
-- [ ] **Remove Taffy dependency**
+- [x] **Remove Taffy dependency**
 
 ### Task 1.6: Layout Modifiers
 
