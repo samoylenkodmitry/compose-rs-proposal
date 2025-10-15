@@ -1,184 +1,238 @@
-# Compose‑RS Roadmap (Corrected & Approved)
+# Compose-RS Roadmap
 
-**Status:** Approved with edits from code review + two analytics reports  
-**Vision:** A faithful, performant, and portable re‑implementation of Jetpack Compose in Rust with **1:1 public API parity** where possible. Architect for future `no_std` (not in scope for the current milestone) and **pluggable backends** (text, graphics, windowing).
+**Vision:** Faithful, performant, portable re-implementation of Jetpack Compose in Rust with **1:1 public API parity**. Pluggable backends (text, graphics, windowing).
 
 ---
 
 ## Guiding Principles
 
-- **API Parity First**: Prefer Kotlin/Compose API names, argument order, and behavior. Keep Rust idioms internal; present Kotlin‑like surfaces to the user (e.g., `Text`, `Box`, `Modifier.padding`, `remember`, `mutableStateOf`, etc.).
-- **Deterministic Runtime**: Recomposition is minimal, predictable, and testable via explicit scopes and stability markers.
-- **Backend Swappability**: Text shaping, rasterization, and GPU/CPU backends are replaceable behind traits.
-- **Testability**: Provide a minimal `ComposeTestRule` and headless `Applier` to assert tree shape, layout, semantics, and draw ops.
-- **Performance Budgets**: Each phase ships with measurable gates (allocs, nodes touched, frame time, etc.).
-- **Future‑proofing**: Design with `no_std` in mind (allocator isolation, feature flags), but do **not** implement it now.
+- **API Parity First**: Kotlin/Compose API names, argument order, behavior. Kotlin-like surfaces (`Text`, `Box`, `Modifier.padding`, `remember`, `mutableStateOf`).
+- **Deterministic Runtime**: Minimal, predictable, testable recomposition via explicit scopes and stability markers.
+- **Backend Swappability**: Text shaping, rasterization, GPU/CPU backends replaceable behind traits.
+- **Testability**: `ComposeTestRule` and headless `Applier` to assert tree shape, layout, semantics, draw ops.
+- **Performance Budgets**: Measurable gates (allocs, nodes touched, frame time).
 
 ---
 
-## Phase 0 — Current State (Baseline)
+## Phase 0 — Current State
 
-**Status:** Implemented — foundation for Phase 1+
-
-### Architecture Decisions (current)
-- **Value‑based modifiers** (command list style); to be **replaced** by `Modifier.Node` chain in Phase 2.
-- Slot table with group‑based reconciliation; stability & skip logic in macros.
-- `RuntimeScheduler` abstraction with `schedule_frame()` entrypoint.
-- Headless/”memory” applier for tests; desktop sample app with a **manual animation loop**.
-- Basic layout engine with constraints & `MeasurePolicy`.
+### Architecture
+- Value-based modifiers (command list style); replaced by `Modifier.Node` chain in Phase 2.
+- Slot table with group-based reconciliation; stability & skip logic in macros.
+- `RuntimeScheduler` abstraction with `schedule_frame()`.
+- Headless applier for tests; desktop sample with manual animation loop.
+- Layout engine with constraints & `MeasurePolicy`.
 
 ### Working Features
 - Composition, recomposition, state with automatic invalidation.
-- Primitives: `Column`, `Row`, `Box`, `Text`, `Spacer`, `Button` (and friends).
-- Modifiers: padding, size, background, rounded corners, click, draw behind/overlay, alpha/scale/offset (graphics layers), pointer input.
-- Early **Subcompose** scaffolding exists.
+- Primitives: `Column`, `Row`, `Box`, `Text`, `Spacer`, `Button`.
+- Modifiers: padding, size, background, rounded corners, click, draw behind/overlay, alpha/scale/offset, pointer input.
+- Subcompose scaffolding.
 - Headless rendering; desktop sample renders and interacts.
 
 ### Known Limitations
-- Modifiers are value‑based (perf overhead, limited reuse).
-- No true frame clock; desktop uses a manual loop.
-- `animate*AsState` is a placeholder (snaps instantly).
-- Missing intrinsics; no lazy lists; semantics are preliminary.
+- Modifiers are value-based (perf overhead, limited reuse).
+- No true frame clock; desktop uses manual loop.
+- `animate*AsState` placeholder (snaps instantly).
+- Missing intrinsics; no lazy lists; semantics preliminary.
+- Alignment API not type-safe.
+- **CRITICAL**: Side effect cleanup not triggered during recomposition (only on full composition disposal)
+- Effect callbacks (`DisposableEffect`, `LaunchedEffect`) persist incorrectly across conditional branches
 
 ---
 
-## Phase 1 — Smart Recomposition + **Frame Clock** (In Progress, ~85%)
+## Phase 1 — Smart Recomposition + Frame Clock
 
-**Goal:** Complete the runtime so recomposition is minimal **and** frame‑time driven. Deliver a working frame clock, ordering, and cancellation semantics; ship a tiny test rule.
-
-### What’s Done
-- Slot table + scopes + state read‑tracking
+### Done
+- Slot table + scopes + state read-tracking
 - Macro skip logic for stable inputs
 - Basic primitives & side effects (`SideEffect`, `DisposableEffect`, `LaunchedEffect`)
+- FrameClock trait + impl: `withFrameNanos(callback)`; `withFrameMillis` wrapper
+- Callbacks before draw, after state mutation
+- Cancellation when scope leaves composition
+- `StdScheduler::schedule_frame()` wakes app loop
+- Desktop sample: `runtime.drain_frame_callbacks(now)`; clear `needs_frame` after drain
+- Frame callback order stable across multiple callers
+- Disposing scope cancels pending callbacks
 
-### What’s Missing (Phase‑1 critical path)
-- Minimal **ComposeTestRule** for node/layout assertions
+### Missing
+- `ComposeTestRule` (headless): mount, advance frame, assert tree/layout/draw ops
+- Helper: `run_test_composition { … }`
+- Test: `Text(counter.read())` recomposes only when state changes
 
-### Work Items
-- **FrameClock**
-  - [x] Trait + impl: `withFrameNanos(callback)`; internal `drain_frame_callbacks(now)`
-  - [x] Provide `withFrameMillis` wrapper
-  - [x] Ensure callbacks happen **before** draw and **after** state mutation for the next frame
-  - [x] Cancellation when the calling scope leaves composition (dispose hook)
-- **Scheduler & Pump**
-  - [x] Implement `StdScheduler::schedule_frame()` to wake the app loop
-  - [x] Desktop sample: call `runtime.drain_frame_callbacks(now)` each tick; clear `needs_frame` after drain
-- **Testing Infra**
-  - [ ] `ComposeTestRule` (headless): mount, advance frame, assert tree/layout/draw ops
-  - [ ] Helper: `run_test_composition { … }`
-- **Acceptance Tests**
-  - [ ] `Text(counter.read())` recomposes only when state changes, not when parent recomposes
-  - [x] Frame callback order stable across multiple `withFrameNanos` callers
-  - [x] Disposing a scope cancels pending frame callbacks from that scope
+### Gates
+- **Gate-1 (Recomp):** 100-node tree; one state change recomposes **<5** nodes
+- **Gate-2 (Frame):** Toggle state schedules **one** frame; callbacks fire; `needs_frame` cleared
+- **Gate-3 (Tests):** `ComposeTestRule` runs headless tests in CI
 
-### Definition of Done (DoD) & Gates
-- **Gate‑1 (Recomp):** 100‑node tree; one state change recomposes **<5** nodes on average
-- **Gate‑2 (Frame):** Toggling a state schedules exactly **one** frame; frame callbacks fire; `needs_frame` cleared post‑drain
-- **Gate‑3 (Tests):** `ComposeTestRule` runs headless tests in CI
+### Exit Criteria
+- [x] Frame clock APIs implemented
+- [ ] Frame-driven invalidation works end-to-end
+- [ ] Basic `ComposeTestRule` present
 
-> **Exit Criteria for Phase 1 (required before Phase 2):**
-> - [x] Frame clock APIs (`withFrameNanos/Millis`) implemented
-> - [ ] Frame‑driven invalidation works end‑to‑end
-> - [ ] Basic `ComposeTestRule` present
+### Side Effect Lifecycle (CRITICAL FIX)
+
+#### Problem
+- `DisposableEffect` and `LaunchedEffect` cleanup callbacks not called when components leave composition
+- Slot table doesn't dispose remembered state during recomposition
+- Scope deactivation doesn't trigger effect cleanup
+
+#### Deliverables
+- Slot table disposal mechanism for replaced/truncated slots
+- Scope-level effect tracking and cleanup
+- Group replacement detection and state disposal
+- Explicit cleanup on conditional branch changes
+
+#### Implementation
+1. Add `dispose_range()` to `SlotTable` for explicit state cleanup
+2. Track active effects per `RecomposeScope`
+3. Hook disposal into `with_group()` when keys don't match
+4. Register effect cleanup callbacks with parent scope
+5. Call `dispose_effects()` when scope becomes inactive or is replaced
+
+#### Gates
+- Switching conditional branches triggers `on_dispose` callbacks
+- `LaunchedEffect` coroutines cancelled when component leaves composition
+- No memory leaks from accumulated effect state
+- Test: Toggle between branches, verify cleanup logs appear
 
 ---
 
-## Phase **1.5** — Minimal Animation (Fast‑Track)
-
-**Why now:** The desktop sample already needs animations; Phase 4 depends on a functioning frame clock. This phase validates the timing path before the full animation system.
+## Phase 1.5 — Minimal Animation
 
 ### Deliverables
-- `Animatable<T: Lerp>` with time‑based updates
-- `animateFloatAsState` backed by `withFrameNanos` (no longer snap‑to‑target)
-- 2 simple specs: **tween** (duration + easing), **spring** (stiffness, damping)
-- Cancellation & target change semantics (interrupt, snap‑to‑new‑track vs merge)
+- `Animatable<T: Lerp>` with time-based updates
+- `animateFloatAsState` backed by `withFrameNanos`
+- **tween** (duration + easing), **spring** (stiffness, damping)
+- Cancellation & target change semantics (interrupt, snap-to-new-track vs merge)
 
-### DoD
-- Monotonic interpolation to target; ≤1 frame of visual hitch when retargeting
+### Gates
+- Monotonic interpolation to target; ≤1 frame visual hitch when retargeting
 - Recompose only when value changes beyond ε
 - Works under `ComposeTestRule` advancing virtual time
 
 ---
 
-## Phase 2 — **Modifier.Node** Architecture (Estimate: **10–12 weeks**)
+## Phase 2 — Modifier.Node Architecture + Type-Safe Scopes
 
-**Pre‑Phase‑2 Status:** A fully functional **value‑based** modifier system exists and is used in the desktop sample.  
-**Migration Strategy:** Replace internals with a **persistent node chain** while **preserving public API**; all existing modifier calls continue to compile and behave the same.
+### Modifier.Node System
 
-### Objectives
-- Introduce node traits (`ModifierNode`, `LayoutModifierNode`, `DrawModifierNode`, `PointerInputNode`, `SemanticsNode`, …)
-- Node lifecycle: `on_attach`, `on_detach`, **`update`** (apply new args), `on_reset` (context reuse reset)
-- Chain reconciliation, stable reuse, and targeted invalidation (layout/draw/input/semantics)
+#### Deliverables
+- Node traits: `ModifierNode`, `LayoutModifierNode`, `DrawModifierNode`, `PointerInputNode`, `SemanticsNode`
+- Lifecycle: `on_attach`, `on_detach`, `update`, `on_reset`
+- Chain reconciliation, stable reuse, targeted invalidation (layout/draw/input/semantics)
 - Layout chaining (`measure` delegation) + min/max intrinsic hooks
 - Draw pipeline (`drawContent` ordering, layers)
-- Pointer/input dispatch & hit‑testing with bounds awareness
-- Semantics plumbed through nodes (accessibility later)
-
-### Deliverables
-- Node chain construction & reuse for a typical pipeline: `padding().background().clickable().drawBehind()`
-- Reconciliation logic for reordering/equality of modifier lists
-- Phase‑specific invalidation (e.g., update padding ⇒ layout pass only)
+- Pointer/input dispatch & hit-testing with bounds awareness
+- Semantics plumbed through nodes
+- Node chain construction & reuse: `padding().background().clickable().drawBehind()`
+- Reconciliation for reordering/equality of modifier lists
+- Phase-specific invalidation (update padding ⇒ layout pass only)
 - Debug inspector for node chain (dev builds)
 
-### Definition of Done
-- Toggling `Modifier.background(color)` back and forth **allocates 0 new nodes**; only the **`update()`** method of the corresponding node runs (correction from analytics).  
-- Reordering modifiers leads to stable reuse when elements are equal (by type + key)  
-- Hit‑testing parity with value‑based system; pointer input lifecycles fire once per attach/detach  
-- **Perf Gate:** Switching between two `Modifier` chains of equal structure produces **0 allocations** post‑warmup; measure/draw touches are limited to affected subtrees
+#### Gates
+- Toggling `Modifier.background(color)` **allocates 0 new nodes**; only `update()` runs
+- Reordering modifiers: stable reuse when elements equal (by type + key)
+- Hit-testing parity with value-based system; pointer input lifecycles fire once per attach/detach
+- **Perf:** Switching between two `Modifier` chains of equal structure: **0 allocations** post-warmup; measure/draw touches limited to affected subtrees
 
-### Risks & Mitigations
-- **Back‑compat risk:** Desktop app + user code depend on value modifiers → preserve public API; ship a compatibility layer until parity is proven
-- **Scope risk:** Touches layout, draw, input, semantics simultaneously → stage rollout by domain; land layout/draw first
+### Type-Safe Scope System
+
+#### Problem
+Current API allows incorrect alignment usage (e.g., `VerticalAlignment` in `Column`).
+
+#### Solution
+Enforce type safety via scope-provided modifiers:
+
+```rust
+// ✅ Type-safe
+Column(Modifier::fillMaxSize(), ColumnParams::new(), |scope| {
+    Text(
+        "Centered",
+        Modifier::empty()
+            .then(scope.align(Alignment::CenterHorizontally))
+    );
+});
+
+// ❌ Compile error
+Column(Modifier::empty(), ColumnParams::new(), |scope| {
+    Text("Wrong", scope.align(Alignment::Top))  // ERROR
+});
+```
+
+#### Deliverables
+1. Remove global `Modifier.align()`
+2. Scope traits:
+  - `ColumnScope::align(HorizontalAlignment)`
+  - `RowScope::align(VerticalAlignment)`
+  - `BoxScope::align(Alignment)`
+3. Mandatory modifier parameter (explicit, always first):
+   ```rust
+   Column(modifier, params, |scope| { ... })
+   Row(modifier, params, |scope| { ... })
+   Text(text, modifier)
+   ```
+4. Params struct for optional parameters
+5. `ColumnScope`, `RowScope`, `BoxScope` traits with type-safe `align()` and `weight()`
+6. `ColumnScopeImpl`, `RowScopeImpl`, `BoxScopeImpl` concrete types
+7. `ModOp` enum: separate `ColumnAlign`, `RowAlign`, `BoxAlign` variants
+8. Migrate all layout primitives to scope-based API
+9. Alignment constants: `Alignment::TopStart`, `Alignment::CenterHorizontally`, etc.
+
+#### Gates
+- Compile-time enforcement: wrong alignment type = compile error
+- All container components use scope-based API
+- Modifier parameter always explicit (never `Option<Modifier>`)
+- Parameter order matches Kotlin: `modifier` first, then params, then content
+- Existing tests pass with new API
+
+| Container | Accepts | Via Scope |
+|-----------|---------|-----------|
+| Column | `HorizontalAlignment` | `scope.align(Alignment::CenterHorizontally)` |
+| Row | `VerticalAlignment` | `scope.align(Alignment::CenterVertically)` |
+| Box | `Alignment` (2D) | `scope.align(Alignment::Center)` |
 
 ---
 
-## Phase 3 — Intrinsics + **Subcompose (Harden & Parity)**
-
-**Note:** `SubcomposeLayout` was prototyped early and exists. This phase completes intrinsics and makes lazy components production ready.
+## Phase 3 — Intrinsics + Subcompose
 
 ### Deliverables
 - Intrinsic measurement (`min/maxIntrinsicWidth/Height`) on core primitives & common modifiers
 - Harden `SubcomposeLayout` (stable key reuse, slot management, constraints propagation)
 - `LazyColumn` / `LazyRow` + item keys, content padding, sticky headers (stretch goal)
-- Performance validations and micro‑benchmarks for intrinsics
+- Performance validations and micro-benchmarks for intrinsics
 
-### DoD
+### Gates
 - Intrinsics produce stable results across recompositions
 - Subcompose content count and order stable under key reuse
-- `LazyColumn` scroll of **10k items** alloc‑free after warmup; O(1) per‑frame updates for viewport changes
+- `LazyColumn` scroll of **10k items** alloc-free after warmup; O(1) per-frame updates for viewport changes
 
 ---
 
-## Phase 4 — **Time‑Based Animation System** (From Scratch)
-
-**Correction:** Current `animate*AsState` is a **placeholder** that snaps to target. Implement a real system on the now‑complete frame clock.
+## Phase 4 — Time-Based Animation System
 
 ### Deliverables
 - Time model + clocks; `Transition`, `updateTransition`, `rememberInfiniteTransition`
 - Curves/easings; physics springs; interruption semantics (snap, merge, parallel)
-- `Animatable` primitives (Float, Color, Dp, Offset, Rect, etc.) + `VectorConverter`‑like trait
+- `Animatable` primitives (Float, Color, Dp, Offset, Rect, etc.) + `VectorConverter`-like trait
 - Tooling: inspection of active animations; test hooks to advance virtual time
 
-### DoD
+### Gates
 - All `animate*AsState` variants interpolate over time and cancel on dispose
 - Transitions support multiple animated properties consistently
 - Perf: 300 concurrent float animations at 60Hz on desktop with <10% CPU in release
 
 ---
 
-## Phase 5 — Text & Graphics Backends (Pluggable)
-
-### Goals
-- Abstract the text stack (shaping, line breaking, hyphenation) behind traits; allow swapping backends
-- Abstract rasterization (CPU or GPU) behind traits; integrate with layers in the draw pipeline
+## Phase 5 — Text & Graphics Backends
 
 ### Deliverables
 - `TextMeasurer` trait; `Paragraph`/`Line` metrics; baseline, ascent, descent
 - Pluggable text impl (e.g., external shaper) without changing public `Text` API
-- Layer compositor trait with a default CPU path; hooks for GPU renderer later
+- Layer compositor trait with default CPU path; hooks for GPU renderer
 
-### DoD
-- `Text` renders multi‑style `AnnotatedString` with span styles and paragraph styles
+### Gates
+- `Text` renders multi-style `AnnotatedString` with span styles and paragraph styles
 - Baseline alignment & intrinsic sizes match Kotlin Compose within tolerance
 - Draw ops render identically across backends (golden tests per backend)
 
@@ -191,15 +245,15 @@
 - Testing APIs to assert semantics tree
 - Platform bridges (desktop stub; mobile later)
 
-### DoD
+### Gates
 - Semantics tree stable across recompositions
 - Basic accessibility roles/actions exposed on desktop stubs
 
 ---
 
-## Cross‑Cutting: Testing & Tooling
+## Cross-Cutting: Testing & Tooling
 
-- **ComposeTestRule (minimum viable)**
+- **ComposeTestRule**
   - Mount, recompose, advance frame, query nodes, assert layout/draw ops/semantics
   - Deterministic scheduler + virtual frame clock for tests
 - **Golden tests** for draw ops & text rendering
@@ -207,13 +261,12 @@
 
 ---
 
-## API Parity Rules of Engagement
+## API Parity Rules
 
 - **Names/shape** follow Kotlin Jetpack Compose:
-  - Composables are `PascalCase` (`Text`, `Row`, `Column`); modifiers are `lowerCamelCase` (`padding`, `background`)
-  - Keep method & parameter ordering consistent with Kotlin when practical
-- Deviations must be documented with rationale and migration notes.
-
----
-
-
+  - Composables: `PascalCase` (`Text`, `Row`, `Column`)
+  - Modifiers: `lowerCamelCase` (`padding`, `background`)
+  - Method & parameter ordering consistent with Kotlin
+  - **Modifier always explicit** - never `Option<Modifier>`, always required
+  - **Scope-based alignment** - type-safe via `ColumnScope`, `RowScope`, `BoxScope`
+- Deviations documented with rationale and migration notes
