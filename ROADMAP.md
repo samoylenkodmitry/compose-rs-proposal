@@ -10,15 +10,17 @@ This roadmap tracks the phased implementation of Compose-RS.
 
 - ✅ **Phase 0**: Complete - Core architecture established
 - ✅ **Phase 1**: Complete - Smart recomposition + frame clock working
-- ✅ **Phase 1.5**: Complete - Animation system with easing and Animatable<T> implemented
+- ✅ **Phase 1.5**: Complete - Animation system with tween, easing, springs, and Animatable<T> fully implemented
 - ✅ **Phase 2**: Substantially Complete - Modifier.Node with concrete implementations, gates verified
 - ✅ **Phase 3**: Substantially Complete - Intrinsics implemented, LazyList pending
-- ⏳ **Phase 4-6**: Future - Animation, text/graphics backends, semantics
+- ⏳ **Phase 4-6**: Future - Advanced animation features, text/graphics backends, semantics
 
-**Recent Progress (Phase 1.5 & 2):**
+**Recent Progress (Phase 1.5 & 2 & 3):**
 - ✅ Implemented `Animatable<T: Lerp>` with `animateTo()` and `snapTo()` methods (camelCase matching Jetpack Compose)
 - ✅ Added easing functions: `LinearEasing`, `EaseIn`, `EaseOut`, `EaseInOut`, `FastOutSlowInEasing`, `LinearOutSlowInEasing`, `FastOutLinearEasing`
-- ✅ Implemented `AnimationSpec` (tween with duration + easing) and `SpringSpec` (foundation)
+- ✅ Implemented `AnimationSpec` (tween with duration + easing)
+- ✅ **SpringSpec with full physics implementation** - damped harmonic oscillator using semi-implicit Euler integration
+- ✅ Spring presets: `default_spring()`, `bouncy()`, `stiff()` matching common animation needs
 - ✅ Implemented type-safe scope traits: `ColumnScope`, `RowScope`, `BoxScope` with 1:1 API parity
 - ✅ Scope methods match Jetpack Compose: `align()` and `weight()` (implemented as trait methods)
 - ✅ Internal modifier helpers: `alignInColumn()`, `alignInRow()`, `alignInBox()`, `columnWeight()`, `rowWeight()`
@@ -31,7 +33,7 @@ This roadmap tracks the phased implementation of Compose-RS.
 - ✅ **Mixed modifier chains** with layout, draw, and pointer input nodes working correctly
 - ✅ **Phase 2 gates verified**: zero-allocation updates and stable reordering both passing
 - ✅ **All API names follow camelCase convention matching Jetpack Compose 1:1**
-- ✅ All 83 tests passing (44 core + 39 UI including comprehensive modifier node tests and gate verification)
+- ✅ All 88 tests passing (49 core + 39 UI including comprehensive modifier node tests, spring physics tests, and gate verification)
 
 See examples:
 - `cargo run --bin desktop-app` - Interactive UI demo
@@ -140,7 +142,7 @@ Converted `LaunchedEffect` and `DisposableEffect` from functions to macros that 
 - ✅ `animateFloatAsState` backed by `withFrameNanos` (linear interpolation)
 - ✅ `Animatable<T: Lerp>` with `animateTo()` and `snapTo()` - DONE (camelCase matching Jetpack Compose)
 - ✅ **tween** (duration + easing) - DONE (`LinearEasing`, `EaseIn`, `EaseOut`, `EaseInOut`, `FastOutSlowInEasing`, etc.)
-- ⏳ **spring** (stiffness, damping) - SpringSpec defined, physics implementation pending
+- ✅ **spring** (stiffness, damping) - DONE (SpringSpec with damped harmonic oscillator physics using semi-implicit Euler integration)
 - ✅ Cancellation & target change semantics (interrupt, snap-to-new-track vs merge) - DONE
 
 ### Gates

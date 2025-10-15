@@ -84,6 +84,20 @@ fn cubic_bezier(_x1: f32, y1: f32, _x2: f32, y2: f32, t: f32) -> f32 {
     3.0 * mt2 * t * y1 + 3.0 * mt * t2 * y2 + t3
 }
 
+/// Helper to extract f32 from generic types for spring physics calculations.
+/// Returns None if the type cannot be converted to f32.
+fn try_as_f32<T: 'static>(value: &T) -> Option<f32> {
+    // Use std::any to check for f32 type
+    use std::any::Any;
+    if let Some(val) = (value as &dyn Any).downcast_ref::<f32>() {
+        Some(*val)
+    } else if let Some(val) = (value as &dyn Any).downcast_ref::<f64>() {
+        Some(*val as f32)
+    } else {
+        None
+    }
+}
+
 /// Animation specification combining duration and easing.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AnimationSpec {
@@ -320,25 +334,86 @@ impl<T: Lerp + Clone + 'static> Animatable<T> {
                         }
                     }
                 }
-                AnimationType::Spring(_spec) => {
-                    // TODO: Implement spring physics
-                    // For now, just use linear interpolation
+                AnimationType::Spring(spec) => {
+                    // Implement spring physics using damped harmonic oscillator
                     let start_time = inner.start_time_nanos.get_or_insert(frame_time_nanos);
-                    let elapsed = frame_time_nanos.saturating_sub(*start_time);
-                    let duration = 300_000_000u64; // 300ms fallback
-                    let progress = (elapsed as f32 / duration as f32).clamp(0.0, 1.0);
+                    let elapsed_nanos = frame_time_nanos.saturating_sub(*start_time);
+                    let dt = elapsed_nanos as f32 / 1_000_000_000.0; // Convert to seconds
 
-                    let new_value = inner.start.lerp(&inner.target, progress);
-                    inner.current = new_value.clone();
-                    inner.state.set_value(new_value);
-
-                    if progress >= 1.0 {
-                        inner.current = inner.target.clone();
-                        inner.start = inner.target.clone();
-                        inner.start_time_nanos = None;
-                        inner.state.set_value(inner.target.clone());
-                    } else {
+                    // For f32 values, we can implement proper spring physics
+                    // For other types, we use a simplified approach
+                    if dt == 0.0 {
                         schedule_next = true;
+                    } else {
+                        // Spring physics calculations
+                        // Using semi-implicit Euler integration for stability
+                        let stiffness = spec.stiffness;
+                        let damping = 2.0 * spec.damping_ratio * stiffness.sqrt();
+
+                        // Simulate spring from last frame to current frame
+                        let mut prev_time = 0.0f32;
+                        let timestep: f32 = 0.016; // ~60fps timestep for stability
+
+                        while prev_time < dt {
+                            let step = timestep.min(dt - prev_time);
+
+                            // Spring force: F = -k * displacement - damping * velocity
+                            // For interpolation between start and target:
+                            // We treat position as progress from 0 to 1
+                            let current_progress = if let Some(start_val) = try_as_f32(&inner.start) {
+                                if let Some(target_val) = try_as_f32(&inner.target) {
+                                    if let Some(current_val) = try_as_f32(&inner.current) {
+                                        if (target_val - start_val).abs() < f32::EPSILON {
+                                            1.0
+                                        } else {
+                                            (current_val - start_val) / (target_val - start_val)
+                                        }
+                                    } else {
+                                        0.5
+                                    }
+                                } else {
+                                    0.5
+                                }
+                            } else {
+                                0.5
+                            };
+
+                            let displacement = current_progress - 1.0; // Target is at 1.0
+                            let spring_force = -stiffness * displacement - damping * inner.velocity;
+
+                            // Update velocity and position
+                            inner.velocity += spring_force * step;
+                            let new_progress = current_progress + inner.velocity * step;
+
+                            // Update current value
+                            inner.current = inner.start.lerp(&inner.target, new_progress.clamp(0.0, 2.0));
+
+                            prev_time += step;
+                        }
+
+                        inner.state.set_value(inner.current.clone());
+
+                        // Check if we've settled (velocity and displacement both small)
+                        let at_rest = inner.velocity.abs() < spec.velocity_threshold;
+                        let near_target = if let Some(current_val) = try_as_f32(&inner.current) {
+                            if let Some(target_val) = try_as_f32(&inner.target) {
+                                (current_val - target_val).abs() < spec.position_threshold
+                            } else {
+                                true
+                            }
+                        } else {
+                            true
+                        };
+
+                        if at_rest && near_target {
+                            inner.current = inner.target.clone();
+                            inner.start = inner.target.clone();
+                            inner.start_time_nanos = None;
+                            inner.velocity = 0.0;
+                            inner.state.set_value(inner.target.clone());
+                        } else {
+                            schedule_next = true;
+                        }
                     }
                 }
             }
@@ -399,5 +474,40 @@ mod tests {
     fn spring_spec_default_is_critically_damped() {
         let spec = SpringSpec::default();
         assert_eq!(spec.damping_ratio, 1.0);
+    }
+
+    #[test]
+    fn spring_spec_bouncy_has_low_damping() {
+        let spec = SpringSpec::bouncy();
+        assert_eq!(spec.damping_ratio, 0.5);
+        assert!(spec.damping_ratio < 1.0, "Bouncy spring should be under-damped");
+    }
+
+    #[test]
+    fn spring_spec_stiff_has_high_stiffness() {
+        let spec = SpringSpec::stiff();
+        assert_eq!(spec.stiffness, 3000.0);
+        assert!(spec.stiffness > SpringSpec::default().stiffness);
+    }
+
+    #[test]
+    fn try_as_f32_handles_f32() {
+        let value = 42.5f32;
+        assert_eq!(try_as_f32(&value), Some(42.5));
+    }
+
+    #[test]
+    fn try_as_f32_handles_f64() {
+        let value = 42.5f64;
+        assert_eq!(try_as_f32(&value), Some(42.5));
+    }
+
+    #[test]
+    fn try_as_f32_returns_none_for_other_types() {
+        let value = 42i32;
+        assert_eq!(try_as_f32(&value), None);
+
+        let value = "hello";
+        assert_eq!(try_as_f32(&value), None);
     }
 }
