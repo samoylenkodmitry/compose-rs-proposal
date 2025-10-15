@@ -10,7 +10,7 @@ This roadmap tracks the phased implementation of Compose-RS.
 
 - ✅ **Phase 0**: Complete - Core architecture established
 - ✅ **Phase 1**: Complete - Smart recomposition + frame clock working
-- 🚧 **Phase 1.5**: Partial - Frame clock done, full animation pending
+- ✅ **Phase 1.5**: Basic animation - `animate*AsState` runs on the frame clock
 - ⏳ **Phase 2**: Pending - Modifier.Node architecture planned
 - ✅ **Phase 3**: Partial - Intrinsics implemented, LazyList pending
 - ⏳ **Phase 4-6**: Future - Animation, text/graphics backends, semantics
@@ -51,7 +51,7 @@ See examples:
 ### Known Limitations
 - Modifiers are value-based (perf overhead, limited reuse).
 - No true frame clock; desktop uses manual loop.
-- `animate*AsState` placeholder (snaps instantly).
+- `animate*AsState` currently uses linear interpolation (no easing/spring controls yet).
 - Missing intrinsics; no lazy lists; semantics preliminary.
 - Alignment API not type-safe.
 - **CRITICAL**: Side effect cleanup not triggered during recomposition (only on full composition disposal)
@@ -119,15 +119,15 @@ Converted `LaunchedEffect` and `DisposableEffect` from functions to macros that 
 ## Phase 1.5 — Minimal Animation
 
 ### Deliverables
-- `Animatable<T: Lerp>` with time-based updates
-- `animateFloatAsState` backed by `withFrameNanos`
-- **tween** (duration + easing), **spring** (stiffness, damping)
-- Cancellation & target change semantics (interrupt, snap-to-new-track vs merge)
+- ✅ `animateFloatAsState` backed by `withFrameNanos` (linear interpolation)
+- ⏳ `Animatable<T: Lerp>` with time-based updates
+- ⏳ **tween** (duration + easing), **spring** (stiffness, damping)
+- ⏳ Cancellation & target change semantics (interrupt, snap-to-new-track vs merge)
 
 ### Gates
-- Monotonic interpolation to target; ≤1 frame visual hitch when retargeting
-- Recompose only when value changes beyond ε
-- Works under `ComposeTestRule` advancing virtual time
+- ✅ Monotonic interpolation to target with ≤1 frame hitch when retargeting (verified in tests)
+- ⏳ Recompose only when value changes beyond ε
+- ⏳ Works under `ComposeTestRule` advancing virtual time
 
 ---
 

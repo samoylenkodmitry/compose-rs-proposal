@@ -2,7 +2,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
-use compose_core::{self, location_key, Composition, DisposableEffect, Key, LaunchedEffect, MemoryApplier, Node, NodeError, NodeId};
+use compose_core::{
+    self, location_key, Composition, DisposableEffect, Key, LaunchedEffect, MemoryApplier, Node,
+    NodeError, NodeId,
+};
 use compose_runtime_std::StdRuntime;
 use compose_ui::{
     composable, Brush, Button, ButtonNode, Color, Column, ColumnNode, CornerRadii, DrawCommand,
@@ -21,35 +24,10 @@ use winit::window::WindowBuilder;
 const INITIAL_WIDTH: u32 = 800;
 const INITIAL_HEIGHT: u32 = 600;
 const TEXT_SIZE: f32 = 24.0;
-const TWO_PI: f32 = std::f32::consts::PI * 2.0;
-
 static FONT: Lazy<Font<'static>> = Lazy::new(|| {
     let f = Font::try_from_bytes(include_bytes!("../assets/Roboto-Light.ttf") as &[u8]);
     f.expect("font")
 });
-
-thread_local! {
-    static CURRENT_ANIMATION_STATE: RefCell<Option<compose_core::MutableState<f32>>> =
-        RefCell::new(None);
-}
-
-fn with_animation_state<R>(state: &compose_core::MutableState<f32>, f: impl FnOnce() -> R) -> R {
-    CURRENT_ANIMATION_STATE.with(|cell| {
-        let previous = cell.replace(Some(state.clone()));
-        let result = f();
-        cell.replace(previous);
-        result
-    })
-}
-
-fn animation_state() -> compose_core::MutableState<f32> {
-    CURRENT_ANIMATION_STATE.with(|cell| {
-        cell.borrow()
-            .as_ref()
-            .expect("animation state missing")
-            .clone()
-    })
-}
 
 fn main() {
     env_logger::init();
@@ -120,12 +98,14 @@ fn main() {
                 WindowEvent::CursorMoved { position, .. } => {
                     app.set_cursor(position.x as f32, position.y as f32);
                 }
-                WindowEvent::MouseInput { state, button, .. } if button == MouseButton::Left => {
-                    match state {
-                        ElementState::Pressed => app.pointer_pressed(),
-                        ElementState::Released => app.pointer_released(),
-                    }
-                }
+                WindowEvent::MouseInput {
+                    state,
+                    button: MouseButton::Left,
+                    ..
+                } => match state {
+                    ElementState::Pressed => app.pointer_pressed(),
+                    ElementState::Released => app.pointer_released(),
+                },
                 _ => {}
             },
             Event::MainEventsCleared => {
@@ -153,9 +133,6 @@ struct ComposeDesktopApp {
     cursor: (f32, f32),
     viewport: (f32, f32),
     buffer_size: (u32, u32),
-    animation_state: compose_core::MutableState<f32>,
-    animation_phase: f32,
-    last_frame: Instant,
     start_time: Instant,
 }
 
@@ -163,11 +140,7 @@ impl ComposeDesktopApp {
     fn new(root_key: Key) -> Self {
         let runtime = StdRuntime::new();
         let mut composition = Composition::with_runtime(MemoryApplier::new(), runtime.runtime());
-        let runtime_handle = composition.runtime_handle();
-        let animation_state = compose_core::MutableState::with_runtime(0.0, runtime_handle.clone());
-        if let Err(err) = composition.render(root_key, || {
-            with_animation_state(&animation_state, || counter_app())
-        }) {
+        if let Err(err) = composition.render(root_key, counter_app) {
             log::error!("initial render failed: {err}");
         }
         let scene = Scene::new();
@@ -179,9 +152,6 @@ impl ComposeDesktopApp {
             cursor: (0.0, 0.0),
             viewport: (INITIAL_WIDTH as f32, INITIAL_HEIGHT as f32),
             buffer_size: (INITIAL_WIDTH, INITIAL_HEIGHT),
-            animation_state,
-            animation_phase: 0.0,
-            last_frame: start_time,
             start_time,
         };
         app.rebuild_scene();
@@ -226,25 +196,13 @@ impl ComposeDesktopApp {
 
     fn update(&mut self) {
         let now = Instant::now();
-        let delta = now - self.last_frame;
-        self.last_frame = now;
-        let mut phase = self.animation_phase + delta.as_secs_f32();
-        if phase > TWO_PI {
-            phase = phase % TWO_PI;
-        }
-        self.animation_phase = phase;
-        let animation_value = (phase.sin() * 0.5) + 0.5;
-        self.animation_state.set(animation_value);
         let frame_time = now
             .checked_duration_since(self.start_time)
             .unwrap_or_default()
             .as_nanos() as u64;
         self.runtime.drain_frame_callbacks(frame_time);
         if self.composition.should_render() {
-            let state = self.animation_state.clone();
-            if let Err(err) =
-                with_animation_state(&state, || self.composition.process_invalid_scopes())
-            {
+            if let Err(err) = self.composition.process_invalid_scopes() {
                 log::error!("recomposition failed: {err}");
             }
             self.rebuild_scene();
@@ -282,8 +240,14 @@ fn counter_app() {
     let counter = compose_core::useState(|| 0);
     let pointer_position = compose_core::useState(|| Point { x: 0.0, y: 0.0 });
     let pointer_down = compose_core::useState(|| false);
-    let wave_state = animation_state();
-    let wave = wave_state.get();
+    let pointer = pointer_position.get();
+    let pointer_wave = (pointer.x / 360.0).clamp(0.0, 1.0);
+    let target_wave = if pointer_down.get() {
+        0.6 + pointer_wave * 0.4
+    } else {
+        pointer_wave * 0.6
+    };
+    let wave = compose_core::animateFloatAsState(target_wave, "wave").value();
     LaunchedEffect!(counter.get(), |_| println!("effect call")); // todo: provide a way to use mutablestate from lambda
 
     Column(
@@ -401,14 +365,10 @@ fn counter_app() {
                 .then(Modifier::padding(12.0)),
                 || {
                     if counter.get() % 2 == 0 {
-                        LaunchedEffect!("", |_|{
-                            println!("launch playground")
-                        });
-                        DisposableEffect!("",|x|{
+                        LaunchedEffect!("", |_| { println!("launch playground") });
+                        DisposableEffect!("", |x| {
                             println!("dispose effect playground");
-                            x.on_dispose(||{
-                                println!("dispose playground")
-                            })
+                            x.on_dispose(|| println!("dispose playground"))
                         });
                         Text(
                             "Pointer playground",
@@ -417,14 +377,10 @@ fn counter_app() {
                                 .then(Modifier::rounded_corners(12.0)),
                         );
                     } else {
-                        LaunchedEffect!("", |_|{
-                            println!("launch no-ground")
-                        });
-                        DisposableEffect!("",|x|{
+                        LaunchedEffect!("", |_| { println!("launch no-ground") });
+                        DisposableEffect!("", |x| {
                             println!("dispose effect no-ground");
-                            x.on_dispose(||{
-                                println!("dispose no-ground")
-                            })
+                            x.on_dispose(|| println!("dispose no-ground"))
                         });
                         Text(
                             "Pointer no-ground",

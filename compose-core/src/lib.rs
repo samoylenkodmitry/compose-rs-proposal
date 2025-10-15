@@ -598,7 +598,7 @@ macro_rules! DisposableEffect {
         $crate::__disposable_effect_impl(
             $crate::location_key(file!(), line!(), column!()),
             $keys,
-            $effect
+            $effect,
         )
     };
 }
@@ -637,7 +637,7 @@ macro_rules! LaunchedEffect {
         $crate::__launched_effect_impl(
             $crate::location_key(file!(), line!(), column!()),
             $keys,
-            $effect
+            $effect,
         )
     };
 }
@@ -657,8 +657,9 @@ pub fn pop_parent() {
     with_current_composer(|composer| composer.pop_parent());
 }
 
-pub fn animate_float_as_state(target: f32, label: &str) -> State<f32> {
-    with_current_composer(|composer| composer.animate_float_as_state(target, label))
+#[allow(non_snake_case)]
+pub fn animateFloatAsState(target: f32, label: &str) -> State<f32> {
+    with_current_composer(|composer| composer.animateFloatAsState(target, label))
 }
 
 #[derive(Default)]
@@ -996,6 +997,10 @@ impl RuntimeInner {
         !self.invalid_scopes.borrow().is_empty()
     }
 
+    fn has_frame_callbacks(&self) -> bool {
+        !self.frame_callbacks.borrow().is_empty()
+    }
+
     fn spawn_task(&self, task: Box<dyn FnOnce() + Send + 'static>) {
         self.scheduler.spawn_task(task);
     }
@@ -1035,7 +1040,7 @@ impl RuntimeInner {
         for callback in pending {
             callback(frame_time_nanos);
         }
-        if !self.has_invalid_scopes() && !self.has_updates() {
+        if !self.has_invalid_scopes() && !self.has_updates() && !self.has_frame_callbacks() {
             *self.needs_frame.borrow_mut() = false;
         }
     }
@@ -1210,6 +1215,13 @@ impl RuntimeHandle {
         self.0
             .upgrade()
             .map(|inner| inner.has_invalid_scopes())
+            .unwrap_or(false)
+    }
+
+    pub fn has_frame_callbacks(&self) -> bool {
+        self.0
+            .upgrade()
+            .map(|inner| inner.has_frame_callbacks())
             .unwrap_or(false)
     }
 }
@@ -1615,13 +1627,14 @@ impl<'a> Composer<'a> {
         state.clone()
     }
 
-    pub fn animate_float_as_state(&mut self, target: f32, label: &str) -> State<f32> {
+    #[allow(non_snake_case)]
+    pub fn animateFloatAsState(&mut self, target: f32, label: &str) -> State<f32> {
         let runtime = self.runtime.clone();
         let animated = self
             .slots
             .remember(|| AnimatedFloatState::new(target, runtime));
         animated.update(target, label);
-        animated.state.as_state()
+        animated.state()
     }
 
     pub fn emit_node<N: Node + 'static>(&mut self, init: impl FnOnce() -> N) -> NodeId {
@@ -1986,22 +1999,119 @@ impl<T> Default for ReturnSlot<T> {
 }
 
 struct AnimatedFloatState {
+    inner: Rc<RefCell<AnimatedFloatStateInner>>,
+}
+
+struct AnimatedFloatStateInner {
     state: MutableState<f32>,
+    runtime: RuntimeHandle,
     current: f32,
+    start: f32,
+    target: f32,
+    start_time_nanos: Option<u64>,
+    duration_nanos: u64,
+    registration: Option<FrameCallbackRegistration>,
 }
 
 impl AnimatedFloatState {
     fn new(initial: f32, runtime: RuntimeHandle) -> Self {
-        Self {
-            state: MutableState::with_runtime(initial, runtime),
+        let inner = AnimatedFloatStateInner {
+            state: MutableState::with_runtime(initial, runtime.clone()),
+            runtime,
             current: initial,
+            start: initial,
+            target: initial,
+            start_time_nanos: None,
+            duration_nanos: 300_000_000,
+            registration: None,
+        };
+        Self {
+            inner: Rc::new(RefCell::new(inner)),
         }
     }
 
     fn update(&mut self, target: f32, _label: &str) {
-        if self.current != target {
-            self.current = target;
-            self.state.set_value(target);
+        let should_schedule = {
+            let mut inner = self.inner.borrow_mut();
+            if target == inner.target {
+                return;
+            }
+            if let Some(registration) = inner.registration.take() {
+                registration.cancel();
+            }
+            inner.start = inner.current;
+            inner.target = target;
+            inner.start_time_nanos = None;
+            if inner.start == inner.target {
+                inner.current = inner.target;
+                inner.state.set_value(inner.target);
+                false
+            } else {
+                true
+            }
+        };
+
+        if should_schedule {
+            AnimatedFloatStateInner::schedule_frame(&self.inner);
+        }
+    }
+
+    fn state(&self) -> State<f32> {
+        self.inner.borrow().state.as_state()
+    }
+}
+
+impl AnimatedFloatStateInner {
+    fn schedule_frame(this: &Rc<RefCell<Self>>) {
+        let runtime = {
+            let inner = this.borrow();
+            if inner.registration.is_some() {
+                return;
+            }
+            inner.runtime.clone()
+        };
+        let weak = Rc::downgrade(this);
+        let registration = runtime.frame_clock().with_frame_nanos(move |time| {
+            if let Some(strong) = weak.upgrade() {
+                AnimatedFloatStateInner::on_frame(&strong, time);
+            }
+        });
+        this.borrow_mut().registration = Some(registration);
+    }
+
+    fn on_frame(this: &Rc<RefCell<Self>>, frame_time_nanos: u64) {
+        let mut schedule_next = false;
+        {
+            let mut inner = this.borrow_mut();
+            inner.registration = None;
+
+            if inner.current == inner.target {
+                inner.start = inner.target;
+                inner.start_time_nanos = None;
+                return;
+            }
+
+            let start_time = inner.start_time_nanos.get_or_insert(frame_time_nanos);
+            let elapsed = frame_time_nanos.saturating_sub(*start_time);
+            let duration = inner.duration_nanos.max(1);
+            let progress = (elapsed as f32 / duration as f32).clamp(0.0, 1.0);
+            let delta = inner.target - inner.start;
+            let new_value = inner.start + delta * progress;
+            inner.current = new_value;
+            inner.state.set_value(new_value);
+
+            if progress >= 1.0 {
+                inner.current = inner.target;
+                inner.start = inner.target;
+                inner.start_time_nanos = None;
+                inner.state.set_value(inner.target);
+            } else {
+                schedule_next = true;
+            }
+        }
+
+        if schedule_next {
+            AnimatedFloatStateInner::schedule_frame(this);
         }
     }
 }
@@ -2057,7 +2167,10 @@ impl<A: Applier> Composition<A> {
         self.root = root;
         self.slots.trim_to_cursor();
         self.process_invalid_scopes()?;
-        if !self.runtime.has_updates() && !runtime_handle.has_invalid_scopes() {
+        if !self.runtime.has_updates()
+            && !runtime_handle.has_invalid_scopes()
+            && !runtime_handle.has_frame_callbacks()
+        {
             self.runtime.set_needs_frame(false);
         }
         Ok(())
@@ -2124,7 +2237,10 @@ impl<A: Applier> Composition<A> {
             }
             self.slots.trim_to_cursor();
         }
-        if !self.runtime.has_updates() && !runtime_handle.has_invalid_scopes() {
+        if !self.runtime.has_updates()
+            && !runtime_handle.has_invalid_scopes()
+            && !runtime_handle.has_frame_callbacks()
+        {
             self.runtime.set_needs_frame(false);
         }
         Ok(())
@@ -2322,7 +2438,7 @@ mod tests {
         // This matches Jetpack Compose behavior
         let mut composition = Composition::new(MemoryApplier::new());
         let runtime = composition.runtime_handle();
-        let state = MutableState::with_runtime(false, runtime.clone());
+        let _state = MutableState::with_runtime(false, runtime.clone());
         let runs = Arc::new(AtomicUsize::new(0));
         let cancels = Arc::new(AtomicUsize::new(0));
 
@@ -2365,12 +2481,24 @@ mod tests {
         // Switch to branch B - should relaunch even with same key
         render(&mut composition, false);
         std::thread::sleep(Duration::from_millis(50));
-        assert_eq!(runs.load(Ordering::SeqCst), 2, "Second effect should run after branch switch");
-        assert_eq!(cancels.load(Ordering::SeqCst), 1, "First effect should be cancelled");
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            2,
+            "Second effect should run after branch switch"
+        );
+        assert_eq!(
+            cancels.load(Ordering::SeqCst),
+            1,
+            "First effect should be cancelled"
+        );
 
         drop(composition);
         std::thread::sleep(Duration::from_millis(50));
-        assert_eq!(cancels.load(Ordering::SeqCst), 2, "Second effect should be cancelled on dispose");
+        assert_eq!(
+            cancels.load(Ordering::SeqCst),
+            2,
+            "Second effect should be cancelled on dispose"
+        );
     }
 
     #[test]
@@ -2711,36 +2839,87 @@ mod tests {
     }
 
     #[test]
-    fn animate_float_as_state_updates_immediately() {
+    fn animate_float_as_state_interpolates_over_time() {
         let mut composition = Composition::new(MemoryApplier::new());
+        let runtime = composition.runtime_handle();
         let root_key = location_key(file!(), line!(), column!());
         let group_key = location_key(file!(), line!(), column!());
-        let mut values = Vec::new();
+        let state_slot = Rc::new(RefCell::new(None::<State<f32>>));
+        let target = Rc::new(RefCell::new(0.0f32));
 
-        composition
-            .render(root_key, || {
-                with_current_composer(|composer| {
-                    composer.with_group(group_key, |composer| {
-                        let state = composer.animate_float_as_state(0.0, "alpha");
-                        values.push(state.get());
+        {
+            let state_slot = Rc::clone(&state_slot);
+            let target = Rc::clone(&target);
+            composition
+                .render(root_key, move || {
+                    let state_slot = Rc::clone(&state_slot);
+                    let target = Rc::clone(&target);
+                    with_current_composer(|composer| {
+                        composer.with_group(group_key, |composer| {
+                            let state = composer.animateFloatAsState(*target.borrow(), "alpha");
+                            state_slot.borrow_mut().replace(state);
+                        });
                     });
-                });
-            })
-            .expect("render succeeds");
-        assert_eq!(values, vec![0.0]);
+                })
+                .expect("render succeeds");
+        }
+
+        let mut samples = Vec::new();
+        let initial = state_slot.borrow().as_ref().expect("state available").get();
+        samples.push(initial);
+        assert_eq!(samples.as_slice(), &[0.0]);
         assert!(!composition.should_render());
 
-        composition
-            .render(root_key, || {
-                with_current_composer(|composer| {
-                    composer.with_group(group_key, |composer| {
-                        let state = composer.animate_float_as_state(1.0, "alpha");
-                        values.push(state.get());
+        *target.borrow_mut() = 1.0;
+
+        {
+            let state_slot = Rc::clone(&state_slot);
+            let target = Rc::clone(&target);
+            composition
+                .render(root_key, move || {
+                    let state_slot = Rc::clone(&state_slot);
+                    let target = Rc::clone(&target);
+                    with_current_composer(|composer| {
+                        composer.with_group(group_key, |composer| {
+                            let state = composer.animateFloatAsState(*target.borrow(), "alpha");
+                            state_slot.borrow_mut().replace(state);
+                        });
                     });
-                });
-            })
-            .expect("render succeeds");
-        assert_eq!(values, vec![0.0, 1.0]);
+                })
+                .expect("render succeeds");
+        }
+
+        let immediate = state_slot.borrow().as_ref().expect("state available").get();
+        samples.push(immediate);
+        assert_eq!(samples[1], 0.0);
+        assert!(composition.should_render());
+
+        let mut frame_time = 0u64;
+        let mut saw_midpoint = false;
+        for _ in 0..32 {
+            if !composition.should_render() {
+                break;
+            }
+            frame_time += 16_666_667; // ~60 FPS
+            runtime.drain_frame_callbacks(frame_time);
+            composition
+                .process_invalid_scopes()
+                .expect("process invalid scopes succeeds");
+            if let Some(state) = state_slot.borrow().as_ref() {
+                let value = state.get();
+                if value > 0.0 && value < 1.0 {
+                    saw_midpoint = true;
+                }
+                samples.push(value);
+            }
+        }
+
+        let last = *samples.last().expect("at least one value recorded");
+        assert!(saw_midpoint, "animation should report intermediate values");
+        assert!(
+            (last - 1.0).abs() < f32::EPSILON,
+            "animation should end at target"
+        );
         assert!(!composition.should_render());
     }
 
