@@ -1,8 +1,10 @@
 #![doc = r"Core runtime pieces for the Compose-RS experiment."]
 
 pub mod platform;
+pub mod testing;
 
 pub use platform::{Clock, RuntimeScheduler};
+pub use testing::{run_test_composition, ComposeTestRule};
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -1149,6 +1151,13 @@ impl RuntimeHandle {
             .unwrap_or_default()
     }
 
+    pub fn has_updates(&self) -> bool {
+        self.0
+            .upgrade()
+            .map(|inner| inner.has_updates())
+            .unwrap_or(false)
+    }
+
     fn register_invalid_scope(&self, id: ScopeId, scope: Weak<RecomposeScopeInner>) {
         if let Some(inner) = self.0.upgrade() {
             inner.register_invalid_scope(id, scope);
@@ -1169,7 +1178,7 @@ impl RuntimeHandle {
             .unwrap_or_default()
     }
 
-    fn has_invalid_scopes(&self) -> bool {
+    pub fn has_invalid_scopes(&self) -> bool {
         self.0
             .upgrade()
             .map(|inner| inner.has_invalid_scopes())
@@ -3106,5 +3115,79 @@ mod tests {
             .expect("recomposition after reactivation");
 
         assert_eq!(INVOCATIONS.with(|count| count.get()), 2);
+    }
+
+    #[test]
+    fn compose_test_rule_processes_state_updates() {
+        thread_local! {
+            static RECOMPOSITIONS: Cell<usize> = Cell::new(0);
+        }
+
+        compose_core::run_test_composition(|rule| {
+            let runtime = rule.runtime_handle();
+            let counter = compose_core::MutableState::with_runtime(0, runtime.clone());
+            let counter_for_content = counter.clone();
+
+            rule.set_content(move || {
+                RECOMPOSITIONS.with(|count| count.set(count.get() + 1));
+                let value = counter_for_content.value();
+                let id = compose_test_node(|| TextNode::default());
+                with_node_mut(id, |node: &mut TextNode| {
+                    node.text = format!("{value}");
+                })
+                .expect("update text node");
+            })
+            .expect("initial content");
+
+            assert_eq!(RECOMPOSITIONS.with(|count| count.get()), 1);
+
+            counter.set_value(1);
+            rule.pump_until_idle().expect("process invalidation");
+
+            assert_eq!(RECOMPOSITIONS.with(|count| count.get()), 2);
+        });
+    }
+
+    #[test]
+    fn compose_test_rule_advance_frame_drains_callbacks() {
+        thread_local! {
+            static FRAME_EVENTS: Cell<usize> = Cell::new(0);
+        }
+
+        compose_core::run_test_composition(|rule| {
+            let runtime = rule.runtime_handle();
+            let registration_slot: Rc<RefCell<Option<compose_core::FrameCallbackRegistration>>> =
+                Rc::new(RefCell::new(None));
+            let slot_for_cleanup = registration_slot.clone();
+
+            rule.set_content({
+                let runtime = runtime.clone();
+                let slot_for_content = registration_slot.clone();
+                move || {
+                    let clock = runtime.frame_clock();
+                    let registration = clock.with_frame_nanos(|_| {
+                        FRAME_EVENTS.with(|events| events.set(events.get() + 1));
+                    });
+                    *slot_for_content.borrow_mut() = Some(registration);
+                }
+            })
+            .expect("install content");
+
+            rule.advance_frame(16_000_000)
+                .expect("advance frame callbacks");
+
+            assert_eq!(FRAME_EVENTS.with(|events| events.get()), 1);
+
+            slot_for_cleanup.borrow_mut().take();
+        });
+    }
+
+    #[test]
+    fn run_test_composition_invokes_closure() {
+        let invoked = Cell::new(false);
+        compose_core::run_test_composition(|_| {
+            invoked.set(true);
+        });
+        assert!(invoked.get());
     }
 }

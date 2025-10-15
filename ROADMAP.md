@@ -56,9 +56,9 @@
 - Disposing scope cancels pending callbacks
 
 ### Missing
-- `ComposeTestRule` (headless): mount, advance frame, assert tree/layout/draw ops
-- Helper: `run_test_composition { … }`
-- Test: `Text(counter.read())` recomposes only when state changes
+- [x] `ComposeTestRule` (headless): mount, advance frame, assert tree/layout/draw ops
+- [x] Helper: `run_test_composition { … }`
+- [x] Test: `Text(counter.read())` recomposes only when state changes
 
 ### Gates
 - **Gate-1 (Recomp):** 100-node tree; one state change recomposes **<5** nodes
@@ -68,7 +68,7 @@
 ### Exit Criteria
 - [x] Frame clock APIs implemented
 - [ ] Frame-driven invalidation works end-to-end
-- [ ] Basic `ComposeTestRule` present
+- [x] Basic `ComposeTestRule` present
 
 ### Side Effect Lifecycle (CRITICAL FIX)
 
