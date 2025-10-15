@@ -11,7 +11,7 @@ This roadmap tracks the phased implementation of Compose-RS.
 - ✅ **Phase 0**: Complete - Core architecture established
 - ✅ **Phase 1**: Complete - Smart recomposition + frame clock working
 - ✅ **Phase 1.5**: Basic animation - `animate*AsState` runs on the frame clock
-- ⏳ **Phase 2**: Pending - Modifier.Node architecture planned
+- 🚧 **Phase 2**: In Progress - Modifier.Node scaffolding underway
 - ✅ **Phase 3**: Partial - Intrinsics implemented, LazyList pending
 - ⏳ **Phase 4-6**: Future - Animation, text/graphics backends, semantics
 
@@ -135,8 +135,13 @@ Converted `LaunchedEffect` and `DisposableEffect` from functions to macros that 
 
 ### Modifier.Node System
 
+#### Status
+- ✅ Core modifier node traits (`ModifierNode`, `ModifierElement`) and chain reconciliation scaffolding implemented in `compose-core`
+- ⏳ Specialized layout/draw/input/semantics nodes and runtime invalidation plumbing
+
 #### Deliverables
-- Node traits: `ModifierNode`, `LayoutModifierNode`, `DrawModifierNode`, `PointerInputNode`, `SemanticsNode`
+- ✅ Node trait scaffolding: `ModifierNode` + generic `ModifierElement`
+- Node traits: `LayoutModifierNode`, `DrawModifierNode`, `PointerInputNode`, `SemanticsNode`
 - Lifecycle: `on_attach`, `on_detach`, `update`, `on_reset`
 - Chain reconciliation, stable reuse, targeted invalidation (layout/draw/input/semantics)
 - Layout chaining (`measure` delegation) + min/max intrinsic hooks
