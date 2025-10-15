@@ -52,27 +52,24 @@
 - Basic primitives & side effects (`SideEffect`, `DisposableEffect`, `LaunchedEffect`)
 
 ### What’s Missing (Phase‑1 critical path)
-- `withFrameNanos` / `withFrameMillis` public API
-- `RuntimeScheduler::schedule_frame()` → **actual** event‑loop wake & delivery
-- Frame callback **ordering** and **cancellation** when scopes leave composition
 - Minimal **ComposeTestRule** for node/layout assertions
 
 ### Work Items
 - **FrameClock**
-  - [ ] Trait + impl: `withFrameNanos(callback)`; internal `drain_frame_callbacks(now)`
-  - [ ] Provide `withFrameMillis` wrapper
-  - [ ] Ensure callbacks happen **before** draw and **after** state mutation for the next frame
-  - [ ] Cancellation when the calling scope leaves composition (dispose hook)
+  - [x] Trait + impl: `withFrameNanos(callback)`; internal `drain_frame_callbacks(now)`
+  - [x] Provide `withFrameMillis` wrapper
+  - [x] Ensure callbacks happen **before** draw and **after** state mutation for the next frame
+  - [x] Cancellation when the calling scope leaves composition (dispose hook)
 - **Scheduler & Pump**
-  - [ ] Implement `StdScheduler::schedule_frame()` to wake the app loop
-  - [ ] Desktop sample: call `runtime.drain_frame_callbacks(now)` each tick; clear `needs_frame` after drain
+  - [x] Implement `StdScheduler::schedule_frame()` to wake the app loop
+  - [x] Desktop sample: call `runtime.drain_frame_callbacks(now)` each tick; clear `needs_frame` after drain
 - **Testing Infra**
   - [ ] `ComposeTestRule` (headless): mount, advance frame, assert tree/layout/draw ops
   - [ ] Helper: `run_test_composition { … }`
 - **Acceptance Tests**
   - [ ] `Text(counter.read())` recomposes only when state changes, not when parent recomposes
-  - [ ] Frame callback order stable across multiple `withFrameNanos` callers
-  - [ ] Disposing a scope cancels pending frame callbacks from that scope
+  - [x] Frame callback order stable across multiple `withFrameNanos` callers
+  - [x] Disposing a scope cancels pending frame callbacks from that scope
 
 ### Definition of Done (DoD) & Gates
 - **Gate‑1 (Recomp):** 100‑node tree; one state change recomposes **<5** nodes on average
@@ -80,7 +77,7 @@
 - **Gate‑3 (Tests):** `ComposeTestRule` runs headless tests in CI
 
 > **Exit Criteria for Phase 1 (required before Phase 2):**
-> - [ ] Frame clock APIs (`withFrameNanos/Millis`) implemented
+> - [x] Frame clock APIs (`withFrameNanos/Millis`) implemented
 > - [ ] Frame‑driven invalidation works end‑to‑end
 > - [ ] Basic `ComposeTestRule` present
 
