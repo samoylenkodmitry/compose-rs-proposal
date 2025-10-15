@@ -8,6 +8,7 @@ description = "UI primitives for Compose-RS"
 [dependencies]
 compose-core = { path = "../compose-core" }
 compose-macros = { path = "../compose-macros" }
+compose-runtime-std = { path = "../compose-runtime-std" }
 indexmap = "2"
 
 [features]

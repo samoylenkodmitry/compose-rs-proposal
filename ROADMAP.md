@@ -12,7 +12,7 @@ This roadmap tracks the phased implementation of Compose-RS.
 - ✅ **Phase 1**: Complete - Smart recomposition + frame clock working
 - ✅ **Phase 1.5**: Complete - Animation system with easing and Animatable<T> implemented
 - ✅ **Phase 2**: Substantially Complete - Modifier.Node with concrete implementations, gates verified
-- ✅ **Phase 3**: Partial - Intrinsics implemented, LazyList pending
+- ✅ **Phase 3**: Substantially Complete - Intrinsics implemented, LazyList pending
 - ⏳ **Phase 4-6**: Future - Animation, text/graphics backends, semantics
 
 **Recent Progress (Phase 1.5 & 2):**
@@ -35,8 +35,6 @@ This roadmap tracks the phased implementation of Compose-RS.
 
 See examples:
 - `cargo run --bin desktop-app` - Interactive UI demo
-- `cargo run --example intrinsic_size` - Intrinsic measurement demo
-- `cargo run --example test_cleanup` - Side effect lifecycle demo
 
 ---
 
@@ -255,19 +253,23 @@ Column(Modifier::empty(), ColumnParams::new(), |scope| {
 
 ## Phase 3 — Intrinsics + Subcompose
 
-### Status: PARTIALLY COMPLETE
+### Status: SUBSTANTIALLY COMPLETE ✅
 
 ### Deliverables
 - ✅ Intrinsic measurement (`min/maxIntrinsicWidth/Height`) on core primitives & common modifiers - DONE
   - `Measurable` trait fully implements all 4 intrinsic methods
   - `MeasurePolicy` trait includes intrinsic measurement support
   - `LayoutChildMeasurable` provides intrinsic measurement via constraint-based approximation
+  - Concrete modifier nodes (`PaddingNode`, `SizeNode`) include full intrinsic support
 - ✅ `SubcomposeLayout` scaffolding complete with stable key reuse and slot management
-- ⏳ `LazyColumn` / `LazyRow` - NOT YET IMPLEMENTED
+- ⏳ `LazyColumn` / `LazyRow` - NOT YET IMPLEMENTED (deferred to later phase)
 - ⏳ Performance validations and micro-benchmarks for intrinsics - PENDING
 
 ### Implementation Details
-Intrinsics are implemented in [compose-ui/src/layout/mod.rs](compose-ui/src/layout/mod.rs#L810-L852):
+Intrinsics are implemented in multiple locations:
+- Core trait definitions: [compose-ui/src/layout/core.rs](compose-ui/src/layout/core.rs#L5-L58)
+- Layout engine integration: [compose-ui/src/layout/mod.rs](compose-ui/src/layout/mod.rs#L810-L852)
+- Modifier node support: [compose-ui/src/modifier_nodes.rs](compose-ui/src/modifier_nodes.rs#L111-L137)
 - `min_intrinsic_width`: Measures with height constraints to find minimum width
 - `max_intrinsic_width`: Measures with unbounded width to find preferred width
 - `min_intrinsic_height`: Measures with width constraints to find minimum height
@@ -276,7 +278,7 @@ Intrinsics are implemented in [compose-ui/src/layout/mod.rs](compose-ui/src/layo
 ### Gates
 - ✅ Intrinsics produce stable results across recompositions - working in tests
 - ✅ Subcompose content count and order stable under key reuse - verified in tests
-- ❌ `LazyColumn` scroll of **10k items** alloc-free - NOT IMPLEMENTED
+- ❌ `LazyColumn` scroll of **10k items** alloc-free - NOT IMPLEMENTED (deferred)
 
 ---
 
