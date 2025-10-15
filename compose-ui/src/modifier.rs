@@ -2,7 +2,7 @@ use std::fmt;
 use std::ops::AddAssign;
 use std::rc::Rc;
 
-use crate::layout::core::Alignment;
+use crate::layout::core::{Alignment, HorizontalAlignment, VerticalAlignment};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PointerEventKind {
@@ -336,6 +336,8 @@ pub enum ModOp {
     AbsoluteOffset(Point),
     Draw(DrawCommand),
     BoxAlign(Alignment),
+    ColumnAlign(HorizontalAlignment),
+    RowAlign(VerticalAlignment),
 }
 
 #[derive(Clone, Default)]
@@ -474,6 +476,36 @@ impl Modifier {
 
     pub fn align(alignment: Alignment) -> Self {
         Self::with_op(ModOp::BoxAlign(alignment))
+    }
+
+    /// Align content within a Box using 2D alignment (BoxScope only).
+    /// Internal implementation for BoxScope.align()
+    pub fn alignInBox(self, alignment: Alignment) -> Self {
+        self.then(Self::with_op(ModOp::BoxAlign(alignment)))
+    }
+
+    /// Align content horizontally within a Column (ColumnScope only).
+    /// Internal implementation for ColumnScope.align()
+    pub fn alignInColumn(self, alignment: HorizontalAlignment) -> Self {
+        self.then(Self::with_op(ModOp::ColumnAlign(alignment)))
+    }
+
+    /// Align content vertically within a Row (RowScope only).
+    /// Internal implementation for RowScope.align()
+    pub fn alignInRow(self, alignment: VerticalAlignment) -> Self {
+        self.then(Self::with_op(ModOp::RowAlign(alignment)))
+    }
+
+    /// Apply weight in Column (ColumnScope only).
+    /// Internal implementation for ColumnScope.weight()
+    pub fn columnWeight(self, weight: f32, fill: bool) -> Self {
+        self.then(Self::with_op(ModOp::Weight { weight, fill }))
+    }
+
+    /// Apply weight in Row (RowScope only).
+    /// Internal implementation for RowScope.weight()
+    pub fn rowWeight(self, weight: f32, fill: bool) -> Self {
+        self.then(Self::with_op(ModOp::Weight { weight, fill }))
     }
 
     pub fn pointer_input(handler: impl Fn(PointerEvent) + 'static) -> Self {
@@ -671,6 +703,8 @@ pub(crate) struct LayoutProperties {
     max_height: Option<f32>,
     weight: Option<LayoutWeight>,
     box_alignment: Option<Alignment>,
+    column_alignment: Option<HorizontalAlignment>,
+    row_alignment: Option<VerticalAlignment>,
 }
 
 impl LayoutProperties {
@@ -709,6 +743,14 @@ impl LayoutProperties {
 
     pub fn box_alignment(&self) -> Option<Alignment> {
         self.box_alignment
+    }
+
+    pub fn column_alignment(&self) -> Option<HorizontalAlignment> {
+        self.column_alignment
+    }
+
+    pub fn row_alignment(&self) -> Option<VerticalAlignment> {
+        self.row_alignment
     }
 }
 
@@ -751,6 +793,12 @@ impl Modifier {
                 ModOp::BoxAlign(alignment) => {
                     props.box_alignment = Some(*alignment);
                 }
+                ModOp::ColumnAlign(alignment) => {
+                    props.column_alignment = Some(*alignment);
+                }
+                ModOp::RowAlign(alignment) => {
+                    props.row_alignment = Some(*alignment);
+                }
                 _ => {}
             }
         }
@@ -759,6 +807,14 @@ impl Modifier {
 
     pub(crate) fn box_alignment(&self) -> Option<Alignment> {
         self.layout_properties().box_alignment()
+    }
+
+    pub(crate) fn column_alignment(&self) -> Option<HorizontalAlignment> {
+        self.layout_properties().column_alignment()
+    }
+
+    pub(crate) fn row_alignment(&self) -> Option<VerticalAlignment> {
+        self.layout_properties().row_alignment()
     }
 }
 

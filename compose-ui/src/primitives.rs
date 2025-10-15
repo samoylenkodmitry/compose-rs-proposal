@@ -19,7 +19,34 @@ use crate::subcompose_layout::{
 use compose_core::SlotId;
 
 /// Marker trait matching Jetpack Compose's `BoxScope` API.
-pub trait BoxScope {}
+pub trait BoxScope {
+    /// Align content within the Box using 2D alignment.
+    fn align(&self, alignment: Alignment) -> Modifier;
+}
+
+/// Marker trait for Column scope - provides horizontal alignment.
+/// These methods match Jetpack Compose's Modifier extension functions.
+pub trait ColumnScope {
+    /// Align content horizontally within the Column.
+    /// Jetpack Compose: Modifier.align(alignment: Alignment.Horizontal)
+    fn align(&self, alignment: HorizontalAlignment) -> Modifier;
+
+    /// Apply weight to distribute remaining space proportionally.
+    /// Jetpack Compose: Modifier.weight(weight: Float, fill: Boolean = true)
+    fn weight(&self, weight: f32, fill: bool) -> Modifier;
+}
+
+/// Marker trait for Row scope - provides vertical alignment.
+/// These methods match Jetpack Compose's Modifier extension functions.
+pub trait RowScope {
+    /// Align content vertically within the Row.
+    /// Jetpack Compose: Modifier.align(alignment: Alignment.Vertical)
+    fn align(&self, alignment: VerticalAlignment) -> Modifier;
+
+    /// Apply weight to distribute remaining space proportionally.
+    /// Jetpack Compose: Modifier.weight(weight: Float, fill: Boolean = true)
+    fn weight(&self, weight: f32, fill: bool) -> Modifier;
+}
 
 /// Scope exposed to [`BoxWithConstraints`] content.
 pub trait BoxWithConstraintsScope: BoxScope {
@@ -66,7 +93,49 @@ impl BoxWithConstraintsScopeImpl {
     }
 }
 
-impl BoxScope for BoxWithConstraintsScopeImpl {}
+impl BoxScope for BoxWithConstraintsScopeImpl {
+    fn align(&self, alignment: Alignment) -> Modifier {
+        BoxScopeImpl.align(alignment)
+    }
+}
+
+/// Concrete implementation of BoxScope.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BoxScopeImpl;
+
+impl BoxScope for BoxScopeImpl {
+    fn align(&self, alignment: Alignment) -> Modifier {
+        Modifier::empty().alignInBox(alignment)
+    }
+}
+
+/// Concrete implementation of ColumnScope.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColumnScopeImpl;
+
+impl ColumnScope for ColumnScopeImpl {
+    fn align(&self, alignment: HorizontalAlignment) -> Modifier {
+        Modifier::empty().alignInColumn(alignment)
+    }
+
+    fn weight(&self, weight: f32, fill: bool) -> Modifier {
+        Modifier::empty().columnWeight(weight, fill)
+    }
+}
+
+/// Concrete implementation of RowScope.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RowScopeImpl;
+
+impl RowScope for RowScopeImpl {
+    fn align(&self, alignment: VerticalAlignment) -> Modifier {
+        Modifier::empty().alignInRow(alignment)
+    }
+
+    fn weight(&self, weight: f32, fill: bool) -> Modifier {
+        Modifier::empty().rowWeight(weight, fill)
+    }
+}
 
 impl BoxWithConstraintsScope for BoxWithConstraintsScopeImpl {
     fn constraints(&self) -> Constraints {

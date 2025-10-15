@@ -1,9 +1,13 @@
 #![doc = r"Core runtime pieces for the Compose-RS experiment."]
 
+pub mod animation;
 pub mod modifier;
 pub mod platform;
 pub mod testing;
 
+pub use animation::{
+    Animatable, AnimationSpec, AnimationType, Easing, Lerp, SpringSpec,
+};
 pub use modifier::{
     modifier_element, AnyModifierElement, Constraints, DrawModifierNode, DrawScope,
     DynModifierElement, InvalidationKind, LayoutModifierNode, MeasureResult, Measurable,
