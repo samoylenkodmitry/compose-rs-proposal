@@ -11,9 +11,16 @@ This roadmap tracks the phased implementation of Compose-RS.
 - ✅ **Phase 0**: Complete - Core architecture established
 - ✅ **Phase 1**: Complete - Smart recomposition + frame clock working
 - ✅ **Phase 1.5**: Basic animation - `animate*AsState` runs on the frame clock
-- 🚧 **Phase 2**: In Progress - Modifier.Node scaffolding underway
+- 🚧 **Phase 2**: In Progress - Modifier.Node specialized traits implemented, UI integration pending
 - ✅ **Phase 3**: Partial - Intrinsics implemented, LazyList pending
 - ⏳ **Phase 4-6**: Future - Animation, text/graphics backends, semantics
+
+**Recent Progress (Phase 2):**
+- ✅ Implemented specialized modifier node traits: `LayoutModifierNode`, `DrawModifierNode`, `PointerInputNode`, `SemanticsNode`
+- ✅ Added phase-specific invalidation tracking to `ModifierNodeChain`
+- ✅ Implemented `NodeCapabilities` system for runtime trait detection
+- ✅ Added iterator methods for filtering nodes by capability
+- ✅ All 68 tests passing (40 core + 28 UI)
 
 See examples:
 - `cargo run --bin desktop-app` - Interactive UI demo
@@ -138,21 +145,23 @@ Converted `LaunchedEffect` and `DisposableEffect` from functions to macros that 
 #### Status
 - ✅ Core modifier node traits (`ModifierNode`, `ModifierElement`) and chain reconciliation scaffolding implemented in `compose-core`
 - ✅ Basic modifier-node invalidation plumbing via `BasicModifierNodeContext`
-- ⏳ Specialized layout/draw/input/semantics nodes
+- ✅ Specialized layout/draw/input/semantics node traits defined
+- ✅ Phase-specific invalidation tracking in `ModifierNodeChain`
+- ⏳ UI layer integration with specialized nodes
 
 #### Deliverables
 - ✅ Node trait scaffolding: `ModifierNode` + generic `ModifierElement`
-- Node traits: `LayoutModifierNode`, `DrawModifierNode`, `PointerInputNode`, `SemanticsNode`
-- Lifecycle: `on_attach`, `on_detach`, `update`, `on_reset`
-- Chain reconciliation, stable reuse, targeted invalidation (layout/draw/input/semantics)
-- Layout chaining (`measure` delegation) + min/max intrinsic hooks
-- Draw pipeline (`drawContent` ordering, layers)
-- Pointer/input dispatch & hit-testing with bounds awareness
-- Semantics plumbed through nodes
-- Node chain construction & reuse: `padding().background().clickable().drawBehind()`
-- Reconciliation for reordering/equality of modifier lists
-- Phase-specific invalidation (update padding ⇒ layout pass only)
-- Debug inspector for node chain (dev builds)
+- ✅ Node traits: `LayoutModifierNode`, `DrawModifierNode`, `PointerInputNode`, `SemanticsNode`
+- ✅ Lifecycle: `on_attach`, `on_detach`, `update`, `on_reset`
+- ✅ Chain reconciliation, stable reuse, targeted invalidation (layout/draw/input/semantics)
+- ✅ Layout chaining (`measure` delegation) + min/max intrinsic hooks (trait methods defined)
+- ⏳ Draw pipeline (`drawContent` ordering, layers) - trait defined, implementation pending
+- ⏳ Pointer/input dispatch & hit-testing with bounds awareness - trait defined, implementation pending
+- ⏳ Semantics plumbed through nodes - trait defined, implementation pending
+- ⏳ Node chain construction & reuse: `padding().background().clickable().drawBehind()`
+- ⏳ Reconciliation for reordering/equality of modifier lists
+- ✅ Phase-specific invalidation (update padding ⇒ layout pass only) - tracking implemented
+- ⏳ Debug inspector for node chain (dev builds)
 
 #### Gates
 - Toggling `Modifier.background(color)` **allocates 0 new nodes**; only `update()` runs

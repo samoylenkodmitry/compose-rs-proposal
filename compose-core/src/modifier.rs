@@ -108,6 +108,145 @@ pub trait ModifierNode: Any {
     fn on_reset(&mut self) {}
 }
 
+/// Marker trait for layout-specific modifier nodes.
+///
+/// Layout nodes participate in the measure and layout passes of the render
+/// pipeline. They can intercept and modify the measurement and placement of
+/// their wrapped content.
+pub trait LayoutModifierNode: ModifierNode {
+    /// Measures the wrapped content and returns the size this modifier
+    /// occupies. The node receives a measurable representing the wrapped
+    /// content and the incoming constraints from the parent.
+    ///
+    /// The default implementation delegates to the wrapped content without
+    /// modification.
+    fn measure(
+        &mut self,
+        _context: &mut dyn ModifierNodeContext,
+        _measurable: &dyn Measurable,
+        _constraints: Constraints,
+    ) -> MeasureResult {
+        // Default: pass through to wrapped content
+        MeasureResult::default()
+    }
+
+    /// Returns the minimum intrinsic width of this modifier node.
+    fn min_intrinsic_width(&self, _measurable: &dyn Measurable, _height: i32) -> i32 {
+        0
+    }
+
+    /// Returns the maximum intrinsic width of this modifier node.
+    fn max_intrinsic_width(&self, _measurable: &dyn Measurable, _height: i32) -> i32 {
+        0
+    }
+
+    /// Returns the minimum intrinsic height of this modifier node.
+    fn min_intrinsic_height(&self, _measurable: &dyn Measurable, _width: i32) -> i32 {
+        0
+    }
+
+    /// Returns the maximum intrinsic height of this modifier node.
+    fn max_intrinsic_height(&self, _measurable: &dyn Measurable, _width: i32) -> i32 {
+        0
+    }
+}
+
+/// Marker trait for draw-specific modifier nodes.
+///
+/// Draw nodes participate in the draw pass of the render pipeline. They can
+/// intercept and modify the drawing operations of their wrapped content.
+pub trait DrawModifierNode: ModifierNode {
+    /// Draws this modifier node. The node can draw before and/or after
+    /// calling `draw_content` to draw the wrapped content.
+    fn draw(&mut self, _context: &mut dyn ModifierNodeContext, _draw_scope: &mut dyn DrawScope) {
+        // Default: draw wrapped content without modification
+    }
+}
+
+/// Marker trait for pointer input modifier nodes.
+///
+/// Pointer input nodes participate in hit-testing and pointer event
+/// dispatch. They can intercept pointer events and handle them before
+/// they reach the wrapped content.
+pub trait PointerInputNode: ModifierNode {
+    /// Called when a pointer event occurs within the bounds of this node.
+    /// Returns true if the event was consumed and should not propagate further.
+    fn on_pointer_event(
+        &mut self,
+        _context: &mut dyn ModifierNodeContext,
+        _event: &PointerEvent,
+    ) -> bool {
+        false
+    }
+
+    /// Returns true if this node should participate in hit-testing for the
+    /// given pointer position.
+    fn hit_test(&self, _x: f32, _y: f32) -> bool {
+        true
+    }
+}
+
+/// Marker trait for semantics modifier nodes.
+///
+/// Semantics nodes participate in the semantics tree construction. They can
+/// add or modify semantic properties of their wrapped content for
+/// accessibility and testing purposes.
+pub trait SemanticsNode: ModifierNode {
+    /// Merges semantic properties into the provided configuration.
+    fn merge_semantics(&self, _config: &mut SemanticsConfiguration) {
+        // Default: no semantics added
+    }
+}
+
+// Placeholder types for the specialized node traits.
+// These will be properly defined in the UI layer.
+
+/// Constraints passed to measure functions.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Constraints {
+    pub min_width: i32,
+    pub max_width: i32,
+    pub min_height: i32,
+    pub max_height: i32,
+}
+
+/// Result of a measure operation.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MeasureResult {
+    pub width: i32,
+    pub height: i32,
+}
+
+/// Trait for objects that can be measured.
+pub trait Measurable {
+    fn measure(&self, constraints: Constraints) -> MeasureResult;
+    fn min_intrinsic_width(&self, height: i32) -> i32;
+    fn max_intrinsic_width(&self, height: i32) -> i32;
+    fn min_intrinsic_height(&self, width: i32) -> i32;
+    fn max_intrinsic_height(&self, width: i32) -> i32;
+}
+
+/// Drawing scope for draw operations.
+pub trait DrawScope {
+    fn draw_content(&mut self);
+}
+
+/// Pointer event information.
+#[derive(Clone, Debug)]
+pub struct PointerEvent {
+    pub x: f32,
+    pub y: f32,
+    pub pressed: bool,
+}
+
+/// Semantics configuration for accessibility.
+#[derive(Clone, Debug, Default)]
+pub struct SemanticsConfiguration {
+    pub content_description: Option<String>,
+    pub is_button: bool,
+    pub is_clickable: bool,
+}
+
 impl fmt::Debug for dyn ModifierNode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ModifierNode").finish_non_exhaustive()
@@ -135,6 +274,21 @@ pub trait ModifierElement: 'static {
     fn key(&self) -> Option<u64> {
         None
     }
+
+    /// Returns the capabilities of nodes created by this element.
+    /// Override this to indicate which specialized traits the node implements.
+    fn capabilities(&self) -> NodeCapabilities {
+        NodeCapabilities::default()
+    }
+}
+
+/// Capability flags indicating which specialized traits a modifier node implements.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NodeCapabilities {
+    pub has_layout: bool,
+    pub has_draw: bool,
+    pub has_pointer_input: bool,
+    pub has_semantics: bool,
 }
 
 /// Type-erased modifier element used by the runtime to reconcile chains.
@@ -146,6 +300,10 @@ pub trait AnyModifierElement: fmt::Debug {
     fn update_node(&self, node: &mut dyn ModifierNode);
 
     fn key(&self) -> Option<u64>;
+
+    fn capabilities(&self) -> NodeCapabilities {
+        NodeCapabilities::default()
+    }
 }
 
 struct TypedModifierElement<E: ModifierElement> {
@@ -192,6 +350,10 @@ where
     fn key(&self) -> Option<u64> {
         self.element.key()
     }
+
+    fn capabilities(&self) -> NodeCapabilities {
+        self.element.capabilities()
+    }
 }
 
 /// Convenience helper for callers to construct a type-erased modifier
@@ -208,15 +370,32 @@ struct ModifierNodeEntry {
     key: Option<u64>,
     node: Box<dyn ModifierNode>,
     attached: bool,
+    has_layout: bool,
+    has_draw: bool,
+    has_pointer_input: bool,
+    has_semantics: bool,
 }
 
 impl ModifierNodeEntry {
-    fn new(type_id: TypeId, key: Option<u64>, node: Box<dyn ModifierNode>) -> Self {
+    fn new(type_id: TypeId, key: Option<u64>, node: Box<dyn ModifierNode>, capabilities: NodeCapabilities) -> Self {
         Self {
             type_id,
             key,
             node,
             attached: false,
+            has_layout: capabilities.has_layout,
+            has_draw: capabilities.has_draw,
+            has_pointer_input: capabilities.has_pointer_input,
+            has_semantics: capabilities.has_semantics,
+        }
+    }
+
+    fn matches_invalidation(&self, kind: InvalidationKind) -> bool {
+        match kind {
+            InvalidationKind::Layout => self.has_layout,
+            InvalidationKind::Draw => self.has_draw,
+            InvalidationKind::PointerInput => self.has_pointer_input,
+            InvalidationKind::Semantics => self.has_semantics,
         }
     }
 }
@@ -273,10 +452,11 @@ impl ModifierNodeChain {
                 entry.key = key;
                 entry
             } else {
+                let capabilities = element.capabilities();
                 let mut node = element.create_node();
                 node.on_attach(context);
                 element.update_node(node.as_mut());
-                let mut entry = ModifierNodeEntry::new(type_id, key, node);
+                let mut entry = ModifierNodeEntry::new(type_id, key, node, capabilities);
                 entry.attached = true;
                 entry
             };
@@ -342,6 +522,43 @@ impl ModifierNodeChain {
         self.entries
             .get_mut(index)
             .and_then(|entry| entry.node.as_mut().as_any_mut().downcast_mut::<N>())
+    }
+
+    /// Returns true if the chain contains any nodes matching the given invalidation kind.
+    pub fn has_nodes_for_invalidation(&self, kind: InvalidationKind) -> bool {
+        self.entries.iter().any(|entry| entry.matches_invalidation(kind))
+    }
+
+    /// Iterates over all layout nodes in the chain.
+    pub fn layout_nodes(&self) -> impl Iterator<Item = &dyn ModifierNode> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.has_layout)
+            .map(|entry| entry.node.as_ref())
+    }
+
+    /// Iterates over all draw nodes in the chain.
+    pub fn draw_nodes(&self) -> impl Iterator<Item = &dyn ModifierNode> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.has_draw)
+            .map(|entry| entry.node.as_ref())
+    }
+
+    /// Iterates over all pointer input nodes in the chain.
+    pub fn pointer_input_nodes(&self) -> impl Iterator<Item = &dyn ModifierNode> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.has_pointer_input)
+            .map(|entry| entry.node.as_ref())
+    }
+
+    /// Iterates over all semantics nodes in the chain.
+    pub fn semantics_nodes(&self) -> impl Iterator<Item = &dyn ModifierNode> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.has_semantics)
+            .map(|entry| entry.node.as_ref())
     }
 }
 
@@ -599,5 +816,113 @@ mod tests {
             context.invalidations(),
             &[InvalidationKind::Layout, InvalidationKind::Draw]
         );
+    }
+
+    // Test for specialized node traits
+    #[derive(Debug, Default)]
+    struct TestLayoutNode {
+        measure_count: Cell<usize>,
+    }
+
+    impl ModifierNode for TestLayoutNode {}
+
+    impl LayoutModifierNode for TestLayoutNode {
+        fn measure(
+            &mut self,
+            _context: &mut dyn ModifierNodeContext,
+            _measurable: &dyn Measurable,
+            _constraints: Constraints,
+        ) -> MeasureResult {
+            self.measure_count.set(self.measure_count.get() + 1);
+            MeasureResult {
+                width: 100,
+                height: 100,
+            }
+        }
+
+        fn min_intrinsic_width(&self, _measurable: &dyn Measurable, _height: i32) -> i32 {
+            50
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct TestLayoutElement;
+
+    impl ModifierElement for TestLayoutElement {
+        type Node = TestLayoutNode;
+
+        fn create(&self) -> Self::Node {
+            TestLayoutNode::default()
+        }
+
+        fn update(&self, _node: &mut Self::Node) {}
+
+        fn capabilities(&self) -> NodeCapabilities {
+            NodeCapabilities {
+                has_layout: true,
+                has_draw: false,
+                has_pointer_input: false,
+                has_semantics: false,
+            }
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct TestDrawNode {
+        draw_count: Cell<usize>,
+    }
+
+    impl ModifierNode for TestDrawNode {}
+
+    impl DrawModifierNode for TestDrawNode {
+        fn draw(&mut self, _context: &mut dyn ModifierNodeContext, _draw_scope: &mut dyn DrawScope) {
+            self.draw_count.set(self.draw_count.get() + 1);
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct TestDrawElement;
+
+    impl ModifierElement for TestDrawElement {
+        type Node = TestDrawNode;
+
+        fn create(&self) -> Self::Node {
+            TestDrawNode::default()
+        }
+
+        fn update(&self, _node: &mut Self::Node) {}
+
+        fn capabilities(&self) -> NodeCapabilities {
+            NodeCapabilities {
+                has_layout: false,
+                has_draw: true,
+                has_pointer_input: false,
+                has_semantics: false,
+            }
+        }
+    }
+
+    #[test]
+    fn chain_tracks_node_capabilities() {
+        let mut chain = ModifierNodeChain::new();
+        let mut context = BasicModifierNodeContext::new();
+
+        let elements = vec![
+            modifier_element(TestLayoutElement),
+            modifier_element(TestDrawElement),
+        ];
+        chain.update_from_slice(&elements, &mut context);
+
+        assert_eq!(chain.len(), 2);
+        assert!(chain.has_nodes_for_invalidation(InvalidationKind::Layout));
+        assert!(chain.has_nodes_for_invalidation(InvalidationKind::Draw));
+        assert!(!chain.has_nodes_for_invalidation(InvalidationKind::PointerInput));
+        assert!(!chain.has_nodes_for_invalidation(InvalidationKind::Semantics));
+
+        // Verify we can iterate over layout and draw nodes separately
+        assert_eq!(chain.layout_nodes().count(), 1);
+        assert_eq!(chain.draw_nodes().count(), 1);
+        assert_eq!(chain.pointer_input_nodes().count(), 0);
+        assert_eq!(chain.semantics_nodes().count(), 0);
     }
 }

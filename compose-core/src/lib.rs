@@ -5,8 +5,10 @@ pub mod platform;
 pub mod testing;
 
 pub use modifier::{
-    modifier_element, AnyModifierElement, DynModifierElement, InvalidationKind, ModifierElement,
-    ModifierNode, ModifierNodeChain, ModifierNodeContext,
+    modifier_element, AnyModifierElement, Constraints, DrawModifierNode, DrawScope,
+    DynModifierElement, InvalidationKind, LayoutModifierNode, MeasureResult, Measurable,
+    ModifierElement, ModifierNode, ModifierNodeChain, ModifierNodeContext, NodeCapabilities,
+    PointerEvent, PointerInputNode, SemanticsConfiguration, SemanticsNode,
 };
 pub use platform::{Clock, RuntimeScheduler};
 pub use testing::{run_test_composition, ComposeTestRule};
