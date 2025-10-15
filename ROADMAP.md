@@ -81,7 +81,7 @@ See examples:
 ### Gates
 - **Gate-1 (Recomp):** 100-node tree; one state change recomposes **<5** nodes - DONE (skip logic working)
 - **Gate-2 (Frame):** Toggle state schedules **one** frame; callbacks fire; `needs_frame` cleared - DONE
-- **Gate-3 (Tests):** `ComposeTestRule` runs headless tests in CI - IN PROGRESS
+- **Gate-3 (Tests):** `ComposeTestRule` runs headless tests in CI - DONE
 
 ### Exit Criteria
 - [x] Frame clock APIs implemented
