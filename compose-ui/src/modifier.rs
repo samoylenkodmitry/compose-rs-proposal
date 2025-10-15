@@ -11,6 +11,16 @@ use std::rc::Rc;
 
 use crate::layout::core::{Alignment, HorizontalAlignment, VerticalAlignment};
 
+/// Specifies how to size a component based on its intrinsic measurements.
+/// Mirrors Jetpack Compose's IntrinsicSize API.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntrinsicSize {
+    /// Use the minimum intrinsic size of the content.
+    Min,
+    /// Use the maximum intrinsic size of the content.
+    Max,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PointerEventKind {
     Down,
@@ -345,6 +355,8 @@ pub enum ModOp {
     BoxAlign(Alignment),
     ColumnAlign(HorizontalAlignment),
     RowAlign(VerticalAlignment),
+    WidthIntrinsic(IntrinsicSize),
+    HeightIntrinsic(IntrinsicSize),
 }
 
 #[derive(Clone, Default)]
@@ -421,6 +433,18 @@ impl Modifier {
 
     pub fn height(height: f32) -> Self {
         Self::with_op(ModOp::Height(height))
+    }
+
+    /// Sets the width to match the intrinsic size of the content.
+    /// Jetpack Compose: Modifier.width(IntrinsicSize.Min/Max)
+    pub fn width_intrinsic(intrinsic: IntrinsicSize) -> Self {
+        Self::with_op(ModOp::WidthIntrinsic(intrinsic))
+    }
+
+    /// Sets the height to match the intrinsic size of the content.
+    /// Jetpack Compose: Modifier.height(IntrinsicSize.Min/Max)
+    pub fn height_intrinsic(intrinsic: IntrinsicSize) -> Self {
+        Self::with_op(ModOp::HeightIntrinsic(intrinsic))
     }
 
     pub fn fill_max_size() -> Self {
@@ -691,6 +715,7 @@ pub(crate) enum DimensionConstraint {
     Unspecified,
     Points(f32),
     Fraction(f32),
+    Intrinsic(IntrinsicSize),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -807,6 +832,12 @@ impl Modifier {
                 }
                 ModOp::RowAlign(alignment) => {
                     props.row_alignment = Some(*alignment);
+                }
+                ModOp::WidthIntrinsic(intrinsic) => {
+                    props.width = DimensionConstraint::Intrinsic(*intrinsic);
+                }
+                ModOp::HeightIntrinsic(intrinsic) => {
+                    props.height = DimensionConstraint::Intrinsic(*intrinsic);
                 }
                 _ => {}
             }

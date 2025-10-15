@@ -1044,6 +1044,39 @@ fn subtract_padding(constraints: Constraints, padding: EdgeInsets) -> Constraint
     })
 }
 
+/// Resolves intrinsic dimensions from a list of measurables.
+/// Returns (min_intrinsic, max_intrinsic) for the given dimension.
+fn query_intrinsic_size(
+    measurables: &[impl Measurable],
+    is_width: bool,
+    cross_axis_size: f32,
+    combiner: impl Fn(f32, f32) -> f32,
+) -> (f32, f32) {
+    let min_intrinsic = measurables
+        .iter()
+        .map(|m| {
+            if is_width {
+                m.min_intrinsic_width(cross_axis_size)
+            } else {
+                m.min_intrinsic_height(cross_axis_size)
+            }
+        })
+        .fold(0.0, &combiner);
+
+    let max_intrinsic = measurables
+        .iter()
+        .map(|m| {
+            if is_width {
+                m.max_intrinsic_width(cross_axis_size)
+            } else {
+                m.max_intrinsic_height(cross_axis_size)
+            }
+        })
+        .fold(0.0, &combiner);
+
+    (min_intrinsic, max_intrinsic)
+}
+
 fn resolve_dimension(
     base: f32,
     explicit: DimensionConstraint,
@@ -1083,6 +1116,9 @@ fn resolve_dimension(
             }
         }
         DimensionConstraint::Unspecified => base,
+        // Intrinsic sizing is resolved at a higher level where we have access to children.
+        // At this point we just use the base size as a fallback.
+        DimensionConstraint::Intrinsic(_) => base,
     };
 
     size = clamp_dimension(size, min_bound, max_bound);

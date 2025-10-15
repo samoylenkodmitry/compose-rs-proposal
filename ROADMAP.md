@@ -316,8 +316,8 @@ Budgets enforced via CI benchmarks.
 
 ### Phase 3 – Intrinsics & Lazy
 
-* [ ] Intrinsic methods (Column/Row + children)
-* [ ] `IntrinsicSize` min/max modifiers
+* [x] Intrinsic methods (Column/Row + children)
+* [x] `IntrinsicSize` min/max modifiers
 * [ ] `LazyColumn` MVP via `SubcomposeLayout`
 * [ ] `LazyRow` MVP
 * [ ] Scroll state + inertia
