@@ -2,9 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
-use compose_core::{
-    self, location_key, Composition, Key, LaunchedEffect, MemoryApplier, Node, NodeError, NodeId,
-};
+use compose_core::{self, location_key, Composition, DisposableEffect, Key, LaunchedEffect, MemoryApplier, Node, NodeError, NodeId};
 use compose_runtime_std::StdRuntime;
 use compose_ui::{
     composable, Brush, Button, ButtonNode, Color, Column, ColumnNode, CornerRadii, DrawCommand,
@@ -394,12 +392,39 @@ fn counter_app() {
                 }))
                 .then(Modifier::padding(12.0)),
                 || {
-                    Text(
-                        "Pointer playground",
-                        Modifier::padding(6.0)
-                            .then(Modifier::background(Color(0.0, 0.0, 0.0, 0.25)))
-                            .then(Modifier::rounded_corners(12.0)),
-                    );
+                    if counter.get() % 2 == 0 {
+                        LaunchedEffect("", |_|{
+                            println!("launch playground")
+                        });
+                        DisposableEffect("",|x|{
+                            println!("dispose effect playground");
+                            x.on_dispose(||{
+                                println!("dispose playground")
+                            })
+                        });
+                        Text(
+                            "Pointer playground",
+                            Modifier::padding(6.0)
+                                .then(Modifier::background(Color(0.0, 0.0, 0.0, 0.25)))
+                                .then(Modifier::rounded_corners(12.0)),
+                        );
+                    } else {
+                        LaunchedEffect("", |_|{
+                            println!("launch no-ground")
+                        });
+                        DisposableEffect("",|x|{
+                            println!("dispose effect no-ground");
+                            x.on_dispose(||{
+                                println!("dispose no-ground")
+                            })
+                        });
+                        Text(
+                            "Pointer no-ground",
+                            Modifier::padding(6.0)
+                                .then(Modifier::background(Color(0.8, 0.2, 0.0, 0.25)))
+                                .then(Modifier::rounded_corners(22.0)),
+                        );
+                    }
                     Spacer(Size {
                         width: 0.0,
                         height: 8.0,
