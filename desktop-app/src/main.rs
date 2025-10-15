@@ -2,9 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
-use compose_core::{
-    self, location_key, Composition, Key, LaunchedEffect, MemoryApplier, Node, NodeError, NodeId,
-};
+use compose_core::{self, location_key, Composition, DisposableEffect, Key, LaunchedEffect, MemoryApplier, Node, NodeError, NodeId};
 use compose_runtime_std::StdRuntime;
 use compose_ui::{
     composable, Brush, Button, ButtonNode, Color, Column, ColumnNode, CornerRadii, DrawCommand,
@@ -141,6 +139,7 @@ fn main() {
 }
 
 struct ComposeDesktopApp {
+    runtime: StdRuntime,
     composition: Composition<MemoryApplier>,
     scene: Scene,
     cursor: (f32, f32),
@@ -149,12 +148,13 @@ struct ComposeDesktopApp {
     animation_state: compose_core::MutableState<f32>,
     animation_phase: f32,
     last_frame: Instant,
+    start_time: Instant,
 }
 
 impl ComposeDesktopApp {
     fn new(root_key: Key) -> Self {
-        let mut composition =
-            Composition::with_runtime(MemoryApplier::new(), StdRuntime::new().runtime());
+        let runtime = StdRuntime::new();
+        let mut composition = Composition::with_runtime(MemoryApplier::new(), runtime.runtime());
         let runtime_handle = composition.runtime_handle();
         let animation_state = compose_core::MutableState::with_runtime(0.0, runtime_handle.clone());
         if let Err(err) = composition.render(root_key, || {
@@ -163,7 +163,9 @@ impl ComposeDesktopApp {
             log::error!("initial render failed: {err}");
         }
         let scene = Scene::new();
+        let start_time = Instant::now();
         let mut app = Self {
+            runtime,
             composition,
             scene,
             cursor: (0.0, 0.0),
@@ -171,7 +173,8 @@ impl ComposeDesktopApp {
             buffer_size: (INITIAL_WIDTH, INITIAL_HEIGHT),
             animation_state,
             animation_phase: 0.0,
-            last_frame: Instant::now(),
+            last_frame: start_time,
+            start_time,
         };
         app.rebuild_scene();
         app
@@ -224,6 +227,11 @@ impl ComposeDesktopApp {
         self.animation_phase = phase;
         let animation_value = (phase.sin() * 0.5) + 0.5;
         self.animation_state.set(animation_value);
+        let frame_time = now
+            .checked_duration_since(self.start_time)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        self.runtime.drain_frame_callbacks(frame_time);
         if self.composition.should_render() {
             let state = self.animation_state.clone();
             if let Err(err) =
@@ -384,12 +392,39 @@ fn counter_app() {
                 }))
                 .then(Modifier::padding(12.0)),
                 || {
-                    Text(
-                        "Pointer playground",
-                        Modifier::padding(6.0)
-                            .then(Modifier::background(Color(0.0, 0.0, 0.0, 0.25)))
-                            .then(Modifier::rounded_corners(12.0)),
-                    );
+                    if counter.get() % 2 == 0 {
+                        LaunchedEffect("", |_|{
+                            println!("launch playground")
+                        });
+                        DisposableEffect("",|x|{
+                            println!("dispose effect playground");
+                            x.on_dispose(||{
+                                println!("dispose playground")
+                            })
+                        });
+                        Text(
+                            "Pointer playground",
+                            Modifier::padding(6.0)
+                                .then(Modifier::background(Color(0.0, 0.0, 0.0, 0.25)))
+                                .then(Modifier::rounded_corners(12.0)),
+                        );
+                    } else {
+                        LaunchedEffect("", |_|{
+                            println!("launch no-ground")
+                        });
+                        DisposableEffect("",|x|{
+                            println!("dispose effect no-ground");
+                            x.on_dispose(||{
+                                println!("dispose no-ground")
+                            })
+                        });
+                        Text(
+                            "Pointer no-ground",
+                            Modifier::padding(6.0)
+                                .then(Modifier::background(Color(0.8, 0.2, 0.0, 0.25)))
+                                .then(Modifier::rounded_corners(22.0)),
+                        );
+                    }
                     Spacer(Size {
                         width: 0.0,
                         height: 8.0,

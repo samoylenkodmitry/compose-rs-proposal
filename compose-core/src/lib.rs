@@ -6,7 +6,7 @@ pub use platform::{Clock, RuntimeScheduler};
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::collections::{hash_map::DefaultHasher, HashMap, HashSet}; // FUTURE(no_std): replace HashMap/HashSet with arena-backed maps.
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque}; // FUTURE(no_std): replace HashMap/HashSet with arena-backed maps.
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::mem;
@@ -20,6 +20,7 @@ pub type NodeId = usize;
 
 type ScopeId = usize;
 type LocalKey = usize;
+type FrameCallbackId = u64;
 
 static NEXT_SCOPE_ID: AtomicUsize = AtomicUsize::new(1);
 static NEXT_LOCAL_KEY: AtomicUsize = AtomicUsize::new(1);
@@ -43,6 +44,11 @@ struct RecomposeScopeInner {
     force_recompose: Cell<bool>,
     group_index: Cell<Option<usize>>,
     recompose: RefCell<Option<RecomposeCallback>>,
+}
+
+struct FrameCallbackEntry {
+    id: FrameCallbackId,
+    callback: Option<Box<dyn FnOnce(u64) + 'static>>,
 }
 
 impl RecomposeScopeInner {
@@ -269,6 +275,26 @@ pub fn remember<T: 'static>(init: impl FnOnce() -> T) -> &'static mut T {
     with_current_composer(|composer| {
         let value = composer.remember(init);
         unsafe { mem::transmute::<&mut T, &mut T>(value) }
+    })
+}
+
+#[allow(non_snake_case)]
+pub fn withFrameNanos(callback: impl FnOnce(u64) + 'static) -> FrameCallbackRegistration {
+    with_current_composer(|composer| {
+        composer
+            .runtime_handle()
+            .frame_clock()
+            .with_frame_nanos(callback)
+    })
+}
+
+#[allow(non_snake_case)]
+pub fn withFrameMillis(callback: impl FnOnce(u64) + 'static) -> FrameCallbackRegistration {
+    with_current_composer(|composer| {
+        composer
+            .runtime_handle()
+            .frame_clock()
+            .with_frame_millis(callback)
     })
 }
 
@@ -884,6 +910,8 @@ struct RuntimeInner {
     node_updates: RefCell<Vec<Command>>, // FUTURE(no_std): replace Vec with ring buffer.
     invalid_scopes: RefCell<HashSet<ScopeId>>, // FUTURE(no_std): replace HashSet with sparse bitset.
     scope_queue: RefCell<Vec<(ScopeId, Weak<RecomposeScopeInner>)>>, // FUTURE(no_std): use smallvec-backed queue.
+    frame_callbacks: RefCell<VecDeque<FrameCallbackEntry>>, // FUTURE(no_std): migrate to ring buffer.
+    next_frame_callback_id: Cell<u64>,
 }
 
 impl RuntimeInner {
@@ -894,6 +922,8 @@ impl RuntimeInner {
             node_updates: RefCell::new(Vec::new()),
             invalid_scopes: RefCell::new(HashSet::new()),
             scope_queue: RefCell::new(Vec::new()),
+            frame_callbacks: RefCell::new(VecDeque::new()),
+            next_frame_callback_id: Cell::new(1),
         }
     }
 
@@ -939,6 +969,46 @@ impl RuntimeInner {
     fn spawn_task(&self, task: Box<dyn FnOnce() + Send + 'static>) {
         self.scheduler.spawn_task(task);
     }
+
+    fn register_frame_callback(&self, callback: Box<dyn FnOnce(u64) + 'static>) -> FrameCallbackId {
+        let id = self.next_frame_callback_id.get();
+        self.next_frame_callback_id.set(id + 1);
+        self.frame_callbacks
+            .borrow_mut()
+            .push_back(FrameCallbackEntry {
+                id,
+                callback: Some(callback),
+            });
+        self.schedule();
+        id
+    }
+
+    fn cancel_frame_callback(&self, id: FrameCallbackId) {
+        let mut callbacks = self.frame_callbacks.borrow_mut();
+        if let Some(index) = callbacks.iter().position(|entry| entry.id == id) {
+            callbacks.remove(index);
+        }
+        if !self.has_invalid_scopes() && !self.has_updates() && callbacks.is_empty() {
+            *self.needs_frame.borrow_mut() = false;
+        }
+    }
+
+    fn drain_frame_callbacks(&self, frame_time_nanos: u64) {
+        let mut callbacks = self.frame_callbacks.borrow_mut();
+        let mut pending: Vec<Box<dyn FnOnce(u64) + 'static>> = Vec::with_capacity(callbacks.len());
+        while let Some(mut entry) = callbacks.pop_front() {
+            if let Some(callback) = entry.callback.take() {
+                pending.push(callback);
+            }
+        }
+        drop(callbacks);
+        for callback in pending {
+            callback(frame_time_nanos);
+        }
+        if !self.has_invalid_scopes() && !self.has_updates() {
+            *self.needs_frame.borrow_mut() = false;
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -967,6 +1037,10 @@ impl Runtime {
 
     pub fn set_needs_frame(&self, value: bool) {
         *self.inner.needs_frame.borrow_mut() = value;
+    }
+
+    pub fn frame_clock(&self) -> FrameClock {
+        FrameClock::new(self.handle())
     }
 }
 
@@ -1036,6 +1110,37 @@ impl RuntimeHandle {
         }
     }
 
+    pub fn register_frame_callback(
+        &self,
+        callback: impl FnOnce(u64) + 'static,
+    ) -> Option<FrameCallbackId> {
+        self.0
+            .upgrade()
+            .map(|inner| inner.register_frame_callback(Box::new(callback)))
+    }
+
+    pub fn cancel_frame_callback(&self, id: FrameCallbackId) {
+        if let Some(inner) = self.0.upgrade() {
+            inner.cancel_frame_callback(id);
+        }
+    }
+
+    pub fn drain_frame_callbacks(&self, frame_time_nanos: u64) {
+        if let Some(inner) = self.0.upgrade() {
+            inner.drain_frame_callbacks(frame_time_nanos);
+        }
+    }
+
+    pub fn frame_clock(&self) -> FrameClock {
+        FrameClock::new(self.clone())
+    }
+
+    pub fn set_needs_frame(&self, value: bool) {
+        if let Some(inner) = self.0.upgrade() {
+            *inner.needs_frame.borrow_mut() = value;
+        }
+    }
+
     fn take_updates(&self) -> Vec<Command> {
         // FUTURE(no_std): return iterator over static buffer.
         self.0
@@ -1069,6 +1174,79 @@ impl RuntimeHandle {
             .upgrade()
             .map(|inner| inner.has_invalid_scopes())
             .unwrap_or(false)
+    }
+}
+
+#[derive(Clone)]
+pub struct FrameClock {
+    runtime: RuntimeHandle,
+}
+
+impl FrameClock {
+    pub fn new(runtime: RuntimeHandle) -> Self {
+        Self { runtime }
+    }
+
+    pub fn runtime_handle(&self) -> RuntimeHandle {
+        self.runtime.clone()
+    }
+
+    pub fn with_frame_nanos(
+        &self,
+        callback: impl FnOnce(u64) + 'static,
+    ) -> FrameCallbackRegistration {
+        let mut callback_opt = Some(callback);
+        let runtime = self.runtime.clone();
+        match runtime.register_frame_callback(move |time| {
+            if let Some(callback) = callback_opt.take() {
+                callback(time);
+            }
+        }) {
+            Some(id) => FrameCallbackRegistration::new(runtime, id),
+            None => FrameCallbackRegistration::inactive(runtime),
+        }
+    }
+
+    pub fn with_frame_millis(
+        &self,
+        callback: impl FnOnce(u64) + 'static,
+    ) -> FrameCallbackRegistration {
+        self.with_frame_nanos(move |nanos| {
+            let millis = nanos / 1_000_000;
+            callback(millis);
+        })
+    }
+}
+
+pub struct FrameCallbackRegistration {
+    runtime: RuntimeHandle,
+    id: Option<FrameCallbackId>,
+}
+
+impl FrameCallbackRegistration {
+    fn new(runtime: RuntimeHandle, id: FrameCallbackId) -> Self {
+        Self {
+            runtime,
+            id: Some(id),
+        }
+    }
+
+    fn inactive(runtime: RuntimeHandle) -> Self {
+        Self { runtime, id: None }
+    }
+
+    pub fn cancel(mut self) {
+        if let Some(id) = self.id.take() {
+            self.runtime.cancel_frame_callback(id);
+        }
+    }
+}
+
+impl Drop for FrameCallbackRegistration {
+    fn drop(&mut self) {
+        if let Some(id) = self.id.take() {
+            self.runtime.cancel_frame_callback(id);
+        }
     }
 }
 
@@ -2181,6 +2359,112 @@ mod tests {
             })
         });
         compose_test_node(|| TextNode::default())
+    }
+
+    #[test]
+    fn frame_callbacks_fire_in_registration_order() {
+        let runtime = Runtime::new(Arc::new(TestScheduler::default()));
+        let handle = runtime.handle();
+        let clock = runtime.frame_clock();
+        let events: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        let mut guards = Vec::new();
+        {
+            let events = events.clone();
+            guards.push(clock.with_frame_nanos(move |_| {
+                events.borrow_mut().push("first");
+            }));
+        }
+        {
+            let events = events.clone();
+            guards.push(clock.with_frame_nanos(move |_| {
+                events.borrow_mut().push("second");
+            }));
+        }
+
+        handle.drain_frame_callbacks(42);
+        drop(guards);
+
+        let events = events.borrow();
+        assert_eq!(events.as_slice(), ["first", "second"]);
+        assert!(!runtime.needs_frame());
+    }
+
+    #[test]
+    fn cancelling_frame_callback_prevents_execution() {
+        let runtime = Runtime::new(Arc::new(TestScheduler::default()));
+        let handle = runtime.handle();
+        let clock = runtime.frame_clock();
+        let events: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+
+        let registration = {
+            let events = events.clone();
+            clock.with_frame_nanos(move |_| {
+                events.borrow_mut().push("fired");
+            })
+        };
+
+        assert!(runtime.needs_frame());
+        drop(registration);
+        handle.drain_frame_callbacks(84);
+        assert!(events.borrow().is_empty());
+        assert!(!runtime.needs_frame());
+    }
+
+    #[test]
+    fn draining_callbacks_clears_needs_frame() {
+        let runtime = Runtime::new(Arc::new(TestScheduler::default()));
+        let handle = runtime.handle();
+        let clock = runtime.frame_clock();
+
+        let guard = clock.with_frame_nanos(|_| {});
+        assert!(runtime.needs_frame());
+        handle.drain_frame_callbacks(128);
+        drop(guard);
+        assert!(!runtime.needs_frame());
+    }
+
+    #[composable]
+    fn frame_callback_node(events: Rc<RefCell<Vec<&'static str>>>) -> NodeId {
+        let runtime = compose_core::with_current_composer(|composer| composer.runtime_handle());
+        compose_core::DisposableEffect((), move |scope| {
+            let clock = runtime.frame_clock();
+            let events = events.clone();
+            let registration = clock.with_frame_nanos(move |_| {
+                events.borrow_mut().push("fired");
+            });
+            scope.on_dispose(move || drop(registration));
+            DisposableEffectResult::default()
+        });
+        compose_test_node(|| TextNode::default())
+    }
+
+    #[test]
+    fn disposing_scope_cancels_pending_frame_callback() {
+        let mut composition = Composition::new(MemoryApplier::new());
+        let runtime_handle = composition.runtime_handle();
+        let events: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        let active = compose_core::MutableState::with_runtime(true, runtime_handle.clone());
+        let mut render = {
+            let events = events.clone();
+            let active = active.clone();
+            move || {
+                if active.value() {
+                    frame_callback_node(events.clone());
+                }
+            }
+        };
+
+        composition
+            .render(location_key(file!(), line!(), column!()), &mut render)
+            .expect("initial render");
+
+        active.set(false);
+        composition
+            .render(location_key(file!(), line!(), column!()), &mut render)
+            .expect("removal render");
+
+        runtime_handle.drain_frame_callbacks(512);
+        assert!(events.borrow().is_empty());
     }
 
     #[test]
