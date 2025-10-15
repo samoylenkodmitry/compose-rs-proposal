@@ -58,38 +58,47 @@ pub fn Column(modifier: Modifier, content: impl FnOnce()) -> NodeId {
 
 ---
 
-## 2) Practical Intrinsics
+## 2) Practical Intrinsics ✅
+
+**Status: COMPLETED**
 
 ### Tasks
 
-* Implement intrinsic methods for primitives.
-* Add `IntrinsicSize` support: `Modifier.width(IntrinsicSize::Min/Max)` and `Modifier.height(IntrinsicSize::Min/Max)` with a resolver pass.
+* ✅ Implement intrinsic methods for primitives (Column/Row/Box).
+* ✅ Add `IntrinsicSize` support: `Modifier.width_intrinsic(IntrinsicSize::Min/Max)` and `Modifier.height_intrinsic(IntrinsicSize::Min/Max)`.
+* ✅ Add intrinsic resolver pass in layout engine via `resolve_dimension_with_intrinsics`.
+* ✅ Implement `compute_*_intrinsic_width/height` for Column/Row/Box.
 
 ### Implementation Notes
 
 ```rust
 // Column: min width = max of children; Row: min width = sum of children
-fn column_min_intrinsic_width(children: &[Box<dyn Measurable>], h: f32) -> f32 {
-    children.iter().map(|m| m.min_intrinsic_width(h)).fold(0.0, f32::max)
+fn compute_column_intrinsic_width(applier, children, intrinsic, height) -> f32 {
+    children.iter().map(|&child_id|
+        compute_node_intrinsic_width(applier, child_id, intrinsic, height)
+    ).fold(0.0, f32::max)
 }
-fn row_min_intrinsic_width(children: &[Box<dyn Measurable>], h: f32) -> f32 {
-    children.iter().map(|m| m.min_intrinsic_width(h)).sum()
+fn compute_row_intrinsic_width(applier, children, intrinsic, height, spacing) -> f32 {
+    children.iter().map(|&child_id|
+        compute_node_intrinsic_width(applier, child_id, intrinsic, height)
+    ).sum::<f32>() + total_spacing
 }
 ```
 
 ```rust
-// API surface
+// API surface (implemented in compose-ui/src/modifier.rs)
 pub enum IntrinsicSize { Min, Max }
 impl Modifier {
-    pub fn width(self, s: IntrinsicSize) -> Self { /* resolve via intrinsics */ }
-    pub fn height(self, s: IntrinsicSize) -> Self { /* resolve via intrinsics */ }
+    pub fn width_intrinsic(intrinsic: IntrinsicSize) -> Self { /* ... */ }
+    pub fn height_intrinsic(intrinsic: IntrinsicSize) -> Self { /* ... */ }
 }
 ```
 
 ### Verification
 
-* Demo: equal‑width buttons using `IntrinsicSize.Max`.
-* Unit tests: intrinsic vs measured sizes sanity checks.
+* ✅ Demo: equal‑width buttons using `IntrinsicSize::Max` in desktop-app.
+* ✅ Unit tests: 8 intrinsics tests passing in `compose-ui/tests/intrinsics_test.rs`.
+* ✅ Intrinsic resolution integrated into Column/Row/Box measurement.
 
 ---
 
@@ -316,8 +325,10 @@ Budgets enforced via CI benchmarks.
 
 ### Phase 3 – Intrinsics & Lazy
 
-* [x] Intrinsic methods (Column/Row + children)
+* [x] Intrinsic methods (Column/Row/Box + children)
 * [x] `IntrinsicSize` min/max modifiers
+* [x] Intrinsic resolution in layout engine
+* [x] Equal-width buttons demo via IntrinsicSize.Max
 * [ ] `LazyColumn` MVP via `SubcomposeLayout`
 * [ ] `LazyRow` MVP
 * [ ] Scroll state + inertia

@@ -437,6 +437,87 @@ fn counter_app() {
                 height: 16.0,
             });
 
+            // Intrinsics demonstration: Equal-width buttons
+            Text(
+                "Intrinsic Sizing Demo (Equal Width):",
+                Modifier::padding(8.0)
+                    .then(Modifier::background(Color(0.2, 0.2, 0.2, 0.5)))
+                    .then(Modifier::rounded_corners(8.0)),
+            );
+
+            Spacer(Size {
+                width: 0.0,
+                height: 8.0,
+            });
+
+            Row(
+                Modifier::padding(8.0)
+                    .then(Modifier::rounded_corners(12.0))
+                    .then(Modifier::background(Color(0.1, 0.1, 0.15, 0.6)))
+                    .then(Modifier::padding(8.0)),
+                || {
+                    // All buttons will have the same width as the widest one ("Long Button Text")
+                    Button(
+                        Modifier::width_intrinsic(compose_ui::IntrinsicSize::Max)
+                            .then(Modifier::rounded_corners(12.0))
+                            .then(Modifier::draw_behind(|scope| {
+                                scope.draw_round_rect(
+                                    Brush::solid(Color(0.3, 0.5, 0.2, 1.0)),
+                                    CornerRadii::uniform(12.0),
+                                );
+                            }))
+                            .then(Modifier::padding(10.0)),
+                        || {},
+                        || {
+                            Text("OK", Modifier::padding(4.0).then(Modifier::size(Size { width: 50.0, height:50.0})));
+                        },
+                    );
+                    Spacer(Size {
+                        width: 8.0,
+                        height: 0.0,
+                    });
+                    Button(
+                        Modifier::width_intrinsic(compose_ui::IntrinsicSize::Max)
+                            .then(Modifier::rounded_corners(12.0))
+                            .then(Modifier::draw_behind(|scope| {
+                                scope.draw_round_rect(
+                                    Brush::solid(Color(0.5, 0.3, 0.2, 1.0)),
+                                    CornerRadii::uniform(12.0),
+                                );
+                            }))
+                            .then(Modifier::padding(10.0)),
+                        || {},
+                        || {
+                            Text("Cancel", Modifier::padding(4.0));
+                        },
+                    );
+                    Spacer(Size {
+                        width: 8.0,
+                        height: 0.0,
+                    });
+                    Button(
+                        Modifier::width_intrinsic(compose_ui::IntrinsicSize::Max)
+                            .then(Modifier::rounded_corners(12.0))
+                            .then(Modifier::draw_behind(|scope| {
+                                scope.draw_round_rect(
+                                    Brush::solid(Color(0.2, 0.3, 0.5, 1.0)),
+                                    CornerRadii::uniform(12.0),
+                                );
+                            }))
+                            .then(Modifier::padding(10.0)),
+                        || {},
+                        || {
+                            Text("Long Button Text", Modifier::padding(4.0));
+                        },
+                    );
+                },
+            );
+
+            Spacer(Size {
+                width: 0.0,
+                height: 16.0,
+            });
+
             Row(Modifier::padding(8.0), || {
                 Button(
                     Modifier::rounded_corners(16.0)

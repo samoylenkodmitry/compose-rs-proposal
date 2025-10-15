@@ -185,21 +185,45 @@ impl<'a> LayoutBuilder<'a> {
         let mut width = content_width + padding.horizontal_sum();
         let mut height = content_height + padding.vertical_sum();
 
-        width = resolve_dimension(
+        // Resolve intrinsic width for Column: max of children's widths
+        width = resolve_dimension_with_intrinsics(
             width,
             props.width(),
             props.min_width(),
             props.max_width(),
             constraints.min_width,
             constraints.max_width,
+            |intrinsic| {
+                let cross_axis = if inner_constraints.max_height.is_finite() {
+                    inner_constraints.max_height
+                } else {
+                    0.0
+                };
+                compute_column_intrinsic_width(self.applier, &node.children, intrinsic, cross_axis)
+                    + padding.horizontal_sum()
+            },
         );
-        height = resolve_dimension(
+        height = resolve_dimension_with_intrinsics(
             height,
             props.height(),
             props.min_height(),
             props.max_height(),
             constraints.min_height,
             constraints.max_height,
+            |intrinsic| {
+                let cross_axis = if inner_constraints.max_width.is_finite() {
+                    inner_constraints.max_width
+                } else {
+                    0.0
+                };
+                compute_column_intrinsic_height(
+                    self.applier,
+                    &node.children,
+                    intrinsic,
+                    cross_axis,
+                    spacing,
+                ) + padding.vertical_sum()
+            },
         );
 
         let available_width = (width - padding.horizontal_sum()).max(0.0);
@@ -292,21 +316,40 @@ impl<'a> LayoutBuilder<'a> {
         let mut width = content_width + padding.horizontal_sum();
         let mut height = content_height + padding.vertical_sum();
 
-        width = resolve_dimension(
+        // Resolve intrinsic width for Row: sum of children's widths
+        width = resolve_dimension_with_intrinsics(
             width,
             props.width(),
             props.min_width(),
             props.max_width(),
             constraints.min_width,
             constraints.max_width,
+            |intrinsic| {
+                let cross_axis = if inner_constraints.max_height.is_finite() {
+                    inner_constraints.max_height
+                } else {
+                    0.0
+                };
+                compute_row_intrinsic_width(self.applier, &node.children, intrinsic, cross_axis, spacing)
+                    + padding.horizontal_sum()
+            },
         );
-        height = resolve_dimension(
+        height = resolve_dimension_with_intrinsics(
             height,
             props.height(),
             props.min_height(),
             props.max_height(),
             constraints.min_height,
             constraints.max_height,
+            |intrinsic| {
+                let cross_axis = if inner_constraints.max_width.is_finite() {
+                    inner_constraints.max_width
+                } else {
+                    0.0
+                };
+                compute_row_intrinsic_height(self.applier, &node.children, intrinsic, cross_axis)
+                    + padding.vertical_sum()
+            },
         );
 
         let available_width = (width - padding.horizontal_sum()).max(0.0);
@@ -377,21 +420,40 @@ impl<'a> LayoutBuilder<'a> {
         let mut width = max_child_width + padding.horizontal_sum();
         let mut height = max_child_height + padding.vertical_sum();
 
-        width = resolve_dimension(
+        // Resolve intrinsic width for Box: max of children's widths
+        width = resolve_dimension_with_intrinsics(
             width,
             props.width(),
             props.min_width(),
             props.max_width(),
             constraints.min_width,
             constraints.max_width,
+            |intrinsic| {
+                let cross_axis = if inner_constraints.max_height.is_finite() {
+                    inner_constraints.max_height
+                } else {
+                    0.0
+                };
+                compute_box_intrinsic_width(self.applier, &node.children, intrinsic, cross_axis)
+                    + padding.horizontal_sum()
+            },
         );
-        height = resolve_dimension(
+        height = resolve_dimension_with_intrinsics(
             height,
             props.height(),
             props.min_height(),
             props.max_height(),
             constraints.min_height,
             constraints.max_height,
+            |intrinsic| {
+                let cross_axis = if inner_constraints.max_width.is_finite() {
+                    inner_constraints.max_width
+                } else {
+                    0.0
+                };
+                compute_box_intrinsic_height(self.applier, &node.children, intrinsic, cross_axis)
+                    + padding.vertical_sum()
+            },
         );
 
         let available_width = (width - padding.horizontal_sum()).max(0.0);
@@ -1075,6 +1137,224 @@ fn query_intrinsic_size(
         .fold(0.0, &combiner);
 
     (min_intrinsic, max_intrinsic)
+}
+
+/// Computes the intrinsic width for a Column (max of children's widths).
+fn compute_column_intrinsic_width(
+    applier: *mut MemoryApplier,
+    children: &indexmap::IndexSet<NodeId>,
+    intrinsic: crate::modifier::IntrinsicSize,
+    height: f32,
+) -> f32 {
+    children
+        .iter()
+        .map(|&child_id| {
+            compute_node_intrinsic_width(applier, child_id, intrinsic, height)
+        })
+        .fold(0.0, f32::max)
+}
+
+/// Computes the intrinsic height for a Column (sum of children's heights).
+fn compute_column_intrinsic_height(
+    applier: *mut MemoryApplier,
+    children: &indexmap::IndexSet<NodeId>,
+    intrinsic: crate::modifier::IntrinsicSize,
+    width: f32,
+    spacing: f32,
+) -> f32 {
+    let count = children.len();
+    let total_spacing = if count > 0 {
+        spacing * (count as f32 - 1.0).max(0.0)
+    } else {
+        0.0
+    };
+    children
+        .iter()
+        .map(|&child_id| {
+            compute_node_intrinsic_height(applier, child_id, intrinsic, width)
+        })
+        .sum::<f32>()
+        + total_spacing
+}
+
+/// Computes the intrinsic width for a Row (sum of children's widths).
+fn compute_row_intrinsic_width(
+    applier: *mut MemoryApplier,
+    children: &indexmap::IndexSet<NodeId>,
+    intrinsic: crate::modifier::IntrinsicSize,
+    height: f32,
+    spacing: f32,
+) -> f32 {
+    let count = children.len();
+    let total_spacing = if count > 0 {
+        spacing * (count as f32 - 1.0).max(0.0)
+    } else {
+        0.0
+    };
+    children
+        .iter()
+        .map(|&child_id| {
+            compute_node_intrinsic_width(applier, child_id, intrinsic, height)
+        })
+        .sum::<f32>()
+        + total_spacing
+}
+
+/// Computes the intrinsic height for a Row (max of children's heights).
+fn compute_row_intrinsic_height(
+    applier: *mut MemoryApplier,
+    children: &indexmap::IndexSet<NodeId>,
+    intrinsic: crate::modifier::IntrinsicSize,
+    width: f32,
+) -> f32 {
+    children
+        .iter()
+        .map(|&child_id| {
+            compute_node_intrinsic_height(applier, child_id, intrinsic, width)
+        })
+        .fold(0.0, f32::max)
+}
+
+/// Computes the intrinsic width for a Box (max of children's widths).
+fn compute_box_intrinsic_width(
+    applier: *mut MemoryApplier,
+    children: &indexmap::IndexSet<NodeId>,
+    intrinsic: crate::modifier::IntrinsicSize,
+    height: f32,
+) -> f32 {
+    children
+        .iter()
+        .map(|&child_id| {
+            compute_node_intrinsic_width(applier, child_id, intrinsic, height)
+        })
+        .fold(0.0, f32::max)
+}
+
+/// Computes the intrinsic height for a Box (max of children's heights).
+fn compute_box_intrinsic_height(
+    applier: *mut MemoryApplier,
+    children: &indexmap::IndexSet<NodeId>,
+    intrinsic: crate::modifier::IntrinsicSize,
+    width: f32,
+) -> f32 {
+    children
+        .iter()
+        .map(|&child_id| {
+            compute_node_intrinsic_height(applier, child_id, intrinsic, width)
+        })
+        .fold(0.0, f32::max)
+}
+
+/// Computes intrinsic width for a single node.
+fn compute_node_intrinsic_width(
+    applier: *mut MemoryApplier,
+    node_id: NodeId,
+    intrinsic: crate::modifier::IntrinsicSize,
+    height: f32,
+) -> f32 {
+    use crate::modifier::IntrinsicSize;
+
+    let constraints = match intrinsic {
+        IntrinsicSize::Min => Constraints {
+            min_width: 0.0,
+            max_width: f32::INFINITY,
+            min_height: height,
+            max_height: height,
+        },
+        IntrinsicSize::Max => Constraints {
+            min_width: 0.0,
+            max_width: f32::INFINITY,
+            min_height: 0.0,
+            max_height: height,
+        },
+    };
+
+    match unsafe { measure_node_via_ptr(applier, node_id, constraints) } {
+        Ok(measured) => measured.size.width,
+        Err(_) => 0.0,
+    }
+}
+
+/// Computes intrinsic height for a single node.
+fn compute_node_intrinsic_height(
+    applier: *mut MemoryApplier,
+    node_id: NodeId,
+    intrinsic: crate::modifier::IntrinsicSize,
+    width: f32,
+) -> f32 {
+    use crate::modifier::IntrinsicSize;
+
+    let constraints = match intrinsic {
+        IntrinsicSize::Min => Constraints {
+            min_width: width,
+            max_width: width,
+            min_height: 0.0,
+            max_height: f32::INFINITY,
+        },
+        IntrinsicSize::Max => Constraints {
+            min_width: 0.0,
+            max_width: width,
+            min_height: 0.0,
+            max_height: f32::INFINITY,
+        },
+    };
+
+    match unsafe { measure_node_via_ptr(applier, node_id, constraints) } {
+        Ok(measured) => measured.size.height,
+        Err(_) => 0.0,
+    }
+}
+
+/// Resolves dimension with intrinsic size support.
+fn resolve_dimension_with_intrinsics(
+    base: f32,
+    explicit: DimensionConstraint,
+    min_override: Option<f32>,
+    max_override: Option<f32>,
+    min_limit: f32,
+    max_limit: f32,
+    intrinsic_resolver: impl FnOnce(crate::modifier::IntrinsicSize) -> f32,
+) -> f32 {
+    let mut min_bound = min_limit;
+    if let Some(min_value) = min_override {
+        min_bound = min_bound.max(min_value);
+    }
+
+    let mut max_bound = if max_limit.is_finite() {
+        max_limit
+    } else {
+        max_override.unwrap_or(max_limit)
+    };
+    if let Some(max_value) = max_override {
+        if max_bound.is_finite() {
+            max_bound = max_bound.min(max_value);
+        } else {
+            max_bound = max_value;
+        }
+    }
+    if max_bound < min_bound {
+        max_bound = min_bound;
+    }
+
+    let mut size = match explicit {
+        DimensionConstraint::Points(points) => points,
+        DimensionConstraint::Fraction(fraction) => {
+            if max_limit.is_finite() {
+                max_limit * fraction.clamp(0.0, 1.0)
+            } else {
+                base
+            }
+        }
+        DimensionConstraint::Unspecified => base,
+        DimensionConstraint::Intrinsic(intrinsic_type) => {
+            // Compute intrinsic size using the provided resolver
+            intrinsic_resolver(intrinsic_type)
+        }
+    };
+
+    size = clamp_dimension(size, min_bound, max_bound);
+    size = clamp_dimension(size, min_limit, max_limit);
+    size.max(0.0)
 }
 
 fn resolve_dimension(
