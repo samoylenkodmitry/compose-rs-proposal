@@ -247,7 +247,7 @@ fn counter_app() {
     } else {
         pointer_wave * 0.6
     };
-    let wave = compose_core::animate_float_as_state(target_wave, "wave").value();
+    let wave = compose_core::animateFloatAsState(target_wave, "wave").value();
     LaunchedEffect!(counter.get(), |_| println!("effect call")); // todo: provide a way to use mutablestate from lambda
 
     Column(

@@ -657,8 +657,9 @@ pub fn pop_parent() {
     with_current_composer(|composer| composer.pop_parent());
 }
 
-pub fn animate_float_as_state(target: f32, label: &str) -> State<f32> {
-    with_current_composer(|composer| composer.animate_float_as_state(target, label))
+#[allow(non_snake_case)]
+pub fn animateFloatAsState(target: f32, label: &str) -> State<f32> {
+    with_current_composer(|composer| composer.animateFloatAsState(target, label))
 }
 
 #[derive(Default)]
@@ -1626,7 +1627,8 @@ impl<'a> Composer<'a> {
         state.clone()
     }
 
-    pub fn animate_float_as_state(&mut self, target: f32, label: &str) -> State<f32> {
+    #[allow(non_snake_case)]
+    pub fn animateFloatAsState(&mut self, target: f32, label: &str) -> State<f32> {
         let runtime = self.runtime.clone();
         let animated = self
             .slots
@@ -2854,7 +2856,7 @@ mod tests {
                     let target = Rc::clone(&target);
                     with_current_composer(|composer| {
                         composer.with_group(group_key, |composer| {
-                            let state = composer.animate_float_as_state(*target.borrow(), "alpha");
+                            let state = composer.animateFloatAsState(*target.borrow(), "alpha");
                             state_slot.borrow_mut().replace(state);
                         });
                     });
@@ -2879,7 +2881,7 @@ mod tests {
                     let target = Rc::clone(&target);
                     with_current_composer(|composer| {
                         composer.with_group(group_key, |composer| {
-                            let state = composer.animate_float_as_state(*target.borrow(), "alpha");
+                            let state = composer.animateFloatAsState(*target.borrow(), "alpha");
                             state_slot.borrow_mut().replace(state);
                         });
                     });
