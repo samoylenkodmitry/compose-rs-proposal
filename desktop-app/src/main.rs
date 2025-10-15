@@ -97,6 +97,9 @@ fn main() {
                 }
                 WindowEvent::CursorMoved { position, .. } => {
                     app.set_cursor(position.x as f32, position.y as f32);
+                    // Update and redraw immediately to keep animations running during cursor movement
+                    app.update();
+                    window.request_redraw();
                 }
                 WindowEvent::MouseInput {
                     state,
