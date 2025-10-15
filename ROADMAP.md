@@ -137,7 +137,8 @@ Converted `LaunchedEffect` and `DisposableEffect` from functions to macros that 
 
 #### Status
 - ✅ Core modifier node traits (`ModifierNode`, `ModifierElement`) and chain reconciliation scaffolding implemented in `compose-core`
-- ⏳ Specialized layout/draw/input/semantics nodes and runtime invalidation plumbing
+- ✅ Basic modifier-node invalidation plumbing via `BasicModifierNodeContext`
+- ⏳ Specialized layout/draw/input/semantics nodes
 
 #### Deliverables
 - ✅ Node trait scaffolding: `ModifierNode` + generic `ModifierElement`
