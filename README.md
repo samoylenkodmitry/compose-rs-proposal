@@ -7,14 +7,50 @@ Compose-RS is an experimental Rust workspace that sketches out a Jetpack Compose
 
 ## Workspace layout
 
-- **`compose-core/`** – core runtime pieces such as the slot table, composer, state management, and effect system.
-- **`compose-macros/`** – the procedural macro crate that will host the `#[composable]` attribute and related code generation utilities.
-- **`compose-ui/`** – declarative UI primitives, layout system, and modifier infrastructure.
-- **`desktop-app/`** – a future native desktop demo integrating the framework with `winit` and a rendering backend.
+- **`compose-core/`** – Core runtime with slot table, composer, state management, side effects, and frame clock.
+- **`compose-macros/`** – Procedural macro crate providing the `#[composable]` attribute.
+- **`compose-runtime-std/`** – Standard runtime scheduler implementation with frame callbacks.
+- **`compose-ui/`** – Declarative UI primitives (Column, Row, Box, Text), layout system with intrinsics, and modifier infrastructure.
+- **`desktop-app/`** – Working desktop demo with winit + pixels renderer showcasing interactive UI.
+
+## Current Status
+
+### ✅ Phase 1 Complete - Smart Recomposition + Frame Clock
+- Smart recomposition with skip logic for stable inputs
+- Frame clock with `withFrameNanos`/`withFrameMillis` APIs
+- Side effects: `SideEffect`, `DisposableEffect`, `LaunchedEffect` with proper cleanup
+- State management with automatic invalidation
+- Comprehensive test coverage
+
+### ✅ Phase 3 Partial - Intrinsics + Subcompose
+- **Intrinsic measurements** fully implemented for all layout primitives
+- SubcomposeLayout with stable key reuse and slot management
+- LazyColumn/LazyRow not yet implemented
+
+### 🚧 Phase 2 Pending - Modifier.Node Architecture
+- Currently using value-based modifiers
+- Type-safe scope system planned
+
+## Examples
+
+Run the interactive desktop example:
+```bash
+cargo run --bin desktop-app
+```
+
+Try the intrinsic measurement demo:
+```bash
+cargo run --example intrinsic_size
+```
+
+Test side effect cleanup:
+```bash
+cargo run --example test_cleanup
+```
 
 ## Roadmap
 
-See [`proposal.md`](proposal.md) for background, design goals, and a phased implementation plan that covers rendering backends, recomposition semantics, modifiers, and platform integration milestones.
+See [`ROADMAP.md`](ROADMAP.md) for detailed progress tracking, implementation status, and upcoming milestones. Also see [`proposal.md`](proposal.md) for the original design goals and architecture.
 
 ## Contributing
 

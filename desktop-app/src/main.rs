@@ -54,6 +54,14 @@ fn animation_state() -> compose_core::MutableState<f32> {
 fn main() {
     env_logger::init();
 
+    println!("=== Compose-RS Desktop Example ===");
+    println!("Click the Increment/Decrement buttons to see:");
+    println!("  - Side effect cleanup when switching branches");
+    println!("  - Frame clock callbacks firing");
+    println!("  - Smart recomposition (only affected parts update)");
+    println!("  - Intrinsic measurements in layout");
+    println!();
+
     let event_loop = EventLoopBuilder::new().build();
     let window = WindowBuilder::new()
         .with_title("Compose Counter")
@@ -276,7 +284,7 @@ fn counter_app() {
     let pointer_down = compose_core::useState(|| false);
     let wave_state = animation_state();
     let wave = wave_state.get();
-    LaunchedEffect(counter.get(), |_| println!("effect call")); // todo: provide a way to use mutablestate from lambda
+    LaunchedEffect!(counter.get(), |_| println!("effect call")); // todo: provide a way to use mutablestate from lambda
 
     Column(
         Modifier::padding(32.0)
@@ -393,10 +401,10 @@ fn counter_app() {
                 .then(Modifier::padding(12.0)),
                 || {
                     if counter.get() % 2 == 0 {
-                        LaunchedEffect("", |_|{
+                        LaunchedEffect!("", |_|{
                             println!("launch playground")
                         });
-                        DisposableEffect("",|x|{
+                        DisposableEffect!("",|x|{
                             println!("dispose effect playground");
                             x.on_dispose(||{
                                 println!("dispose playground")
@@ -409,10 +417,10 @@ fn counter_app() {
                                 .then(Modifier::rounded_corners(12.0)),
                         );
                     } else {
-                        LaunchedEffect("", |_|{
+                        LaunchedEffect!("", |_|{
                             println!("launch no-ground")
                         });
-                        DisposableEffect("",|x|{
+                        DisposableEffect!("",|x|{
                             println!("dispose effect no-ground");
                             x.on_dispose(||{
                                 println!("dispose no-ground")

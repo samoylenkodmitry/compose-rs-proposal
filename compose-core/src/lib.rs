@@ -563,55 +563,83 @@ pub fn SideEffect(effect: impl FnOnce() + 'static) {
     with_current_composer(|composer| composer.register_side_effect(effect));
 }
 
-#[allow(non_snake_case)]
-pub fn DisposableEffect<K, F>(keys: K, effect: F)
+pub fn __disposable_effect_impl<K, F>(group_key: Key, keys: K, effect: F)
 where
     K: Hash,
     F: FnOnce(DisposableEffectScope) -> DisposableEffectResult + 'static,
 {
+    // Create a group using the caller's location to ensure each DisposableEffect
+    // gets its own slot table entry, even in conditional branches
     with_current_composer(|composer| {
-        let key_hash = hash_key(&keys);
-        let state = composer.remember(DisposableEffectState::default);
-        if state.should_run(key_hash) {
-            state.run_cleanup();
-            state.set_key(key_hash);
-            let state_ptr: *mut DisposableEffectState = &mut *state;
-            let mut effect_opt = Some(effect);
-            composer.register_side_effect(move || {
-                if let Some(effect) = effect_opt.take() {
-                    let result = effect(DisposableEffectScope);
-                    unsafe {
-                        (*state_ptr).set_cleanup(result.into_cleanup());
+        composer.with_group(group_key, |composer| {
+            let key_hash = hash_key(&keys);
+            let state = composer.remember(DisposableEffectState::default);
+            if state.should_run(key_hash) {
+                state.run_cleanup();
+                state.set_key(key_hash);
+                let state_ptr: *mut DisposableEffectState = &mut *state;
+                let mut effect_opt = Some(effect);
+                composer.register_side_effect(move || {
+                    if let Some(effect) = effect_opt.take() {
+                        let result = effect(DisposableEffectScope);
+                        unsafe {
+                            (*state_ptr).set_cleanup(result.into_cleanup());
+                        }
                     }
-                }
-            });
-        }
+                });
+            }
+        });
     });
 }
 
-#[allow(non_snake_case)]
-pub fn LaunchedEffect<K, F>(keys: K, effect: F)
+#[macro_export]
+macro_rules! DisposableEffect {
+    ($keys:expr, $effect:expr) => {
+        $crate::__disposable_effect_impl(
+            $crate::location_key(file!(), line!(), column!()),
+            $keys,
+            $effect
+        )
+    };
+}
+
+pub fn __launched_effect_impl<K, F>(group_key: Key, keys: K, effect: F)
 where
     K: Hash,
     F: FnOnce(LaunchedEffectScope) + Send + 'static,
 {
+    // Create a group using the caller's location to ensure each LaunchedEffect
+    // gets its own slot table entry, even in conditional branches
     with_current_composer(|composer| {
-        let key_hash = hash_key(&keys);
-        let state = composer.remember(LaunchedEffectState::default);
-        if state.should_run(key_hash) {
-            state.set_key(key_hash);
-            let state_ptr: *mut LaunchedEffectState = &mut *state;
-            let runtime = composer.runtime_handle();
-            let mut effect_opt = Some(effect);
-            composer.register_side_effect(move || {
-                if let Some(effect) = effect_opt.take() {
-                    unsafe {
-                        (*state_ptr).launch(runtime.clone(), effect);
+        composer.with_group(group_key, |composer| {
+            let key_hash = hash_key(&keys);
+            let state = composer.remember(LaunchedEffectState::default);
+            if state.should_run(key_hash) {
+                state.set_key(key_hash);
+                let state_ptr: *mut LaunchedEffectState = &mut *state;
+                let runtime = composer.runtime_handle();
+                let mut effect_opt = Some(effect);
+                composer.register_side_effect(move || {
+                    if let Some(effect) = effect_opt.take() {
+                        unsafe {
+                            (*state_ptr).launch(runtime.clone(), effect);
+                        }
                     }
-                }
-            });
-        }
+                });
+            }
+        });
     });
+}
+
+#[macro_export]
+macro_rules! LaunchedEffect {
+    ($keys:expr, $effect:expr) => {
+        $crate::__launched_effect_impl(
+            $crate::location_key(file!(), line!(), column!()),
+            $keys,
+            $effect
+        )
+    };
 }
 
 pub fn with_node_mut<N: Node + 'static, R>(
@@ -2234,7 +2262,7 @@ mod tests {
                     let key = state.value();
                     let runs = Arc::clone(&runs);
                     let cancels = Arc::clone(&cancels);
-                    compose_core::LaunchedEffect(key, move |scope| {
+                    LaunchedEffect!(key, move |scope| {
                         runs.fetch_add(1, Ordering::SeqCst);
                         while scope.is_active() {
                             std::thread::sleep(Duration::from_millis(5));
@@ -2272,7 +2300,7 @@ mod tests {
             .render(0, move || {
                 let key = state.value();
                 let tx = tx.clone();
-                compose_core::LaunchedEffect(key, move |scope| {
+                LaunchedEffect!(key, move |scope| {
                     let _ = tx.send("start");
                     while scope.is_active() {
                         std::thread::sleep(Duration::from_millis(5));
@@ -2286,6 +2314,63 @@ mod tests {
 
         drop(composition);
         assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap(), "cancel");
+    }
+
+    #[test]
+    fn launched_effect_relaunches_on_branch_change() {
+        // Test that LaunchedEffect with same key relaunches when switching if/else branches
+        // This matches Jetpack Compose behavior
+        let mut composition = Composition::new(MemoryApplier::new());
+        let runtime = composition.runtime_handle();
+        let state = MutableState::with_runtime(false, runtime.clone());
+        let runs = Arc::new(AtomicUsize::new(0));
+        let cancels = Arc::new(AtomicUsize::new(0));
+
+        let render = |composition: &mut Composition<MemoryApplier>, show_first: bool| {
+            let runs = Arc::clone(&runs);
+            let cancels = Arc::clone(&cancels);
+            composition
+                .render(0, move || {
+                    let runs = Arc::clone(&runs);
+                    let cancels = Arc::clone(&cancels);
+                    if show_first {
+                        // Branch A with LaunchedEffect("") - macro captures call site location
+                        LaunchedEffect!("", move |scope| {
+                            runs.fetch_add(1, Ordering::SeqCst);
+                            while scope.is_active() {
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
+                            cancels.fetch_add(1, Ordering::SeqCst);
+                        });
+                    } else {
+                        // Branch B with LaunchedEffect("") - different call site, separate group
+                        LaunchedEffect!("", move |scope| {
+                            runs.fetch_add(1, Ordering::SeqCst);
+                            while scope.is_active() {
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
+                            cancels.fetch_add(1, Ordering::SeqCst);
+                        });
+                    }
+                })
+                .expect("render succeeds");
+        };
+
+        // First render - branch A
+        render(&mut composition, true);
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(runs.load(Ordering::SeqCst), 1, "First effect should run");
+        assert_eq!(cancels.load(Ordering::SeqCst), 0, "No cancellations yet");
+
+        // Switch to branch B - should relaunch even with same key
+        render(&mut composition, false);
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(runs.load(Ordering::SeqCst), 2, "Second effect should run after branch switch");
+        assert_eq!(cancels.load(Ordering::SeqCst), 1, "First effect should be cancelled");
+
+        drop(composition);
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(cancels.load(Ordering::SeqCst), 2, "Second effect should be cancelled on dispose");
     }
 
     #[test]
@@ -2361,7 +2446,7 @@ mod tests {
     fn disposable_effect_host() -> NodeId {
         let state = compose_core::useState(|| 0);
         DISPOSABLE_STATE.with(|slot| *slot.borrow_mut() = Some(state.clone()));
-        compose_core::DisposableEffect(state.value(), |scope| {
+        DisposableEffect!(state.value(), |scope| {
             DISPOSABLE_EFFECT_LOG.with(|log| log.borrow_mut().push("start"));
             scope.on_dispose(|| {
                 DISPOSABLE_EFFECT_LOG.with(|log| log.borrow_mut().push("dispose"));
@@ -2435,7 +2520,7 @@ mod tests {
     #[composable]
     fn frame_callback_node(events: Rc<RefCell<Vec<&'static str>>>) -> NodeId {
         let runtime = compose_core::with_current_composer(|composer| composer.runtime_handle());
-        compose_core::DisposableEffect((), move |scope| {
+        DisposableEffect!((), move |scope| {
             let clock = runtime.frame_clock();
             let events = events.clone();
             let registration = clock.with_frame_nanos(move |_| {
