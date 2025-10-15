@@ -30,6 +30,71 @@ pub trait ModifierNodeContext {
     fn request_update(&mut self) {}
 }
 
+/// Lightweight [`ModifierNodeContext`] implementation that records
+/// invalidation requests and update signals.
+///
+/// The context intentionally avoids leaking runtime details so the core
+/// crate can evolve independently from higher level UI crates. It simply
+/// stores the sequence of requested invalidation kinds and whether an
+/// explicit update was requested. Callers can inspect or drain this state
+/// after driving a [`ModifierNodeChain`] reconciliation pass.
+#[derive(Default, Debug, Clone)]
+pub struct BasicModifierNodeContext {
+    invalidations: Vec<InvalidationKind>,
+    update_requested: bool,
+}
+
+impl BasicModifierNodeContext {
+    /// Creates a new empty context.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the ordered list of invalidation kinds that were requested
+    /// since the last call to [`clear_invalidations`]. Duplicate requests for
+    /// the same kind are coalesced.
+    pub fn invalidations(&self) -> &[InvalidationKind] {
+        &self.invalidations
+    }
+
+    /// Removes all currently recorded invalidation kinds.
+    pub fn clear_invalidations(&mut self) {
+        self.invalidations.clear();
+    }
+
+    /// Drains the recorded invalidations and returns them to the caller.
+    pub fn take_invalidations(&mut self) -> Vec<InvalidationKind> {
+        std::mem::take(&mut self.invalidations)
+    }
+
+    /// Returns whether an update was requested since the last call to
+    /// [`take_update_requested`].
+    pub fn update_requested(&self) -> bool {
+        self.update_requested
+    }
+
+    /// Returns whether an update was requested and clears the flag.
+    pub fn take_update_requested(&mut self) -> bool {
+        std::mem::take(&mut self.update_requested)
+    }
+
+    fn push_invalidation(&mut self, kind: InvalidationKind) {
+        if !self.invalidations.contains(&kind) {
+            self.invalidations.push(kind);
+        }
+    }
+}
+
+impl ModifierNodeContext for BasicModifierNodeContext {
+    fn invalidate(&mut self, kind: InvalidationKind) {
+        self.push_invalidation(kind);
+    }
+
+    fn request_update(&mut self) {
+        self.update_requested = true;
+    }
+}
+
 /// Core trait implemented by modifier nodes.
 ///
 /// Nodes receive lifecycle callbacks when they attach to or detach from a
@@ -283,7 +348,7 @@ impl ModifierNodeChain {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     use std::rc::Rc;
@@ -462,5 +527,77 @@ mod tests {
         log.borrow_mut().clear();
         chain.detach_all();
         assert_eq!(&*log.borrow(), &["detach:b", "detach:a"]);
+    }
+
+    #[derive(Debug, Clone)]
+    struct InvalidationElement {
+        attach_count: Rc<Cell<usize>>,
+    }
+
+    #[derive(Debug, Default)]
+    struct InvalidationNode;
+
+    impl ModifierElement for InvalidationElement {
+        type Node = InvalidationNode;
+
+        fn create(&self) -> Self::Node {
+            self.attach_count.set(self.attach_count.get() + 1);
+            InvalidationNode::default()
+        }
+
+        fn update(&self, _node: &mut Self::Node) {}
+    }
+
+    impl ModifierNode for InvalidationNode {
+        fn on_attach(&mut self, context: &mut dyn ModifierNodeContext) {
+            context.invalidate(InvalidationKind::Layout);
+            context.invalidate(InvalidationKind::Draw);
+            // Duplicate invalidations should be coalesced.
+            context.invalidate(InvalidationKind::Layout);
+            context.request_update();
+        }
+    }
+
+    #[test]
+    fn basic_context_records_invalidations_and_updates() {
+        let mut chain = ModifierNodeChain::new();
+        let mut context = BasicModifierNodeContext::new();
+        let attaches = Rc::new(Cell::new(0));
+
+        let elements = vec![modifier_element(InvalidationElement {
+            attach_count: attaches.clone(),
+        })];
+        chain.update_from_slice(&elements, &mut context);
+
+        assert_eq!(attaches.get(), 1);
+        assert_eq!(
+            context.invalidations(),
+            &[InvalidationKind::Layout, InvalidationKind::Draw]
+        );
+        assert!(context.update_requested());
+
+        let drained = context.take_invalidations();
+        assert_eq!(
+            drained,
+            vec![InvalidationKind::Layout, InvalidationKind::Draw]
+        );
+        assert!(context.invalidations().is_empty());
+        assert!(context.update_requested());
+        assert!(context.take_update_requested());
+        assert!(!context.update_requested());
+
+        // Detach the existing chain to force new nodes on the next update.
+        chain.detach_all();
+
+        context.clear_invalidations();
+        let elements = vec![modifier_element(InvalidationElement {
+            attach_count: attaches.clone(),
+        })];
+        chain.update_from_slice(&elements, &mut context);
+        assert_eq!(attaches.get(), 2);
+        assert_eq!(
+            context.invalidations(),
+            &[InvalidationKind::Layout, InvalidationKind::Draw]
+        );
     }
 }
