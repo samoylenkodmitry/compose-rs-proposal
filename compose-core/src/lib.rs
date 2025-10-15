@@ -1,8 +1,13 @@
 #![doc = r"Core runtime pieces for the Compose-RS experiment."]
 
+pub mod modifier;
 pub mod platform;
 pub mod testing;
 
+pub use modifier::{
+    modifier_element, AnyModifierElement, DynModifierElement, InvalidationKind, ModifierElement,
+    ModifierNode, ModifierNodeChain, ModifierNodeContext,
+};
 pub use platform::{Clock, RuntimeScheduler};
 pub use testing::{run_test_composition, ComposeTestRule};
 
