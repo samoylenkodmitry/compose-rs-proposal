@@ -59,63 +59,78 @@ fn main() {
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
         match event {
-            Event::WindowEvent { event, .. } => match event {
-                WindowEvent::CloseRequested => {
-                    *control_flow = ControlFlow::Exit;
+            Event::WindowEvent { event, .. } => {
+                match event {
+                    WindowEvent::CloseRequested => {
+                        *control_flow = ControlFlow::Exit;
+                    }
+                    WindowEvent::Resized(new_size) => {
+                        if let Err(err) = pixels.resize_surface(new_size.width, new_size.height) {
+                            log::error!("failed to resize surface: {err}");
+                            *control_flow = ControlFlow::Exit;
+                            return;
+                        }
+                        if let Err(err) = pixels.resize_buffer(new_size.width, new_size.height) {
+                            log::error!("failed to resize buffer: {err}");
+                            *control_flow = ControlFlow::Exit;
+                            return;
+                        }
+                        app.set_buffer_size(new_size.width, new_size.height);
+                        app.set_viewport(new_size.width as f32, new_size.height as f32);
+                    }
+                    WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
+                        if let Err(err) =
+                            pixels.resize_surface(new_inner_size.width, new_inner_size.height)
+                        {
+                            log::error!("failed to resize surface: {err}");
+                            *control_flow = ControlFlow::Exit;
+                            return;
+                        }
+                        if let Err(err) =
+                            pixels.resize_buffer(new_inner_size.width, new_inner_size.height)
+                        {
+                            log::error!("failed to resize buffer: {err}");
+                            *control_flow = ControlFlow::Exit;
+                            return;
+                        }
+                        app.set_buffer_size(new_inner_size.width, new_inner_size.height);
+                        app.set_viewport(new_inner_size.width as f32, new_inner_size.height as f32);
+                    }
+                    WindowEvent::CursorMoved { position, .. } => {
+                        app.set_cursor(position.x as f32, position.y as f32);
+                        // If animations are running, update and redraw
+                        if app.should_render() {
+                            app.update();
+                            window.request_redraw();
+                        }
+                    }
+                    WindowEvent::MouseInput {
+                        state,
+                        button: MouseButton::Left,
+                        ..
+                    } => match state {
+                        ElementState::Pressed => app.pointer_pressed(),
+                        ElementState::Released => app.pointer_released(),
+                    },
+                    _ => {}
                 }
-                WindowEvent::Resized(new_size) => {
-                    if let Err(err) = pixels.resize_surface(new_size.width, new_size.height) {
-                        log::error!("failed to resize surface: {err}");
-                        *control_flow = ControlFlow::Exit;
-                        return;
-                    }
-                    if let Err(err) = pixels.resize_buffer(new_size.width, new_size.height) {
-                        log::error!("failed to resize buffer: {err}");
-                        *control_flow = ControlFlow::Exit;
-                        return;
-                    }
-                    app.set_buffer_size(new_size.width, new_size.height);
-                    app.set_viewport(new_size.width as f32, new_size.height as f32);
-                }
-                WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
-                    if let Err(err) =
-                        pixels.resize_surface(new_inner_size.width, new_inner_size.height)
-                    {
-                        log::error!("failed to resize surface: {err}");
-                        *control_flow = ControlFlow::Exit;
-                        return;
-                    }
-                    if let Err(err) =
-                        pixels.resize_buffer(new_inner_size.width, new_inner_size.height)
-                    {
-                        log::error!("failed to resize buffer: {err}");
-                        *control_flow = ControlFlow::Exit;
-                        return;
-                    }
-                    app.set_buffer_size(new_inner_size.width, new_inner_size.height);
-                    app.set_viewport(new_inner_size.width as f32, new_inner_size.height as f32);
-                }
-                WindowEvent::CursorMoved { position, .. } => {
-                    app.set_cursor(position.x as f32, position.y as f32);
-                    // Update and redraw immediately to keep animations running during cursor movement
-                    app.update();
+            }
+            Event::MainEventsCleared => {
+                // Check if animations or other systems requested a frame
+                if app.should_render() {
                     window.request_redraw();
                 }
-                WindowEvent::MouseInput {
-                    state,
-                    button: MouseButton::Left,
-                    ..
-                } => match state {
-                    ElementState::Pressed => app.pointer_pressed(),
-                    ElementState::Released => app.pointer_released(),
-                },
-                _ => {}
-            },
-            Event::MainEventsCleared => {
-                app.update();
-                window.request_redraw();
+            }
+            Event::RedrawEventsCleared => {
+                // After all redraws are done, check again if a frame was requested
+                if app.should_render() {
+                    window.request_redraw();
+                }
             }
             Event::RedrawRequested(_) => {
+                // Update animations and process frame callbacks
+                app.update();
+
                 let frame = pixels.frame_mut();
                 let (buffer_width, buffer_height) = app.buffer_size();
                 draw_scene(frame, buffer_width, buffer_height, app.scene());
@@ -195,6 +210,12 @@ impl ComposeDesktopApp {
 
     fn set_buffer_size(&mut self, width: u32, height: u32) {
         self.buffer_size = (width, height);
+    }
+
+    fn should_render(&self) -> bool {
+        // Check if scheduler requested a frame (e.g., for animations)
+        // or if composition has invalid scopes that need recomposition
+        self.runtime.take_frame_request() || self.composition.should_render()
     }
 
     fn update(&mut self) {
