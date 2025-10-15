@@ -1,6 +1,11 @@
 //! Animation system for Compose-RS
 //!
 //! Provides time-based animations with easing curves and spring physics.
+//!
+//! Note: This module uses camelCase for method names (animateTo, snapTo) to maintain
+//! 1:1 API parity with Jetpack Compose.
+
+#![allow(non_snake_case)]
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -193,6 +198,8 @@ struct AnimatableInner<T: Lerp + Clone> {
     state: MutableState<T>,
     runtime: RuntimeHandle,
     current: T,
+    /// Velocity for spring animations (currently unused, reserved for future spring physics)
+    #[allow(dead_code)]
     velocity: f32,
     start: T,
     target: T,

@@ -6,6 +6,7 @@ pub use compose_macros::composable;
 
 mod layout;
 mod modifier;
+mod modifier_nodes;
 mod primitives;
 mod renderer;
 mod subcompose_layout;
@@ -20,6 +21,10 @@ pub use layout::{
 pub use modifier::{
     Brush, Color, CornerRadii, DrawCommand, DrawPrimitive, EdgeInsets, GraphicsLayer, Modifier,
     Point, PointerEvent, PointerEventKind, Rect, RoundedCornerShape, Size,
+};
+pub use modifier_nodes::{
+    AlphaElement, AlphaNode, BackgroundElement, BackgroundNode, ClickableElement, ClickableNode,
+    PaddingElement, PaddingNode, SizeElement, SizeNode,
 };
 pub use primitives::{
     Box, BoxNode, BoxScope, BoxWithConstraints, BoxWithConstraintsScope,

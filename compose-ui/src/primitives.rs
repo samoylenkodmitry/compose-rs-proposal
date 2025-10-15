@@ -19,6 +19,7 @@ use crate::subcompose_layout::{
 use compose_core::SlotId;
 
 /// Marker trait matching Jetpack Compose's `BoxScope` API.
+#[allow(dead_code)] // Foundation for type-safe scopes, not yet fully integrated
 pub trait BoxScope {
     /// Align content within the Box using 2D alignment.
     fn align(&self, alignment: Alignment) -> Modifier;
@@ -26,6 +27,7 @@ pub trait BoxScope {
 
 /// Marker trait for Column scope - provides horizontal alignment.
 /// These methods match Jetpack Compose's Modifier extension functions.
+#[allow(dead_code)] // Foundation for type-safe scopes, not yet fully integrated
 pub trait ColumnScope {
     /// Align content horizontally within the Column.
     /// Jetpack Compose: Modifier.align(alignment: Alignment.Horizontal)
@@ -38,6 +40,7 @@ pub trait ColumnScope {
 
 /// Marker trait for Row scope - provides vertical alignment.
 /// These methods match Jetpack Compose's Modifier extension functions.
+#[allow(dead_code)] // Foundation for type-safe scopes, not yet fully integrated
 pub trait RowScope {
     /// Align content vertically within the Row.
     /// Jetpack Compose: Modifier.align(alignment: Alignment.Vertical)
@@ -111,6 +114,7 @@ impl BoxScope for BoxScopeImpl {
 
 /// Concrete implementation of ColumnScope.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[allow(dead_code)] // Foundation for type-safe scopes, not yet fully integrated
 pub struct ColumnScopeImpl;
 
 impl ColumnScope for ColumnScopeImpl {
@@ -125,6 +129,7 @@ impl ColumnScope for ColumnScopeImpl {
 
 /// Concrete implementation of RowScope.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[allow(dead_code)] // Foundation for type-safe scopes, not yet fully integrated
 pub struct RowScopeImpl;
 
 impl RowScope for RowScopeImpl {

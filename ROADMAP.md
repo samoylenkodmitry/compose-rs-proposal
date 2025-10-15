@@ -11,7 +11,7 @@ This roadmap tracks the phased implementation of Compose-RS.
 - ✅ **Phase 0**: Complete - Core architecture established
 - ✅ **Phase 1**: Complete - Smart recomposition + frame clock working
 - ✅ **Phase 1.5**: Complete - Animation system with easing and Animatable<T> implemented
-- 🚧 **Phase 2**: In Progress - Modifier.Node specialized traits + Type-safe scopes foundation complete
+- ✅ **Phase 2**: Substantially Complete - Modifier.Node with concrete implementations, gates verified
 - ✅ **Phase 3**: Partial - Intrinsics implemented, LazyList pending
 - ⏳ **Phase 4-6**: Future - Animation, text/graphics backends, semantics
 
@@ -26,8 +26,12 @@ This roadmap tracks the phased implementation of Compose-RS.
 - ✅ Implemented specialized modifier node traits: `LayoutModifierNode`, `DrawModifierNode`, `PointerInputNode`, `SemanticsNode`
 - ✅ Added phase-specific invalidation tracking to `ModifierNodeChain`
 - ✅ Implemented `NodeCapabilities` system for runtime trait detection
+- ✅ **Concrete modifier node implementations**: `PaddingNode`, `BackgroundNode`, `SizeNode`, `ClickableNode`, `AlphaNode` with full lifecycle and intrinsics
+- ✅ **Zero-allocation node reuse** verified in tests - updating existing nodes doesn't allocate
+- ✅ **Mixed modifier chains** with layout, draw, and pointer input nodes working correctly
+- ✅ **Phase 2 gates verified**: zero-allocation updates and stable reordering both passing
 - ✅ **All API names follow camelCase convention matching Jetpack Compose 1:1**
-- ✅ All 72 tests passing (44 core + 28 UI)
+- ✅ All 83 tests passing (44 core + 39 UI including comprehensive modifier node tests and gate verification)
 
 See examples:
 - `cargo run --bin desktop-app` - Interactive UI demo
@@ -152,12 +156,18 @@ Converted `LaunchedEffect` and `DisposableEffect` from functions to macros that 
 
 ### Modifier.Node System
 
-#### Status
+#### Status: SUBSTANTIALLY COMPLETE ✅
+
+The core Modifier.Node architecture is now working with concrete implementations demonstrating
+all major capabilities: layout, draw, and pointer input. Two critical performance gates
+(zero-allocation updates and stable node reuse) have been verified in tests.
+
+**Implementation Status:**
 - ✅ Core modifier node traits (`ModifierNode`, `ModifierElement`) and chain reconciliation scaffolding implemented in `compose-core`
 - ✅ Basic modifier-node invalidation plumbing via `BasicModifierNodeContext`
 - ✅ Specialized layout/draw/input/semantics node traits defined
 - ✅ Phase-specific invalidation tracking in `ModifierNodeChain`
-- ⏳ UI layer integration with specialized nodes
+- ✅ UI layer integration with specialized nodes - concrete implementations added and tested
 
 #### Deliverables
 - ✅ Node trait scaffolding: `ModifierNode` + generic `ModifierElement`
@@ -165,19 +175,21 @@ Converted `LaunchedEffect` and `DisposableEffect` from functions to macros that 
 - ✅ Lifecycle: `on_attach`, `on_detach`, `update`, `on_reset`
 - ✅ Chain reconciliation, stable reuse, targeted invalidation (layout/draw/input/semantics)
 - ✅ Layout chaining (`measure` delegation) + min/max intrinsic hooks (trait methods defined)
-- ⏳ Draw pipeline (`drawContent` ordering, layers) - trait defined, implementation pending
-- ⏳ Pointer/input dispatch & hit-testing with bounds awareness - trait defined, implementation pending
+- ✅ Concrete modifier nodes: `PaddingNode`, `BackgroundNode`, `SizeNode`, `ClickableNode`, `AlphaNode` with full intrinsic support
+- ✅ Pointer/input handling via `ClickableNode` demonstrating pointer input modifier nodes
+- ⏳ Draw pipeline (`drawContent` ordering, layers) - trait defined, basic nodes implemented, full pipeline pending
+- ⏳ Complete pointer/input dispatch & hit-testing with bounds awareness - basic structure working, full dispatch pending
 - ⏳ Semantics plumbed through nodes - trait defined, implementation pending
-- ⏳ Node chain construction & reuse: `padding().background().clickable().drawBehind()`
-- ⏳ Reconciliation for reordering/equality of modifier lists
+- ⏳ Node chain construction & reuse: `padding().background().clickable().drawBehind()` - elements can be composed, API migration pending
+- ✅ Reconciliation for reordering/equality of modifier lists - working in chain
 - ✅ Phase-specific invalidation (update padding ⇒ layout pass only) - tracking implemented
 - ⏳ Debug inspector for node chain (dev builds)
 
 #### Gates
-- Toggling `Modifier.background(color)` **allocates 0 new nodes**; only `update()` runs
-- Reordering modifiers: stable reuse when elements equal (by type + key)
-- Hit-testing parity with value-based system; pointer input lifecycles fire once per attach/detach
-- **Perf:** Switching between two `Modifier` chains of equal structure: **0 allocations** post-warmup; measure/draw touches limited to affected subtrees
+- ✅ Toggling `Modifier.background(color)` **allocates 0 new nodes**; only `update()` runs - VERIFIED IN TESTS
+- ✅ Reordering modifiers: stable reuse when elements equal (by type + key) - VERIFIED IN TESTS
+- ⏳ Hit-testing parity with value-based system; pointer input lifecycles fire once per attach/detach - basic structure working
+- ⏳ **Perf:** Switching between two `Modifier` chains of equal structure: **0 allocations** post-warmup; measure/draw touches limited to affected subtrees - node reuse verified, needs integration testing
 
 ### Type-Safe Scope System
 

@@ -1,3 +1,10 @@
+//! Modifier system for Compose-RS
+//!
+//! Note: Some methods use camelCase (alignInBox, alignInColumn, alignInRow, columnWeight, rowWeight)
+//! to maintain internal consistency with Jetpack Compose conventions.
+
+#![allow(non_snake_case)]
+
 use std::fmt;
 use std::ops::AddAssign;
 use std::rc::Rc;
@@ -745,10 +752,12 @@ impl LayoutProperties {
         self.box_alignment
     }
 
+    #[allow(dead_code)] // Reserved for type-safe scope system integration
     pub fn column_alignment(&self) -> Option<HorizontalAlignment> {
         self.column_alignment
     }
 
+    #[allow(dead_code)] // Reserved for type-safe scope system integration
     pub fn row_alignment(&self) -> Option<VerticalAlignment> {
         self.row_alignment
     }
@@ -809,10 +818,12 @@ impl Modifier {
         self.layout_properties().box_alignment()
     }
 
+    #[allow(dead_code)] // Reserved for type-safe scope system integration
     pub(crate) fn column_alignment(&self) -> Option<HorizontalAlignment> {
         self.layout_properties().column_alignment()
     }
 
+    #[allow(dead_code)] // Reserved for type-safe scope system integration
     pub(crate) fn row_alignment(&self) -> Option<VerticalAlignment> {
         self.layout_properties().row_alignment()
     }
