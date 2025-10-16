@@ -912,6 +912,265 @@ mod tests {
         assert!(!composition.should_render());
     }
 
+    #[test]
+    fn counter_header_and_buttons_remain_visible_after_updates() {
+        let mut composition = Composition::new(MemoryApplier::new());
+        let root_key = location_key(file!(), line!(), column!());
+
+        let header_row_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+        let header_text_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+        let toggle_button_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+        let counter_row_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+        let increment_button_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+        let decrement_button_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+
+        let header_row_id_capture = Rc::clone(&header_row_id);
+        let header_text_id_capture = Rc::clone(&header_text_id);
+        let toggle_button_id_capture = Rc::clone(&toggle_button_id);
+        let counter_row_id_capture = Rc::clone(&counter_row_id);
+        let increment_button_id_capture = Rc::clone(&increment_button_id);
+        let decrement_button_id_capture = Rc::clone(&decrement_button_id);
+
+        composition
+            .render(root_key, move || {
+                let show_counter = compose_core::useState(|| false);
+                let counter = compose_core::useState(|| 0);
+
+                Column(Modifier::empty(), ColumnSpec::default(), {
+                    let header_row_id = Rc::clone(&header_row_id_capture);
+                    let header_text_id = Rc::clone(&header_text_id_capture);
+                    let toggle_button_id = Rc::clone(&toggle_button_id_capture);
+                    let counter_row_id = Rc::clone(&counter_row_id_capture);
+                    let increment_button_id = Rc::clone(&increment_button_id_capture);
+                    let decrement_button_id = Rc::clone(&decrement_button_id_capture);
+                    let show_counter_for_content = show_counter.clone();
+                    let counter_for_content = counter.clone();
+                    move || {
+                        let header_row_id_value = Row(Modifier::empty(), RowSpec::default(), {
+                            let header_text_id = Rc::clone(&header_text_id);
+                            let toggle_button_id = Rc::clone(&toggle_button_id);
+                            let show_counter = show_counter.clone();
+                            move || {
+                                let button_id = Button(
+                                    Modifier::empty(),
+                                    {
+                                        let show_counter = show_counter.clone();
+                                        move || {
+                                            show_counter.set(true);
+                                        }
+                                    },
+                                    || {
+                                        Text("Counter App", Modifier::empty());
+                                    },
+                                );
+                                *toggle_button_id.borrow_mut() = Some(button_id);
+                                let header_text = Text("Counter Header", Modifier::empty());
+                                *header_text_id.borrow_mut() = Some(header_text);
+                            }
+                        });
+                        *header_row_id.borrow_mut() = Some(header_row_id_value);
+
+                        if show_counter_for_content.get() {
+                            let counter_row_id_value =
+                                Row(Modifier::empty(), RowSpec::default(), {
+                                    let increment_button_id = Rc::clone(&increment_button_id);
+                                    let decrement_button_id = Rc::clone(&decrement_button_id);
+                                    let counter_for_increment = counter_for_content.clone();
+                                    let counter_for_decrement = counter_for_content.clone();
+                                    move || {
+                                        let inc_id = Button(
+                                            Modifier::empty(),
+                                            {
+                                                let counter_for_increment =
+                                                    counter_for_increment.clone();
+                                                move || {
+                                                    counter_for_increment
+                                                        .set(counter_for_increment.get() + 1);
+                                                }
+                                            },
+                                            || {
+                                                Text("+", Modifier::empty());
+                                            },
+                                        );
+                                        *increment_button_id.borrow_mut() = Some(inc_id);
+
+                                        let dec_id = Button(
+                                            Modifier::empty(),
+                                            {
+                                                let counter_for_decrement =
+                                                    counter_for_decrement.clone();
+                                                move || {
+                                                    counter_for_decrement
+                                                        .set(counter_for_decrement.get() - 1);
+                                                }
+                                            },
+                                            || {
+                                                Text("-", Modifier::empty());
+                                            },
+                                        );
+                                        *decrement_button_id.borrow_mut() = Some(dec_id);
+                                    }
+                                });
+                            *counter_row_id.borrow_mut() = Some(counter_row_id_value);
+                        } else {
+                            *counter_row_id.borrow_mut() = None;
+                            *increment_button_id.borrow_mut() = None;
+                            *decrement_button_id.borrow_mut() = None;
+                        }
+                    }
+                });
+            })
+            .expect("render succeeds");
+
+        let get_id = |cell: &Rc<RefCell<Option<NodeId>>>, label: &str| -> NodeId {
+            cell.borrow().as_ref().copied().expect(label)
+        };
+
+        let header_row = get_id(&header_row_id, "header row id available");
+        let header_text = get_id(&header_text_id, "header text id available");
+        let toggle_button = get_id(&toggle_button_id, "toggle button id available");
+
+        {
+            let applier = composition.applier_mut();
+            applier
+                .with_node(header_row, |node: &mut LayoutNode| {
+                    assert!(node.children.contains(&header_text));
+                    assert!(node.children.contains(&toggle_button));
+                })
+                .expect("inspect header row");
+        }
+
+        {
+            let applier = composition.applier_mut();
+            applier
+                .with_node(toggle_button, |node: &mut ButtonNode| {
+                    node.trigger();
+                })
+                .expect("trigger counter app button");
+        }
+
+        composition
+            .process_invalid_scopes()
+            .expect("process counter toggle");
+
+        let header_row_after_toggle = get_id(&header_row_id, "header row after toggle");
+        let header_text_after_toggle = get_id(&header_text_id, "header text after toggle");
+        let toggle_button_after_toggle = get_id(&toggle_button_id, "toggle button after toggle");
+
+        let counter_row = get_id(&counter_row_id, "counter row id after toggle");
+        let increment_button = get_id(&increment_button_id, "increment button id after toggle");
+        let decrement_button = get_id(&decrement_button_id, "decrement button id after toggle");
+
+        {
+            let applier = composition.applier_mut();
+            applier
+                .with_node(header_row_after_toggle, |node: &mut LayoutNode| {
+                    assert!(node.children.contains(&header_text_after_toggle));
+                    assert!(node.children.contains(&toggle_button_after_toggle));
+                })
+                .expect("header row intact after toggle");
+        }
+
+        {
+            let applier = composition.applier_mut();
+            applier
+                .with_node(counter_row, |node: &mut LayoutNode| {
+                    assert_eq!(node.children.len(), 2);
+                    assert!(node.children.contains(&increment_button));
+                    assert!(node.children.contains(&decrement_button));
+                })
+                .expect("counter row has buttons");
+        }
+
+        {
+            let applier = composition.applier_mut();
+            applier
+                .with_node(increment_button, |node: &mut ButtonNode| {
+                    node.trigger();
+                })
+                .expect("trigger increment button");
+        }
+
+        composition
+            .process_invalid_scopes()
+            .expect("process increment");
+
+        let header_row_after_increment = get_id(&header_row_id, "header row after increment");
+        let header_text_after_increment = get_id(&header_text_id, "header text after increment");
+        let toggle_button_after_increment =
+            get_id(&toggle_button_id, "toggle button after increment");
+        let counter_row_after_increment = get_id(&counter_row_id, "counter row after increment");
+        let increment_button_after_increment =
+            get_id(&increment_button_id, "increment button after increment");
+        let decrement_button_after_increment =
+            get_id(&decrement_button_id, "decrement button after increment");
+
+        {
+            let applier = composition.applier_mut();
+            applier
+                .with_node(header_row_after_increment, |node: &mut LayoutNode| {
+                    assert!(node.children.contains(&header_text_after_increment));
+                    assert!(node.children.contains(&toggle_button_after_increment));
+                })
+                .expect("header row intact after increment");
+        }
+
+        {
+            let applier = composition.applier_mut();
+            applier
+                .with_node(counter_row_after_increment, |node: &mut LayoutNode| {
+                    assert_eq!(node.children.len(), 2);
+                    assert!(node.children.contains(&increment_button_after_increment));
+                    assert!(node.children.contains(&decrement_button_after_increment));
+                })
+                .expect("counter row intact after increment");
+        }
+
+        {
+            let applier = composition.applier_mut();
+            applier
+                .with_node(decrement_button_after_increment, |node: &mut ButtonNode| {
+                    node.trigger();
+                })
+                .expect("trigger decrement button");
+        }
+
+        composition
+            .process_invalid_scopes()
+            .expect("process decrement");
+
+        let header_row_after_decrement = get_id(&header_row_id, "header row after decrement");
+        let header_text_after_decrement = get_id(&header_text_id, "header text after decrement");
+        let toggle_button_after_decrement =
+            get_id(&toggle_button_id, "toggle button after decrement");
+        let counter_row_after_decrement = get_id(&counter_row_id, "counter row after decrement");
+        let increment_button_after_decrement =
+            get_id(&increment_button_id, "increment button after decrement");
+        let decrement_button_after_decrement =
+            get_id(&decrement_button_id, "decrement button after decrement");
+
+        {
+            let applier = composition.applier_mut();
+            applier
+                .with_node(header_row_after_decrement, |node: &mut LayoutNode| {
+                    assert!(node.children.contains(&header_text_after_decrement));
+                    assert!(node.children.contains(&toggle_button_after_decrement));
+                })
+                .expect("header row intact after decrement");
+        }
+
+        {
+            let applier = composition.applier_mut();
+            applier
+                .with_node(counter_row_after_decrement, |node: &mut LayoutNode| {
+                    assert_eq!(node.children.len(), 2);
+                    assert!(node.children.contains(&increment_button_after_decrement));
+                    assert!(node.children.contains(&decrement_button_after_decrement));
+                })
+                .expect("counter row intact after decrement");
+        }
+    }
+
     fn collect_column_texts(
         composition: &mut TestComposition,
     ) -> Result<Vec<String>, compose_core::NodeError> {

@@ -1798,57 +1798,14 @@ impl<'a> Composer<'a> {
                 new_children,
             } = frame;
             if previous != new_children {
-                let mut current = previous.clone();
                 let target = new_children.clone();
-                let desired: HashSet<NodeId> = target.iter().copied().collect();
-
-                for index in (0..current.len()).rev() {
-                    let child = current[index];
-                    if !desired.contains(&child) {
-                        current.remove(index);
-                        self.commands
-                            .push(Box::new(move |applier: &mut dyn Applier| {
-                                let parent_node = applier.get_mut(id)?;
-                                parent_node.remove_child(child);
-                                Ok(())
-                            }));
-                    }
-                }
-
-                for (target_index, &child) in target.iter().enumerate() {
-                    if let Some(current_index) = current.iter().position(|&c| c == child) {
-                        if current_index != target_index {
-                            let from_index = current_index;
-                            current.remove(from_index);
-                            let to_index = target_index.min(current.len());
-                            current.insert(to_index, child);
-                            self.commands
-                                .push(Box::new(move |applier: &mut dyn Applier| {
-                                    let parent_node = applier.get_mut(id)?;
-                                    parent_node.move_child(from_index, to_index);
-                                    Ok(())
-                                }));
-                        }
-                    } else {
-                        let insert_index = target_index.min(current.len());
-                        let appended_index = current.len();
-                        current.insert(insert_index, child);
-                        self.commands
-                            .push(Box::new(move |applier: &mut dyn Applier| {
-                                let parent_node = applier.get_mut(id)?;
-                                parent_node.insert_child(child);
-                                Ok(())
-                            }));
-                        if insert_index != appended_index {
-                            self.commands
-                                .push(Box::new(move |applier: &mut dyn Applier| {
-                                    let parent_node = applier.get_mut(id)?;
-                                    parent_node.move_child(appended_index, insert_index);
-                                    Ok(())
-                                }));
-                        }
-                    }
-                }
+                let id_copy = id;
+                self.commands
+                    .push(Box::new(move |applier: &mut dyn Applier| {
+                        let parent_node = applier.get_mut(id_copy)?;
+                        parent_node.update_children(&target);
+                        Ok(())
+                    }));
             }
             remembered.update(|entry| entry.children = new_children);
         }
@@ -3064,6 +3021,7 @@ mod tests {
         Insert(NodeId),
         Remove(NodeId),
         Move { from: usize, to: usize },
+        UpdateChildren(Vec<NodeId>),
     }
 
     #[derive(Default)]
@@ -3096,6 +3054,37 @@ mod tests {
             }
             self.operations.push(Operation::Move { from, to });
         }
+
+        fn update_children(&mut self, children: &[NodeId]) {
+            self.children = children.to_vec();
+            self.operations
+                .push(Operation::UpdateChildren(children.to_vec()));
+        }
+    }
+
+    #[derive(Default)]
+    struct BatchRecordingNode {
+        children: Vec<NodeId>,
+        updates: Vec<Vec<NodeId>>,
+    }
+
+    impl Node for BatchRecordingNode {
+        fn insert_child(&mut self, _child: NodeId) {
+            panic!("batch node should use update_children");
+        }
+
+        fn remove_child(&mut self, _child: NodeId) {
+            panic!("batch node should use update_children");
+        }
+
+        fn move_child(&mut self, _from: usize, _to: usize) {
+            panic!("batch node should use update_children");
+        }
+
+        fn update_children(&mut self, children: &[NodeId]) {
+            self.children = children.to_vec();
+            self.updates.push(children.to_vec());
+        }
     }
 
     #[derive(Default)]
@@ -3119,6 +3108,11 @@ mod tests {
         new_children: Vec<NodeId>, // FUTURE(no_std): accept fixed-capacity child buffers.
     ) -> Vec<Operation> {
         // FUTURE(no_std): return bounded operation log.
+        applier
+            .with_node(parent_id, |node: &mut RecordingNode| {
+                node.operations.clear();
+            })
+            .expect("clear recording operations");
         let handle = runtime.handle();
         let mut composer = Composer::new(slots, applier, handle, Some(parent_id));
         composer.push_parent(parent_id);
@@ -3147,7 +3141,7 @@ mod tests {
     }
 
     #[test]
-    fn reorder_keyed_children_emits_moves() {
+    fn child_diff_reorders_children_with_batch_update() {
         let mut slots = SlotTable::new();
         let mut applier = MemoryApplier::new();
         let runtime = Runtime::new(Arc::new(TestScheduler::default()));
@@ -3185,10 +3179,7 @@ mod tests {
 
         assert_eq!(
             operations,
-            vec![
-                Operation::Move { from: 2, to: 0 },
-                Operation::Move { from: 2, to: 1 },
-            ]
+            vec![Operation::UpdateChildren(vec![child_c, child_b, child_a])]
         );
 
         let final_children = applier
@@ -3247,7 +3238,10 @@ mod tests {
             vec![child_a, child_b, child_c],
         );
 
-        assert_eq!(insert_ops, vec![Operation::Insert(child_c)]);
+        assert_eq!(
+            insert_ops,
+            vec![Operation::UpdateChildren(vec![child_a, child_b, child_c])]
+        );
         let after_insert_children = applier
             .with_node(parent_id, |node: &mut RecordingNode| node.children.clone())
             .expect("read children after insert");
@@ -3268,12 +3262,345 @@ mod tests {
             vec![child_a, child_c],
         );
 
-        assert_eq!(remove_ops, vec![Operation::Remove(child_b)]);
+        assert_eq!(
+            remove_ops,
+            vec![Operation::UpdateChildren(vec![child_a, child_c])]
+        );
         let after_remove_children = applier
             .with_node(parent_id, |node: &mut RecordingNode| node.children.clone())
             .expect("read children after remove");
         assert_eq!(after_remove_children, vec![child_a, child_c]);
         assert_eq!(applier.len(), initial_len + 1);
+    }
+
+    #[test]
+    fn child_diff_replaces_children_without_intermediate_mismatch() {
+        let mut slots = SlotTable::new();
+        let mut applier = MemoryApplier::new();
+        let runtime = Runtime::new(Arc::new(TestScheduler::default()));
+        let parent_id = applier.create(Box::new(RecordingNode::default()));
+
+        let child_a = applier.create(Box::new(TrackingChild {
+            label: "a".to_string(),
+            mount_count: 1,
+        }));
+        let child_b = applier.create(Box::new(TrackingChild {
+            label: "b".to_string(),
+            mount_count: 1,
+        }));
+        let child_c = applier.create(Box::new(TrackingChild {
+            label: "c".to_string(),
+            mount_count: 1,
+        }));
+        let child_d = applier.create(Box::new(TrackingChild {
+            label: "d".to_string(),
+            mount_count: 1,
+        }));
+
+        applier
+            .with_node(parent_id, |node: &mut RecordingNode| {
+                node.children = vec![child_a, child_b];
+                node.operations.clear();
+            })
+            .expect("seed parent state");
+
+        let operations = apply_child_diff(
+            &mut slots,
+            &mut applier,
+            &runtime,
+            parent_id,
+            vec![child_a, child_b],
+            vec![child_c, child_d],
+        );
+
+        assert_eq!(
+            operations,
+            vec![Operation::UpdateChildren(vec![child_c, child_d])]
+        );
+
+        let final_children = applier
+            .with_node(parent_id, |node: &mut RecordingNode| node.children.clone())
+            .expect("read replaced children");
+        assert_eq!(final_children, vec![child_c, child_d]);
+    }
+
+    #[test]
+    fn child_diff_handles_stable_reorders() {
+        let mut slots = SlotTable::new();
+        let mut applier = MemoryApplier::new();
+        let runtime = Runtime::new(Arc::new(TestScheduler::default()));
+        let parent_id = applier.create(Box::new(RecordingNode::default()));
+
+        let mut make_child = |label: &str| {
+            applier.create(Box::new(TrackingChild {
+                label: label.to_string(),
+                mount_count: 1,
+            }))
+        };
+
+        let child_a = make_child("a");
+        let child_b = make_child("b");
+        let child_c = make_child("c");
+        let child_d = make_child("d");
+
+        applier
+            .with_node(parent_id, |node: &mut RecordingNode| {
+                node.children = vec![child_a, child_b, child_c, child_d];
+                node.operations.clear();
+            })
+            .expect("seed parent state");
+
+        let swap_middle = apply_child_diff(
+            &mut slots,
+            &mut applier,
+            &runtime,
+            parent_id,
+            vec![child_a, child_b, child_c, child_d],
+            vec![child_a, child_c, child_b, child_d],
+        );
+        assert_eq!(
+            swap_middle,
+            vec![Operation::UpdateChildren(vec![
+                child_a, child_c, child_b, child_d,
+            ])]
+        );
+        let forward_children = applier
+            .with_node(parent_id, |node: &mut RecordingNode| node.children.clone())
+            .expect("read swapped children");
+        assert_eq!(forward_children, vec![child_a, child_c, child_b, child_d]);
+
+        applier
+            .with_node(parent_id, |node: &mut RecordingNode| {
+                node.children = vec![child_d, child_c, child_b, child_a];
+                node.operations.clear();
+            })
+            .expect("reset parent state");
+
+        let reversed = apply_child_diff(
+            &mut slots,
+            &mut applier,
+            &runtime,
+            parent_id,
+            vec![child_d, child_c, child_b, child_a],
+            vec![child_a, child_b, child_c, child_d],
+        );
+        assert_eq!(
+            reversed,
+            vec![Operation::UpdateChildren(vec![
+                child_a, child_b, child_c, child_d,
+            ])]
+        );
+        let restored_children = applier
+            .with_node(parent_id, |node: &mut RecordingNode| node.children.clone())
+            .expect("read restored children");
+        assert_eq!(restored_children, vec![child_a, child_b, child_c, child_d]);
+    }
+
+    #[test]
+    fn child_diff_inserts_in_middle() {
+        let mut slots = SlotTable::new();
+        let mut applier = MemoryApplier::new();
+        let runtime = Runtime::new(Arc::new(TestScheduler::default()));
+        let parent_id = applier.create(Box::new(RecordingNode::default()));
+
+        let mut make_child = |label: &str| {
+            applier.create(Box::new(TrackingChild {
+                label: label.to_string(),
+                mount_count: 1,
+            }))
+        };
+
+        let child_a = make_child("a");
+        let child_b = make_child("b");
+        let child_c = make_child("c");
+        let child_d = make_child("d");
+
+        applier
+            .with_node(parent_id, |node: &mut RecordingNode| {
+                node.children = vec![child_a, child_c, child_d];
+                node.operations.clear();
+            })
+            .expect("seed parent state");
+
+        let operations = apply_child_diff(
+            &mut slots,
+            &mut applier,
+            &runtime,
+            parent_id,
+            vec![child_a, child_c, child_d],
+            vec![child_a, child_b, child_c, child_d],
+        );
+
+        assert_eq!(
+            operations,
+            vec![Operation::UpdateChildren(vec![
+                child_a, child_b, child_c, child_d,
+            ])]
+        );
+
+        let final_children = applier
+            .with_node(parent_id, |node: &mut RecordingNode| node.children.clone())
+            .expect("read inserted children");
+        assert_eq!(final_children, vec![child_a, child_b, child_c, child_d]);
+    }
+
+    #[test]
+    fn child_diff_avoids_duplicate_children() {
+        let mut slots = SlotTable::new();
+        let mut applier = MemoryApplier::new();
+        let runtime = Runtime::new(Arc::new(TestScheduler::default()));
+        let parent_id = applier.create(Box::new(RecordingNode::default()));
+
+        let mut make_child = |label: &str| {
+            applier.create(Box::new(TrackingChild {
+                label: label.to_string(),
+                mount_count: 1,
+            }))
+        };
+
+        let child_a = make_child("a");
+        let child_b = make_child("b");
+        let child_c = make_child("c");
+        let child_d = make_child("d");
+
+        applier
+            .with_node(parent_id, |node: &mut RecordingNode| {
+                node.children = vec![child_a, child_b, child_c];
+                node.operations.clear();
+            })
+            .expect("seed parent state");
+
+        let operations = apply_child_diff(
+            &mut slots,
+            &mut applier,
+            &runtime,
+            parent_id,
+            vec![child_a, child_b, child_c],
+            vec![child_a, child_d, child_c, child_b],
+        );
+
+        assert_eq!(
+            operations,
+            vec![Operation::UpdateChildren(vec![
+                child_a, child_d, child_c, child_b,
+            ])]
+        );
+
+        let final_children = applier
+            .with_node(parent_id, |node: &mut RecordingNode| node.children.clone())
+            .expect("read deduplicated children");
+        assert_eq!(final_children, vec![child_a, child_d, child_c, child_b]);
+
+        let unique: HashSet<NodeId> = final_children.iter().copied().collect();
+        assert_eq!(unique.len(), final_children.len());
+    }
+
+    #[test]
+    fn child_diff_is_idempotent() {
+        let mut slots = SlotTable::new();
+        let mut applier = MemoryApplier::new();
+        let runtime = Runtime::new(Arc::new(TestScheduler::default()));
+        let parent_id = applier.create(Box::new(RecordingNode::default()));
+
+        let child_a = applier.create(Box::new(TrackingChild {
+            label: "a".to_string(),
+            mount_count: 1,
+        }));
+        let child_b = applier.create(Box::new(TrackingChild {
+            label: "b".to_string(),
+            mount_count: 1,
+        }));
+
+        applier
+            .with_node(parent_id, |node: &mut RecordingNode| {
+                node.children = vec![child_a];
+                node.operations.clear();
+            })
+            .expect("seed parent state");
+
+        let first = apply_child_diff(
+            &mut slots,
+            &mut applier,
+            &runtime,
+            parent_id,
+            vec![child_a],
+            vec![child_a, child_b],
+        );
+        assert_eq!(
+            first,
+            vec![Operation::UpdateChildren(vec![child_a, child_b])]
+        );
+
+        let second = apply_child_diff(
+            &mut slots,
+            &mut applier,
+            &runtime,
+            parent_id,
+            vec![child_a, child_b],
+            vec![child_a, child_b],
+        );
+        assert!(second.is_empty(), "second diff should be a no-op");
+
+        let final_children = applier
+            .with_node(parent_id, |node: &mut RecordingNode| node.children.clone())
+            .expect("read final children");
+        assert_eq!(final_children, vec![child_a, child_b]);
+    }
+
+    #[test]
+    fn pop_parent_uses_update_children_when_available() {
+        let mut slots = SlotTable::new();
+        let mut applier = MemoryApplier::new();
+        let runtime = Runtime::new(Arc::new(TestScheduler::default()));
+        let parent_id = applier.create(Box::new(BatchRecordingNode::default()));
+
+        let child_a = applier.create(Box::new(TrackingChild {
+            label: "a".to_string(),
+            mount_count: 1,
+        }));
+        let child_b = applier.create(Box::new(TrackingChild {
+            label: "b".to_string(),
+            mount_count: 1,
+        }));
+        let child_c = applier.create(Box::new(TrackingChild {
+            label: "c".to_string(),
+            mount_count: 1,
+        }));
+
+        applier
+            .with_node(parent_id, |node: &mut BatchRecordingNode| {
+                node.children = vec![child_a];
+                node.updates.clear();
+            })
+            .expect("seed batch node state");
+
+        let handle = runtime.handle();
+        let mut composer = Composer::new(&mut slots, &mut applier, handle, Some(parent_id));
+        composer.push_parent(parent_id);
+        {
+            let frame = composer
+                .parent_stack
+                .last_mut()
+                .expect("parent frame available");
+            frame
+                .remembered
+                .update(|entry| entry.children = vec![child_a]);
+            frame.previous = vec![child_a];
+            frame.new_children = vec![child_b, child_c];
+        }
+        composer.pop_parent();
+        let mut commands = composer.take_commands();
+        drop(composer);
+        for command in commands.iter_mut() {
+            command(&mut applier).expect("apply batch command");
+        }
+
+        applier
+            .with_node(parent_id, |node: &mut BatchRecordingNode| {
+                assert_eq!(node.children, vec![child_b, child_c]);
+                assert_eq!(node.updates, vec![vec![child_b, child_c]]);
+            })
+            .expect("read batch node state");
     }
 
     #[test]
