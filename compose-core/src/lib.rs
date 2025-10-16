@@ -2,18 +2,18 @@
 
 pub mod animation;
 pub mod modifier;
+pub mod owned;
 pub mod platform;
 pub mod testing;
 
-pub use animation::{
-    Animatable, AnimationSpec, AnimationType, Easing, Lerp, SpringSpec,
-};
+pub use animation::{Animatable, AnimationSpec, AnimationType, Easing, Lerp, SpringSpec};
 pub use modifier::{
     modifier_element, AnyModifierElement, Constraints, DrawModifierNode, DrawScope,
-    DynModifierElement, InvalidationKind, LayoutModifierNode, MeasureResult, Measurable,
+    DynModifierElement, InvalidationKind, LayoutModifierNode, Measurable, MeasureResult,
     ModifierElement, ModifierNode, ModifierNodeChain, ModifierNodeContext, NodeCapabilities,
     PointerEvent, PointerInputNode, SemanticsConfiguration, SemanticsNode,
 };
+pub use owned::Owned;
 pub use platform::{Clock, RuntimeScheduler};
 pub use testing::{run_test_composition, ComposeTestRule};
 
@@ -284,11 +284,8 @@ pub fn withKey<K: Hash>(key: &K, content: impl FnOnce()) {
     with_key(key, content)
 }
 
-pub fn remember<T: 'static>(init: impl FnOnce() -> T) -> &'static mut T {
-    with_current_composer(|composer| {
-        let value = composer.remember(init);
-        unsafe { mem::transmute::<&mut T, &mut T>(value) }
-    })
+pub fn remember<T: 'static>(init: impl FnOnce() -> T) -> Owned<T> {
+    with_current_composer(|composer| composer.remember(init))
 }
 
 #[allow(non_snake_case)]
@@ -318,7 +315,7 @@ pub fn mutableStateOf<T: 'static>(initial: T) -> MutableState<T> {
 
 #[allow(non_snake_case)]
 pub fn useState<T: 'static>(init: impl FnOnce() -> T) -> MutableState<T> {
-    remember(|| mutableStateOf(init())).clone()
+    remember(|| mutableStateOf(init())).with(|state| state.clone())
 }
 
 #[allow(deprecated)]
@@ -339,9 +336,11 @@ pub fn derivedStateOf<T: 'static + Clone>(compute: impl Fn() -> T + 'static) -> 
             let compute_rc: Rc<dyn Fn() -> T> = Rc::new(compute); // FUTURE(no_std): replace Rc with arena-managed callbacks.
             let derived =
                 composer.remember(|| DerivedState::new(runtime.clone(), compute_rc.clone()));
-            derived.set_compute(compute_rc.clone());
-            derived.recompute();
-            derived.state.as_state()
+            derived.update(|derived| {
+                derived.set_compute(compute_rc.clone());
+                derived.recompute();
+            });
+            derived.with(|derived| derived.state.as_state())
         })
     })
 }
@@ -395,7 +394,9 @@ struct StaticLocalEntry<T: Clone + 'static> {
 
 impl<T: Clone + 'static> StaticLocalEntry<T> {
     fn new(value: T) -> Self {
-        Self { value: RefCell::new(value) }
+        Self {
+            value: RefCell::new(value),
+        }
     }
 
     fn set(&self, value: T) {
@@ -434,9 +435,8 @@ impl<T: Clone + 'static> CompositionLocal<T> {
                         runtime.clone(),
                     )))
                 });
-                let entry = Rc::clone(entry_ref); // FUTURE(no_std): clone arena-managed pointer instead of Rc.
-                entry.set(value.clone());
-                entry as Rc<dyn Any> // FUTURE(no_std): expose erased handle without Rc boxing.
+                entry_ref.update(|entry| entry.set(value.clone()));
+                entry_ref.with(|entry| entry.clone() as Rc<dyn Any>) // FUTURE(no_std): expose erased handle without Rc boxing.
             }),
         }
     }
@@ -492,12 +492,9 @@ impl<T: Clone + 'static> StaticCompositionLocal<T> {
             apply: Box::new(move |composer: &mut Composer<'_>| {
                 // For static locals, we don't use MutableState - just store the value directly
                 // This means reads won't be tracked, and changes will cause full subtree recomposition
-                let entry_ref = composer.remember(|| {
-                    Rc::new(StaticLocalEntry::new(value.clone()))
-                });
-                let entry = Rc::clone(entry_ref); // FUTURE(no_std): clone arena-managed pointer instead of Rc.
-                entry.set(value.clone()); // Update the value on each recomposition
-                entry as Rc<dyn Any> // FUTURE(no_std): expose erased handle without Rc boxing.
+                let entry_ref = composer.remember(|| Rc::new(StaticLocalEntry::new(value.clone())));
+                entry_ref.update(|entry| entry.set(value.clone()));
+                entry_ref.with(|entry| entry.clone() as Rc<dyn Any>) // FUTURE(no_std): expose erased handle without Rc boxing.
             }),
         }
     }
@@ -659,17 +656,17 @@ where
         composer.with_group(group_key, |composer| {
             let key_hash = hash_key(&keys);
             let state = composer.remember(DisposableEffectState::default);
-            if state.should_run(key_hash) {
-                state.run_cleanup();
-                state.set_key(key_hash);
-                let state_ptr: *mut DisposableEffectState = &mut *state;
+            if state.with(|state| state.should_run(key_hash)) {
+                state.update(|state| {
+                    state.run_cleanup();
+                    state.set_key(key_hash);
+                });
+                let state_for_effect = state.clone();
                 let mut effect_opt = Some(effect);
                 composer.register_side_effect(move || {
                     if let Some(effect) = effect_opt.take() {
                         let result = effect(DisposableEffectScope);
-                        unsafe {
-                            (*state_ptr).set_cleanup(result.into_cleanup());
-                        }
+                        state_for_effect.update(|state| state.set_cleanup(result.into_cleanup()));
                     }
                 });
             }
@@ -699,16 +696,14 @@ where
         composer.with_group(group_key, |composer| {
             let key_hash = hash_key(&keys);
             let state = composer.remember(LaunchedEffectState::default);
-            if state.should_run(key_hash) {
-                state.set_key(key_hash);
-                let state_ptr: *mut LaunchedEffectState = &mut *state;
+            if state.with(|state| state.should_run(key_hash)) {
+                state.update(|state| state.set_key(key_hash));
                 let runtime = composer.runtime_handle();
+                let state_for_effect = state.clone();
                 let mut effect_opt = Some(effect);
                 composer.register_side_effect(move || {
                     if let Some(effect) = effect_opt.take() {
-                        unsafe {
-                            (*state_ptr).launch(runtime.clone(), effect);
-                        }
+                        state_for_effect.update(|state| state.launch(runtime.clone(), effect));
                     }
                 });
             }
@@ -856,31 +851,26 @@ impl SlotTable {
         }
     }
 
-    pub fn remember<T: 'static>(&mut self, init: impl FnOnce() -> T) -> &mut T {
+    pub fn remember<T: 'static>(&mut self, init: impl FnOnce() -> T) -> Owned<T> {
         let cursor = self.cursor;
         if cursor < self.slots.len() {
-            if matches!(self.slots.get(cursor), Some(Slot::Value(_))) {
-                if let Some(ptr) = unsafe { self.reuse_value_ptr::<T>(cursor) } {
+            if let Some(Slot::Value(value)) = self.slots.get(cursor) {
+                if let Some(existing) = value.downcast_ref::<Owned<T>>() {
                     self.cursor += 1;
-                    return unsafe { &mut *ptr };
-                } else {
-                    self.slots.truncate(cursor);
+                    return existing.clone();
                 }
             }
             self.slots.truncate(cursor);
         }
-        let boxed: Box<dyn Any> = Box::new(init());
+        let owned = Owned::new(init());
+        let boxed: Box<dyn Any> = Box::new(owned.clone());
         if cursor == self.slots.len() {
             self.slots.push(Slot::Value(boxed));
         } else {
             self.slots[cursor] = Slot::Value(boxed);
         }
         self.cursor += 1;
-        let index = self.cursor - 1;
-        match self.slots.get_mut(index) {
-            Some(Slot::Value(value)) => value.downcast_mut::<T>().unwrap(),
-            _ => unreachable!(),
-        }
+        owned
     }
 
     pub fn record_node(&mut self, id: NodeId) {
@@ -900,14 +890,6 @@ impl SlotTable {
             self.slots[cursor] = Slot::Node(id);
         }
         self.cursor += 1;
-    }
-
-    unsafe fn reuse_value_ptr<T: 'static>(&mut self, cursor: usize) -> Option<*mut T> {
-        let slot = self.slots.get_mut(cursor)?;
-        match slot {
-            Slot::Value(existing) => existing.downcast_mut::<T>().map(|value| value as *mut T),
-            _ => None,
-        }
     }
 
     pub fn read_node(&mut self) -> Option<NodeId> {
@@ -1444,7 +1426,7 @@ struct ParentChildren {
 
 struct ParentFrame {
     id: NodeId,
-    remembered: *mut ParentChildren,
+    remembered: Owned<ParentChildren>,
     previous: Vec<NodeId>, // FUTURE(no_std): replace Vec with fixed-capacity array.
     new_children: Vec<NodeId>, // FUTURE(no_std): replace Vec with fixed-capacity array.
 }
@@ -1517,7 +1499,7 @@ impl<'a> Composer<'a> {
         let scope_ref = self
             .slots
             .remember(|| RecomposeScope::new(self.runtime.clone()))
-            .clone();
+            .with(|scope| scope.clone());
         if let Some(options) = self.pending_scope_options.take() {
             if options.force_recompose {
                 scope_ref.force_recompose();
@@ -1552,7 +1534,7 @@ impl<'a> Composer<'a> {
         self.with_group(hashed, f)
     }
 
-    pub fn remember<T: 'static>(&mut self, init: impl FnOnce() -> T) -> &mut T {
+    pub fn remember<T: 'static>(&mut self, init: impl FnOnce() -> T) -> Owned<T> {
         self.slots.remember(init)
     }
 
@@ -1573,7 +1555,10 @@ impl<'a> Composer<'a> {
         local.default_value()
     }
 
-    pub fn read_static_composition_local<T: Clone + 'static>(&mut self, local: &StaticCompositionLocal<T>) -> T {
+    pub fn read_static_composition_local<T: Clone + 'static>(
+        &mut self,
+        local: &StaticCompositionLocal<T>,
+    ) -> T {
         for context in self.local_stack.iter().rev() {
             if let Some(entry) = context.values.get(&local.key) {
                 let typed = entry
@@ -1722,7 +1707,7 @@ impl<'a> Composer<'a> {
         let state = self
             .slots
             .remember(|| MutableState::with_runtime(init(), self.runtime.clone()));
-        state.clone()
+        state.with(|state| state.clone())
     }
 
     #[allow(non_snake_case)]
@@ -1731,8 +1716,8 @@ impl<'a> Composer<'a> {
         let animated = self
             .slots
             .remember(|| AnimatedFloatState::new(target, runtime));
-        animated.update(target, label);
-        animated.state()
+        animated.update(|animated| animated.update(target, label));
+        animated.with(|animated| animated.state())
     }
 
     pub fn emit_node<N: Node + 'static>(&mut self, init: impl FnOnce() -> N) -> NodeId {
@@ -1794,8 +1779,8 @@ impl<'a> Composer<'a> {
     }
 
     pub fn push_parent(&mut self, id: NodeId) {
-        let remembered = self.slots.remember(|| ParentChildren::default()) as *mut ParentChildren;
-        let previous = unsafe { (*remembered).children.clone() };
+        let remembered = self.slots.remember(|| ParentChildren::default());
+        let previous = remembered.with(|entry| entry.children.clone());
         self.parent_stack.push(ParentFrame {
             id,
             remembered,
@@ -1865,9 +1850,7 @@ impl<'a> Composer<'a> {
                     }
                 }
             }
-            unsafe {
-                (*remembered).children = new_children;
-            }
+            remembered.update(|entry| entry.children = new_children);
         }
     }
 
@@ -1949,8 +1932,33 @@ impl<T> MutableState<T> {
         }
     }
 
-    pub fn set_value(&self, value: T) {
+    pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
+        self.as_state().with(f)
+    }
+
+    pub fn update<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        let result = {
+            let mut value = self.inner.value.borrow_mut();
+            f(&mut *value)
+        };
+        self.notify_watchers();
+        result
+    }
+
+    pub fn replace(&self, value: T) {
         *self.inner.value.borrow_mut() = value;
+        self.notify_watchers();
+    }
+
+    pub fn set_value(&self, value: T) {
+        self.replace(value);
+    }
+
+    pub fn set(&self, value: T) {
+        self.replace(value);
+    }
+
+    fn notify_watchers(&self) {
         let mut watchers = self.inner.watchers.borrow_mut();
         watchers.retain(|w| w.strong_count() > 0);
         for watcher in watchers.iter() {
@@ -1958,10 +1966,6 @@ impl<T> MutableState<T> {
                 RecomposeScope { inner: scope }.invalidate();
             }
         }
-    }
-
-    pub fn set(&self, value: T) {
-        self.set_value(value);
     }
 }
 
@@ -2009,7 +2013,7 @@ impl<T: Clone> DerivedState<T> {
     }
 }
 
-impl<T: Clone> State<T> {
+impl<T> State<T> {
     fn subscribe_current_scope(&self) {
         if let Some(Some(scope)) =
             with_current_composer_opt(|composer| composer.current_recompose_scope())
@@ -2026,9 +2030,16 @@ impl<T: Clone> State<T> {
         }
     }
 
-    pub fn value(&self) -> T {
+    pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
         self.subscribe_current_scope();
-        self.inner.value.borrow().clone()
+        let value = self.inner.value.borrow();
+        f(&value)
+    }
+}
+
+impl<T: Clone> State<T> {
+    pub fn value(&self) -> T {
+        self.with(|value| value.clone())
     }
 
     pub fn get(&self) -> T {
@@ -2632,21 +2643,21 @@ mod tests {
 
         {
             let value = slots.remember(|| 42i32);
-            assert_eq!(*value, 42);
+            assert_eq!(value.with(|value| *value), 42);
         }
 
         slots.reset();
 
         {
             let value = slots.remember(|| "updated");
-            assert_eq!(*value, "updated");
+            assert_eq!(value.with(|&value| value), "updated");
         }
 
         slots.reset();
 
         {
             let value = slots.remember(|| "should not run");
-            assert_eq!(*value, "updated");
+            assert_eq!(value.with(|&value| value), "updated");
         }
     }
 
@@ -3116,9 +3127,9 @@ mod tests {
                 .parent_stack
                 .last_mut()
                 .expect("parent frame available");
-            unsafe {
-                (*frame.remembered).children = previous.clone();
-            }
+            frame
+                .remembered
+                .update(|entry| entry.children = previous.clone());
             frame.previous = previous;
             frame.new_children = new_children;
         }
@@ -3394,13 +3405,19 @@ mod tests {
 
         // Change trigger - should update the provided value and reader should see it
         trigger.set_value(20);
-        composition
-            .process_invalid_scopes()
-            .expect("recomposition");
+        composition.process_invalid_scopes().expect("recomposition");
 
         // Reader should have recomposed and seen the new value
-        assert_eq!(READER_RECOMPOSITIONS.with(|c| c.get()), 2, "reader should recompose");
-        assert_eq!(LAST_VALUE.with(|v| v.get()), 20, "reader should see new value");
+        assert_eq!(
+            READER_RECOMPOSITIONS.with(|c| c.get()),
+            2,
+            "reader should recompose"
+        );
+        assert_eq!(
+            LAST_VALUE.with(|v| v.get()),
+            20,
+            "reader should see new value"
+        );
     }
 
     #[test]
@@ -3498,10 +3515,26 @@ mod tests {
         // - not_changing_text: SKIPPED (no reactive reads)
         // - reading_text: RECOMPOSES (reads local_count.current())
 
-        assert_eq!(OUTSIDE_RECOMPOSITIONS.with(|c| c.get()), 2, "outside should recompose");
-        assert_eq!(NOT_CHANGING_TEXT_RECOMPOSITIONS.with(|c| c.get()), 1, "not_changing_text should NOT recompose");
-        assert_eq!(READING_TEXT_RECOMPOSITIONS.with(|c| c.get()), 2, "reading_text SHOULD recompose (reads .current())");
-        assert_eq!(LAST_READ_VALUE.with(|v| v.get()), 1, "should read new value");
+        assert_eq!(
+            OUTSIDE_RECOMPOSITIONS.with(|c| c.get()),
+            2,
+            "outside should recompose"
+        );
+        assert_eq!(
+            NOT_CHANGING_TEXT_RECOMPOSITIONS.with(|c| c.get()),
+            1,
+            "not_changing_text should NOT recompose"
+        );
+        assert_eq!(
+            READING_TEXT_RECOMPOSITIONS.with(|c| c.get()),
+            2,
+            "reading_text SHOULD recompose (reads .current())"
+        );
+        assert_eq!(
+            LAST_READ_VALUE.with(|v| v.get()),
+            1,
+            "should read new value"
+        );
 
         // Change again
         trigger.set_value(2);
@@ -3587,11 +3620,11 @@ mod tests {
                                 composer.current_recompose_scope().expect("scope available");
                             let changed = scope.should_recompose();
                             let has_previous = composer.remember(|| false);
-                            if !changed && *has_previous {
+                            if !changed && has_previous.with(|value| *value) {
                                 composer.skip_current_group();
                                 return;
                             }
-                            *has_previous = true;
+                            has_previous.update(|value| *value = true);
                             INVOCATIONS.with(|count| count.set(count.get() + 1));
                             let _ = local_state.value();
                         });
@@ -3637,11 +3670,11 @@ mod tests {
                                 composer.current_recompose_scope().expect("scope available");
                             let changed = scope.should_recompose();
                             let has_previous = composer.remember(|| false);
-                            if !changed && *has_previous {
+                            if !changed && has_previous.with(|value| *value) {
                                 composer.skip_current_group();
                                 return;
                             }
-                            *has_previous = true;
+                            has_previous.update(|value| *value = true);
                             INVOCATIONS.with(|count| count.set(count.get() + 1));
                             let _ = local_state.value();
                         });

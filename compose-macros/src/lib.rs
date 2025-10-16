@@ -8,18 +8,16 @@ use syn::{parse_macro_input, FnArg, Ident, ItemFn, Pat, PatType, ReturnType, Typ
 fn is_fn_like_type(ty: &Type) -> bool {
     match ty {
         // impl FnMut(...) + 'static, impl Fn(...), etc.
-        Type::ImplTrait(impl_trait) => {
-            impl_trait.bounds.iter().any(|bound| {
-                if let syn::TypeParamBound::Trait(trait_bound) = bound {
-                    let path = &trait_bound.path;
-                    if let Some(segment) = path.segments.last() {
-                        let ident_str = segment.ident.to_string();
-                        return ident_str == "FnMut" || ident_str == "Fn" || ident_str == "FnOnce";
-                    }
+        Type::ImplTrait(impl_trait) => impl_trait.bounds.iter().any(|bound| {
+            if let syn::TypeParamBound::Trait(trait_bound) = bound {
+                let path = &trait_bound.path;
+                if let Some(segment) = path.segments.last() {
+                    let ident_str = segment.ident.to_string();
+                    return ident_str == "FnMut" || ident_str == "Fn" || ident_str == "FnOnce";
                 }
-                false
-            })
-        }
+            }
+            false
+        }),
         // Box<dyn FnMut(...)>
         Type::Path(type_path) => {
             if let Some(segment) = type_path.path.segments.last() {
@@ -187,7 +185,9 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
         .collect();
 
     // Check if any params are impl Trait - if so, can't use skip optimization
-    let has_impl_trait = param_info.iter().any(|(_, _, ty)| matches!(**ty, Type::ImplTrait(_)));
+    let has_impl_trait = param_info
+        .iter()
+        .any(|(_, _, ty)| matches!(**ty, Type::ImplTrait(_)));
 
     if enable_skip && !has_impl_trait {
         let helper_ident = Ident::new(
@@ -211,14 +211,14 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
             .collect();
 
         // Separate Fn-like params from regular params
-        let param_state_ptrs: Vec<Ident> = (0..param_info.len())
-            .map(|index| Ident::new(&format!("__param_state_ptr{}", index), Span::call_site()))
+        let param_state_handles: Vec<Ident> = (0..param_info.len())
+            .map(|index| Ident::new(&format!("__param_state_handle{}", index), Span::call_site()))
             .collect();
 
         let param_setup: Vec<TokenStream2> = param_info
             .iter()
-            .zip(param_state_ptrs.iter())
-            .filter_map(|((ident, _pat, ty), ptr_ident)| {
+            .zip(param_state_handles.iter())
+            .filter_map(|((ident, _pat, ty), handle_ident)| {
                 // Skip impl Trait types - can't create intermediate bindings for them
                 let is_impl_trait = matches!(**ty, Type::ImplTrait(_));
                 if is_impl_trait {
@@ -230,24 +230,17 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     // Fn-like parameters: use ParamSlot (no PartialEq/Clone required)
                     // Store by move, always mark as changed
                     Some(quote! {
-                        let #ptr_ident: *mut compose_core::ParamSlot<#ty> = {
-                            let __slot_ref = __composer
-                                .remember(|| compose_core::ParamSlot::<#ty>::default());
-                            __slot_ref as *mut compose_core::ParamSlot<#ty>
-                        };
-                        // Move the closure into the slot; always mark as changed
-                        unsafe { (&mut *#ptr_ident).set(#ident) };
+                        let #handle_ident = __composer
+                            .remember(|| compose_core::ParamSlot::<#ty>::default());
+                        #handle_ident.update(|slot| slot.set(#ident));
                         __changed = true;
                     })
                 } else {
                     // Regular parameters: use ParamState with PartialEq comparison
                     Some(quote! {
-                        let #ptr_ident: *mut compose_core::ParamState<#ty> = {
-                            let __slot_ref = __composer
-                                .remember(|| compose_core::ParamState::<#ty>::default());
-                            __slot_ref as *mut compose_core::ParamState<#ty>
-                        };
-                        if unsafe { (&mut *#ptr_ident).update(&#ident) } {
+                        let #handle_ident = __composer
+                            .remember(|| compose_core::ParamState::<#ty>::default());
+                        if #handle_ident.update(|slot| slot.update(&#ident)) {
                             __changed = true;
                         }
                     })
@@ -258,8 +251,8 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
         // Generate rebinds: regular params get normal rebinds, Fn params get rebound from slots
         let rebinds: Vec<TokenStream2> = param_info
             .iter()
-            .zip(param_state_ptrs.iter())
-            .map(|((ident, pat, ty), ptr_ident)| {
+            .zip(param_state_handles.iter())
+            .map(|((ident, pat, ty), handle_ident)| {
                 let is_impl_trait = matches!(**ty, Type::ImplTrait(_));
                 if is_impl_trait {
                     // impl Trait: no rebind needed, already has original name
@@ -267,7 +260,7 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 } else if is_fn_param(ty, &generics) {
                     // Fn-like param: rebind as &mut from slot
                     quote! {
-                        let #pat = unsafe { (&mut *#ptr_ident).as_mut() };
+                        let #pat = unsafe { (&mut *#handle_ident.as_ptr()).as_mut() };
                     }
                 } else {
                     // Regular rebind
@@ -281,8 +274,8 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
         // Recompose args: for Fn params take from ParamSlot, for regular params clone from ParamState
         let recompose_args: Vec<TokenStream2> = param_info
             .iter()
-            .zip(param_state_ptrs.iter())
-            .filter_map(|((_, _, ty), ptr_ident)| {
+            .zip(param_state_handles.iter())
+            .filter_map(|((_, _, ty), handle_ident)| {
                 let is_impl_trait = matches!(**ty, Type::ImplTrait(_));
                 if is_impl_trait {
                     // impl Trait: can't pass through recompose callback
@@ -290,13 +283,13 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 } else if is_fn_param(ty, &generics) {
                     // Fn-like params: take from ParamSlot (will be set again by param_setup)
                     Some(quote! {
-                        unsafe { (&mut *#ptr_ident).take() }
+                        unsafe { (&mut *#handle_ident.as_ptr()).take() }
                     })
                 } else {
                     // Regular params: clone from ParamState
                     Some(quote! {
                         unsafe {
-                            (&*#ptr_ident)
+                            (&*#handle_ident.as_ptr())
                                 .value()
                                 .expect("composable parameter missing for recomposition")
                         }
@@ -311,11 +304,10 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .expect("missing recompose scope");
             let mut __changed = __current_scope.should_recompose();
             #(#param_setup)*
-            let __result_slot_ptr: *mut compose_core::ReturnSlot<#return_ty> = {
-                let __slot_ref = __composer
-                    .remember(|| compose_core::ReturnSlot::<#return_ty>::default());
-                __slot_ref as *mut compose_core::ReturnSlot<#return_ty>
-            };
+            let __result_slot_handle = __composer
+                .remember(|| compose_core::ReturnSlot::<#return_ty>::default());
+            let __result_slot_ptr: *mut compose_core::ReturnSlot<#return_ty> =
+                __result_slot_handle.as_ptr();
             let __has_previous = unsafe { (&*__result_slot_ptr).get().is_some() };
             if !__changed && __has_previous {
                 __composer.skip_current_group();
