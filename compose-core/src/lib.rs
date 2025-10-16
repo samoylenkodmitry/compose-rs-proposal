@@ -926,6 +926,9 @@ pub trait Node: Any {
     fn remove_child(&mut self, _child: NodeId) {}
     fn move_child(&mut self, _from: usize, _to: usize) {}
     fn update_children(&mut self, _children: &[NodeId]) {}
+    fn supports_update_children(&self) -> bool {
+        false
+    }
 }
 
 impl dyn Node {
@@ -1797,17 +1800,101 @@ impl<'a> Composer<'a> {
                 previous,
                 new_children,
             } = frame;
-            if previous != new_children {
-                let target = new_children.clone();
-                let id_copy = id;
+
+            let mut target: Vec<NodeId> = Vec::with_capacity(new_children.len());
+            let mut seen = HashSet::new();
+            for child in new_children.into_iter() {
+                if seen.insert(child) {
+                    target.push(child);
+                }
+            }
+
+            if previous != target {
+                let supports_atomic = self
+                    .applier
+                    .get_mut(id)
+                    .map(|node| node.supports_update_children())
+                    .unwrap_or(false);
+
+                if supports_atomic {
+                    let id_copy = id;
+                    let target_children = target.clone();
+                    self.commands
+                        .push(Box::new(move |applier: &mut dyn Applier| {
+                            let parent_node = applier.get_mut(id_copy)?;
+                            parent_node.update_children(&target_children);
+                            Ok(())
+                        }));
+                } else {
+                    self.enqueue_child_diff(id, previous, target.clone());
+                }
+            }
+
+            remembered.update(move |entry| entry.children = target);
+        }
+    }
+
+    fn enqueue_child_diff(&mut self, id: NodeId, previous: Vec<NodeId>, target: Vec<NodeId>) {
+        let mut current = previous;
+        let mut desired_counts: HashMap<NodeId, usize> = HashMap::new();
+        for &child in &target {
+            desired_counts
+                .entry(child)
+                .and_modify(|count| *count += 1)
+                .or_insert(1);
+        }
+
+        let mut kept_counts: HashMap<NodeId, usize> = HashMap::new();
+        for index in (0..current.len()).rev() {
+            let child = current[index];
+            let remaining = desired_counts.get(&child).copied().unwrap_or(0);
+            let kept = kept_counts.entry(child).or_insert(0);
+            if *kept < remaining {
+                *kept += 1;
+                continue;
+            }
+            current.remove(index);
+            self.commands
+                .push(Box::new(move |applier: &mut dyn Applier| {
+                    let parent_node = applier.get_mut(id)?;
+                    parent_node.remove_child(child);
+                    Ok(())
+                }));
+        }
+
+        for (target_index, &child) in target.iter().enumerate() {
+            if let Some(current_index) = current.iter().position(|&c| c == child) {
+                if current_index != target_index {
+                    let from_index = current_index;
+                    current.remove(from_index);
+                    let to_index = target_index.min(current.len());
+                    current.insert(to_index, child);
+                    self.commands
+                        .push(Box::new(move |applier: &mut dyn Applier| {
+                            let parent_node = applier.get_mut(id)?;
+                            parent_node.move_child(from_index, to_index);
+                            Ok(())
+                        }));
+                }
+            } else {
+                let insert_index = target_index.min(current.len());
+                let appended_index = current.len();
+                current.insert(insert_index, child);
                 self.commands
                     .push(Box::new(move |applier: &mut dyn Applier| {
-                        let parent_node = applier.get_mut(id_copy)?;
-                        parent_node.update_children(&target);
+                        let parent_node = applier.get_mut(id)?;
+                        parent_node.insert_child(child);
                         Ok(())
                     }));
+                if insert_index != appended_index {
+                    self.commands
+                        .push(Box::new(move |applier: &mut dyn Applier| {
+                            let parent_node = applier.get_mut(id)?;
+                            parent_node.move_child(appended_index, insert_index);
+                            Ok(())
+                        }));
+                }
             }
-            remembered.update(|entry| entry.children = new_children);
         }
     }
 
@@ -3037,7 +3124,9 @@ mod tests {
         }
 
         fn remove_child(&mut self, child: NodeId) {
-            self.children.retain(|&c| c != child);
+            if let Some(pos) = self.children.iter().position(|&c| c == child) {
+                self.children.remove(pos);
+            }
             self.operations.push(Operation::Remove(child));
         }
 
@@ -3084,6 +3173,10 @@ mod tests {
         fn update_children(&mut self, children: &[NodeId]) {
             self.children = children.to_vec();
             self.updates.push(children.to_vec());
+        }
+
+        fn supports_update_children(&self) -> bool {
+            true
         }
     }
 
@@ -3179,7 +3272,10 @@ mod tests {
 
         assert_eq!(
             operations,
-            vec![Operation::UpdateChildren(vec![child_c, child_b, child_a])]
+            vec![
+                Operation::Move { from: 2, to: 0 },
+                Operation::Move { from: 2, to: 1 },
+            ]
         );
 
         let final_children = applier
@@ -3238,10 +3334,7 @@ mod tests {
             vec![child_a, child_b, child_c],
         );
 
-        assert_eq!(
-            insert_ops,
-            vec![Operation::UpdateChildren(vec![child_a, child_b, child_c])]
-        );
+        assert_eq!(insert_ops, vec![Operation::Insert(child_c)]);
         let after_insert_children = applier
             .with_node(parent_id, |node: &mut RecordingNode| node.children.clone())
             .expect("read children after insert");
@@ -3262,10 +3355,7 @@ mod tests {
             vec![child_a, child_c],
         );
 
-        assert_eq!(
-            remove_ops,
-            vec![Operation::UpdateChildren(vec![child_a, child_c])]
-        );
+        assert_eq!(remove_ops, vec![Operation::Remove(child_b)]);
         let after_remove_children = applier
             .with_node(parent_id, |node: &mut RecordingNode| node.children.clone())
             .expect("read children after remove");
@@ -3315,7 +3405,12 @@ mod tests {
 
         assert_eq!(
             operations,
-            vec![Operation::UpdateChildren(vec![child_c, child_d])]
+            vec![
+                Operation::Remove(child_b),
+                Operation::Remove(child_a),
+                Operation::Insert(child_c),
+                Operation::Insert(child_d),
+            ]
         );
 
         let final_children = applier
@@ -3358,12 +3453,7 @@ mod tests {
             vec![child_a, child_b, child_c, child_d],
             vec![child_a, child_c, child_b, child_d],
         );
-        assert_eq!(
-            swap_middle,
-            vec![Operation::UpdateChildren(vec![
-                child_a, child_c, child_b, child_d,
-            ])]
-        );
+        assert_eq!(swap_middle, vec![Operation::Move { from: 2, to: 1 }]);
         let forward_children = applier
             .with_node(parent_id, |node: &mut RecordingNode| node.children.clone())
             .expect("read swapped children");
@@ -3386,9 +3476,11 @@ mod tests {
         );
         assert_eq!(
             reversed,
-            vec![Operation::UpdateChildren(vec![
-                child_a, child_b, child_c, child_d,
-            ])]
+            vec![
+                Operation::Move { from: 3, to: 0 },
+                Operation::Move { from: 3, to: 1 },
+                Operation::Move { from: 3, to: 2 },
+            ]
         );
         let restored_children = applier
             .with_node(parent_id, |node: &mut RecordingNode| node.children.clone())
@@ -3433,9 +3525,10 @@ mod tests {
 
         assert_eq!(
             operations,
-            vec![Operation::UpdateChildren(vec![
-                child_a, child_b, child_c, child_d,
-            ])]
+            vec![
+                Operation::Insert(child_b),
+                Operation::Move { from: 3, to: 1 },
+            ]
         );
 
         let final_children = applier
@@ -3465,7 +3558,7 @@ mod tests {
 
         applier
             .with_node(parent_id, |node: &mut RecordingNode| {
-                node.children = vec![child_a, child_b, child_c];
+                node.children = vec![child_a, child_b, child_b, child_c];
                 node.operations.clear();
             })
             .expect("seed parent state");
@@ -3475,15 +3568,18 @@ mod tests {
             &mut applier,
             &runtime,
             parent_id,
-            vec![child_a, child_b, child_c],
-            vec![child_a, child_d, child_c, child_b],
+            vec![child_a, child_b, child_b, child_c],
+            vec![child_a, child_d, child_c, child_b, child_b],
         );
 
         assert_eq!(
             operations,
-            vec![Operation::UpdateChildren(vec![
-                child_a, child_d, child_c, child_b,
-            ])]
+            vec![
+                Operation::Remove(child_b),
+                Operation::Insert(child_d),
+                Operation::Move { from: 3, to: 1 },
+                Operation::Move { from: 3, to: 2 },
+            ]
         );
 
         let final_children = applier
@@ -3526,10 +3622,7 @@ mod tests {
             vec![child_a],
             vec![child_a, child_b],
         );
-        assert_eq!(
-            first,
-            vec![Operation::UpdateChildren(vec![child_a, child_b])]
-        );
+        assert_eq!(first, vec![Operation::Insert(child_b)]);
 
         let second = apply_child_diff(
             &mut slots,

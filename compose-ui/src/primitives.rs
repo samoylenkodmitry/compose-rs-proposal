@@ -219,6 +219,10 @@ impl Node for LayoutNode {
             self.children.insert(child);
         }
     }
+
+    fn supports_update_children(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Clone, Default)]
@@ -287,6 +291,10 @@ impl Node for ButtonNode {
         for &child in children {
             self.children.insert(child);
         }
+    }
+
+    fn supports_update_children(&self) -> bool {
+        true
     }
 }
 
