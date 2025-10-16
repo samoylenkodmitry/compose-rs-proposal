@@ -629,9 +629,11 @@ fn combined_app() {
                             }))
                             .then(Modifier::padding(10.0)),
                         {
-                            println!("Counter App button clicked");
                             let show_counter = show_counter.clone();
-                            move || show_counter.set(true)
+                            move || {
+                                println!("Counter App button clicked");
+                                show_counter.set(true)
+                            }
                         },
                         || {
                             Text("Counter App", Modifier::padding(4.0));
@@ -652,9 +654,11 @@ fn combined_app() {
                             }))
                             .then(Modifier::padding(10.0)),
                         {
-                            println!("Composition Local button clicked");
                             let show_counter = show_counter.clone();
-                            move || show_counter.set(false)
+                            move || {
+                                println!("Composition Local button clicked");
+                                show_counter.set(false)
+                            }
                         },
                         || {
                             Text("CompositionLocal Test", Modifier::padding(4.0));
@@ -665,6 +669,7 @@ fn combined_app() {
 
             Spacer(Size { width: 0.0, height: 12.0 });
 
+            println!("if recomposed");
             if show_counter.get() {
                 println!("if show counter");
                 counter_app();
