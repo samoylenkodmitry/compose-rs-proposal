@@ -5,7 +5,7 @@ use crate::modifier::{
     Brush, DrawCommand as ModifierDrawCommand, DrawPrimitive, Modifier, Rect, RoundedCornerShape,
     Size,
 };
-use crate::primitives::{ButtonNode, ColumnNode, LayoutNode, RowNode, TextNode};
+use crate::primitives::{ButtonNode, LayoutNode, TextNode};
 
 /// Layer that a paint operation targets within the rendering pipeline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,16 +116,7 @@ impl<'a> HeadlessRenderer<'a> {
     }
 
     fn container_modifier(&mut self, node_id: NodeId) -> Result<Option<Modifier>, NodeError> {
-        if let Some(modifier) =
-            self.read_node::<ColumnNode, _>(node_id, |node| node.modifier.clone())?
-        {
-            return Ok(Some(modifier));
-        }
-        if let Some(modifier) =
-            self.read_node::<RowNode, _>(node_id, |node| node.modifier.clone())?
-        {
-            return Ok(Some(modifier));
-        }
+        // Box, Row, and Column all use LayoutNode now
         if let Some(modifier) =
             self.read_node::<LayoutNode, _>(node_id, |node| node.modifier.clone())?
         {
@@ -246,7 +237,7 @@ fn resolve_radii(shape: RoundedCornerShape, rect: Rect) -> crate::modifier::Corn
 mod tests {
     use super::*;
     use crate::modifier::{Brush, Color, Modifier};
-    use crate::primitives::{Column, Text};
+    use crate::primitives::{Column, ColumnSpec, Text};
     use crate::{layout::LayoutEngine, Composition};
     use compose_core::{location_key, MemoryApplier};
 
@@ -310,6 +301,7 @@ mod tests {
                         .then(Modifier::draw_behind(|scope| {
                             scope.draw_rect(Brush::solid(Color(0.8, 0.0, 0.0, 1.0)));
                         })),
+                    ColumnSpec::default(),
                     || {
                         Text(
                             "Content".to_string(),

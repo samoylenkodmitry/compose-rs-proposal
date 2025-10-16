@@ -28,10 +28,9 @@ pub use modifier_nodes::{
     PaddingElement, PaddingNode, SizeElement, SizeNode,
 };
 pub use primitives::{
-    Box, BoxNode, BoxScope, BoxWithConstraints, BoxWithConstraintsScope,
-    BoxWithConstraintsScopeImpl, BoxWithOptions, Button, ButtonNode, Column, ColumnNode,
-    ColumnWithAlignment, ForEach, Layout, LayoutNode, Row, RowNode, RowWithAlignment, Spacer,
-    SpacerNode, SubcomposeLayout, Text, TextNode,
+    Box, BoxScope, BoxSpec, BoxWithConstraints, BoxWithConstraintsScope,
+    BoxWithConstraintsScopeImpl, Button, ButtonNode, Column, ColumnSpec, ForEach, Layout,
+    LayoutNode, Row, RowSpec, Spacer, SpacerNode, SubcomposeLayout, Text, TextNode,
 };
 pub use renderer::{HeadlessRenderer, PaintLayer, RenderOp, RenderScene};
 pub use subcompose_layout::{

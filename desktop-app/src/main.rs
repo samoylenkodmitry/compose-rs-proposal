@@ -8,10 +8,11 @@ use compose_core::{
 };
 use compose_runtime_std::StdRuntime;
 use compose_ui::{
-    composable, Brush, Button, ButtonNode, Color, Column, ColumnNode, CornerRadii, DrawCommand,
-    DrawPrimitive, EdgeInsets, GraphicsLayer, LayoutBox, LayoutEngine, LinearArrangement, Modifier,
-    Point, PointerEvent, PointerEventKind, Rect, RoundedCornerShape, Row, RowNode,
-    RowWithAlignment, Size, Spacer, SpacerNode, Text, TextNode, VerticalAlignment,
+    composable, Brush, Button, ButtonNode, Color, Column, ColumnSpec, CornerRadii, DrawCommand,
+    DrawPrimitive, EdgeInsets, GraphicsLayer, LayoutBox, LayoutEngine, LayoutNode,
+    LinearArrangement, Modifier, Point, PointerEvent, PointerEventKind, Rect,
+    RoundedCornerShape, Row, RowSpec, Size, Spacer, SpacerNode, Text, TextNode,
+    VerticalAlignment,
 };
 use once_cell::sync::Lazy;
 use pixels::{Pixels, SurfaceTexture};
@@ -290,6 +291,7 @@ fn counter_app() {
                 }
             }))
             .then(Modifier::padding(20.0)),
+        ColumnSpec::default(),
         || {
             Text(
                 "Compose-RS Playground",
@@ -310,10 +312,11 @@ fn counter_app() {
                 height: 12.0,
             });
 
-            RowWithAlignment(
+            Row(
                 Modifier::padding(8.0),
-                LinearArrangement::SpacedBy(12.0),
-                VerticalAlignment::CenterVertically,
+                RowSpec::new()
+                    .horizontal_arrangement(LinearArrangement::SpacedBy(12.0))
+                    .vertical_alignment(VerticalAlignment::CenterVertically),
                 || {
                     Text(
                         format!("Counter: {}", counter.get()),
@@ -387,6 +390,7 @@ fn counter_app() {
                     move |_| pointer_down.set(!pointer_down.get())
                 }))
                 .then(Modifier::padding(12.0)),
+                ColumnSpec::default(),
                 || {
                     if counter.get() % 2 == 0 {
                         LaunchedEffect!("", |_| { println!("launch playground") });
@@ -455,6 +459,7 @@ fn counter_app() {
                     .then(Modifier::rounded_corners(12.0))
                     .then(Modifier::background(Color(0.1, 0.1, 0.15, 0.6)))
                     .then(Modifier::padding(8.0)),
+                RowSpec::default(),
                 || {
                     // All buttons will have the same width as the widest one ("Long Button Text")
                     Button(
@@ -518,7 +523,7 @@ fn counter_app() {
                 height: 16.0,
             });
 
-            Row(Modifier::padding(8.0), || {
+            Row(Modifier::padding(8.0), RowSpec::default(), || {
                 Button(
                     Modifier::rounded_corners(16.0)
                         .then(Modifier::draw_with_cache(|cache| {
@@ -884,14 +889,11 @@ fn render_layout_node(
     layer: GraphicsLayer,
     scene: &mut Scene,
 ) {
-    if let Some(column) = try_node(applier, layout.node_id, |node: &mut ColumnNode| {
+    // Box, Row, and Column all use LayoutNode now
+    if let Some(layout_node) = try_node(applier, layout.node_id, |node: &mut LayoutNode| {
         node.clone()
     }) {
-        render_column(applier, column, layout, layer, scene);
-        return;
-    }
-    if let Some(row) = try_node(applier, layout.node_id, |node: &mut RowNode| node.clone()) {
-        render_row(applier, row, layout, layer, scene);
+        render_layout(applier, layout_node, layout, layer, scene);
         return;
     }
     if let Some(text) = try_node(applier, layout.node_id, |node: &mut TextNode| node.clone()) {
@@ -911,67 +913,9 @@ fn render_layout_node(
     }
 }
 
-fn render_column(
+fn render_layout(
     applier: &mut MemoryApplier,
-    node: ColumnNode,
-    layout: &LayoutBox,
-    layer: GraphicsLayer,
-    scene: &mut Scene,
-) {
-    let style = NodeStyle::from_modifier(&node.modifier);
-    let node_layer = combine_layers(layer, style.graphics_layer);
-    let rect = layout.rect;
-    let size = Size {
-        width: rect.width,
-        height: rect.height,
-    };
-    let origin = (rect.x, rect.y);
-    apply_draw_commands(
-        &style.draw_commands,
-        DrawPlacement::Behind,
-        rect,
-        origin,
-        size,
-        node_layer,
-        scene,
-    );
-    let scaled_shape = style.shape.map(|shape| {
-        let resolved = shape.resolve(rect.width, rect.height);
-        RoundedCornerShape::with_radii(scale_corner_radii(resolved, node_layer.scale))
-    });
-    let transformed_rect = apply_layer_to_rect(rect, origin, node_layer);
-    if let Some(color) = style.background {
-        let brush = apply_layer_to_brush(Brush::solid(color), node_layer);
-        scene.push_shape(transformed_rect, brush, scaled_shape.clone());
-    }
-    let mut click_actions = Vec::new();
-    if let Some(handler) = style.clickable {
-        click_actions.push(ClickAction::WithPoint(handler));
-    }
-    scene.push_hit(
-        transformed_rect,
-        scaled_shape.clone(),
-        click_actions,
-        style.pointer_inputs.clone(),
-    );
-    for (child_id, child_layout) in node.children.iter().zip(&layout.children) {
-        debug_assert_eq!(*child_id, child_layout.node_id);
-        render_layout_node(applier, child_layout, node_layer, scene);
-    }
-    apply_draw_commands(
-        &style.draw_commands,
-        DrawPlacement::Overlay,
-        rect,
-        origin,
-        size,
-        node_layer,
-        scene,
-    );
-}
-
-fn render_row(
-    applier: &mut MemoryApplier,
-    node: RowNode,
+    node: LayoutNode,
     layout: &LayoutBox,
     layer: GraphicsLayer,
     scene: &mut Scene,

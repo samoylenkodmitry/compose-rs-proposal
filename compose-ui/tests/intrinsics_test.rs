@@ -30,7 +30,7 @@ fn equal_width_buttons_api_demonstration() {
     let mut composition = run_test_composition(|| {
         // Using Row with equal-width buttons via IntrinsicSize.Max
         // This would make all buttons as wide as the widest button
-        Row(Modifier::empty(), || {
+        Row(Modifier::empty(), RowSpec::default(), || {
             Button(
                 Modifier::width_intrinsic(IntrinsicSize::Max),
                 || {},
@@ -66,6 +66,7 @@ fn column_with_intrinsic_width() {
         Column(
             Modifier::width_intrinsic(IntrinsicSize::Max)
                 .then(Modifier::background(Color(0.8, 0.8, 0.8, 1.0))),
+            ColumnSpec::default(),
             || {
                 Text("Short", Modifier::empty());
                 Text("Much Longer Text", Modifier::empty());
@@ -84,19 +85,20 @@ fn row_with_intrinsic_height() {
         Row(
             Modifier::height_intrinsic(IntrinsicSize::Max)
                 .then(Modifier::background(Color(0.8, 0.8, 0.8, 1.0))),
+            RowSpec::default(),
             || {
                 Box(Modifier::size(Size {
                     width: 50.0,
                     height: 30.0,
-                }), || {});
+                }), BoxSpec::default(), || {});
                 Box(Modifier::size(Size {
                     width: 50.0,
                     height: 80.0,
-                }), || {});
+                }), BoxSpec::default(), || {});
                 Box(Modifier::size(Size {
                     width: 50.0,
                     height: 50.0,
-                }), || {});
+                }), BoxSpec::default(), || {});
             },
         );
     });
@@ -108,13 +110,13 @@ fn row_with_intrinsic_height() {
 fn min_intrinsic_vs_max_intrinsic() {
     // Demonstrate the difference between Min and Max intrinsic sizes
     let comp_min = run_test_composition(|| {
-        Column(Modifier::width_intrinsic(IntrinsicSize::Min), || {
+        Column(Modifier::width_intrinsic(IntrinsicSize::Min), ColumnSpec::default(), || {
             Text("Content", Modifier::empty());
         });
     });
 
     let comp_max = run_test_composition(|| {
-        Column(Modifier::width_intrinsic(IntrinsicSize::Max), || {
+        Column(Modifier::width_intrinsic(IntrinsicSize::Max), ColumnSpec::default(), || {
             Text("Content", Modifier::empty());
         });
     });
@@ -131,6 +133,7 @@ fn intrinsic_size_with_padding() {
             Modifier::width_intrinsic(IntrinsicSize::Max)
                 .then(Modifier::padding(16.0))
                 .then(Modifier::background(Color(0.9, 0.9, 0.9, 1.0))),
+            ColumnSpec::default(),
             || {
                 Text("Button 1", Modifier::empty());
                 Text("Button 2 - Longer", Modifier::empty());
@@ -145,12 +148,12 @@ fn intrinsic_size_with_padding() {
 fn nested_intrinsic_sizing() {
     // Test nested layouts with intrinsic sizing
     let composition = run_test_composition(|| {
-        Column(Modifier::empty(), || {
-            Row(Modifier::width_intrinsic(IntrinsicSize::Max), || {
+        Column(Modifier::empty(), ColumnSpec::default(), || {
+            Row(Modifier::width_intrinsic(IntrinsicSize::Max), RowSpec::default(), || {
                 Text("Left", Modifier::empty());
                 Text("Right", Modifier::empty());
             });
-            Row(Modifier::width_intrinsic(IntrinsicSize::Max), || {
+            Row(Modifier::width_intrinsic(IntrinsicSize::Max), RowSpec::default(), || {
                 Text("A", Modifier::empty());
                 Text("B", Modifier::empty());
             });
