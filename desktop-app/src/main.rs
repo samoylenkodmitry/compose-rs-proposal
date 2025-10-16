@@ -292,7 +292,16 @@ fn counter_app() {
             }))
             .then(Modifier::padding(20.0)),
         ColumnSpec::default(),
-        || {
+        {
+            let counter_main = counter.clone();
+            let pointer_position_main = pointer_position.clone();
+            let pointer_down_main = pointer_down.clone();
+            let wave_main = wave;
+            move || {
+            let counter = counter_main.clone();
+            let pointer_position = pointer_position_main.clone();
+            let pointer_down = pointer_down_main.clone();
+            let wave = wave_main;
             Text(
                 "Compose-RS Playground",
                 Modifier::padding(12.0)
@@ -317,25 +326,29 @@ fn counter_app() {
                 RowSpec::new()
                     .horizontal_arrangement(LinearArrangement::SpacedBy(12.0))
                     .vertical_alignment(VerticalAlignment::CenterVertically),
-                || {
-                    Text(
-                        format!("Counter: {}", counter.get()),
-                        Modifier::padding(8.0)
-                            .then(Modifier::background(Color(0.0, 0.0, 0.0, 0.35)))
-                            .then(Modifier::rounded_corners(12.0)),
-                    );
-                    Text(
-                        format!("Wave {:.2}", wave),
-                        Modifier::padding(8.0)
-                            .then(Modifier::background(Color(0.35, 0.55, 0.9, 0.5)))
-                            .then(Modifier::rounded_corners(12.0))
-                            .then(Modifier::graphics_layer(GraphicsLayer {
-                                alpha: 0.7 + wave * 0.3,
-                                scale: 0.85 + wave * 0.3,
-                                translation_x: 0.0,
-                                translation_y: (wave - 0.5) * 12.0,
-                            })),
-                    );
+                {
+                    let counter_display = counter.clone();
+                    let wave_value = wave;
+                    move || {
+                        Text(
+                            format!("Counter: {}", counter_display.get()),
+                            Modifier::padding(8.0)
+                                .then(Modifier::background(Color(0.0, 0.0, 0.0, 0.35)))
+                                .then(Modifier::rounded_corners(12.0)),
+                        );
+                        Text(
+                            format!("Wave {:.2}", wave_value),
+                            Modifier::padding(8.0)
+                                .then(Modifier::background(Color(0.35, 0.55, 0.9, 0.5)))
+                                .then(Modifier::rounded_corners(12.0))
+                                .then(Modifier::graphics_layer(GraphicsLayer {
+                                    alpha: 0.7 + wave_value * 0.3,
+                                    scale: 0.85 + wave_value * 0.3,
+                                    translation_x: 0.0,
+                                    translation_y: (wave_value - 0.5) * 12.0,
+                                })),
+                        );
+                    }
                 },
             );
 
@@ -391,8 +404,12 @@ fn counter_app() {
                 }))
                 .then(Modifier::padding(12.0)),
                 ColumnSpec::default(),
-                || {
-                    if counter.get() % 2 == 0 {
+                {
+                    let counter_check = counter.clone();
+                    let pointer_position_display = pointer_position.clone();
+                    let pointer_down_display = pointer_down.clone();
+                    move || {
+                        if counter_check.get() % 2 == 0 {
                         LaunchedEffect!("", |_| { println!("launch playground") });
                         DisposableEffect!("", |x| {
                             println!("dispose effect playground");
@@ -424,15 +441,16 @@ fn counter_app() {
                     Text(
                         format!(
                             "Local pointer: ({:.0}, {:.0})",
-                            pointer_position.get().x,
-                            pointer_position.get().y
+                            pointer_position_display.get().x,
+                            pointer_position_display.get().y
                         ),
                         Modifier::padding(6.0),
                     );
                     Text(
-                        format!("Pressed: {}", pointer_down.get()),
+                        format!("Pressed: {}", pointer_down_display.get()),
                         Modifier::padding(6.0),
                     );
+                    }
                 },
             );
 
@@ -523,7 +541,8 @@ fn counter_app() {
                 height: 16.0,
             });
 
-            Row(Modifier::padding(8.0), RowSpec::default(), || {
+                let counter_inc = counter.clone();
+            Row(Modifier::padding(8.0), RowSpec::default(), move || {
                 Button(
                     Modifier::rounded_corners(16.0)
                         .then(Modifier::draw_with_cache(|cache| {
@@ -539,7 +558,7 @@ fn counter_app() {
                         }))
                         .then(Modifier::padding(12.0)),
                     {
-                        let counter = counter.clone();
+                        let counter = counter_inc.clone();
                         move || counter.set(counter.get() + 1)
                     },
                     || {
@@ -568,6 +587,7 @@ fn counter_app() {
                     },
                 );
             });
+        }
         },
     );
 }
@@ -609,12 +629,14 @@ fn combined_app() {
     Column(
         Modifier::padding(20.0),
         ColumnSpec::default(),
-        || {
-            let is_counter = show_counter.get();
+        move || {
+            let show_counter_copy = show_counter.clone();
+            let show_counter = show_counter.clone();
             Row(
                 Modifier::padding(8.0),
                 RowSpec::default(),
-                || {
+                move || {
+                    let is_counter = show_counter.get();
                     Button(
                         Modifier::rounded_corners(12.0)
                             .then(Modifier::draw_behind(move |scope| {
@@ -670,7 +692,7 @@ fn combined_app() {
             Spacer(Size { width: 0.0, height: 12.0 });
 
             println!("if recomposed");
-            if show_counter.get() {
+            if show_counter_copy.get() {
                 println!("if show counter");
                 counter_app();
             } else {
@@ -691,7 +713,7 @@ fn composition_local_example() {
             .then(Modifier::rounded_corners(24.0))
             .then(Modifier::padding(20.0)),
         ColumnSpec::default(),
-        || {
+        move || {
             Text(
                 "CompositionLocal Subscription Test",
                 Modifier::padding(12.0)

@@ -291,7 +291,7 @@ impl Node for ButtonNode {
 }
 
 /// Specification for Box layout behavior.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BoxSpec {
     pub content_alignment: Alignment,
     pub propagate_min_constraints: bool,
@@ -323,7 +323,7 @@ impl Default for BoxSpec {
 }
 
 /// Specification for Column layout behavior.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ColumnSpec {
     pub vertical_arrangement: LinearArrangement,
     pub horizontal_alignment: HorizontalAlignment,
@@ -355,7 +355,7 @@ impl Default for ColumnSpec {
 }
 
 /// Specification for Row layout behavior.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RowSpec {
     pub horizontal_arrangement: LinearArrangement,
     pub vertical_alignment: VerticalAlignment,
@@ -386,38 +386,38 @@ impl Default for RowSpec {
     }
 }
 
-#[composable(no_skip)]
+#[composable]
 pub fn Box<F>(modifier: Modifier, spec: BoxSpec, content: F) -> NodeId
 where
-    F: FnMut(),
+    F: FnMut() + 'static,
 {
     let policy = BoxMeasurePolicy::new(spec.content_alignment, spec.propagate_min_constraints);
     Layout(modifier, policy, content)
 }
 
-#[composable(no_skip)]
+#[composable]
 pub fn Column<F>(modifier: Modifier, spec: ColumnSpec, content: F) -> NodeId
 where
-    F: FnMut(),
+    F: FnMut() + 'static,
 {
     let policy = ColumnMeasurePolicy::new(spec.vertical_arrangement, spec.horizontal_alignment);
     Layout(modifier, policy, content)
 }
 
-#[composable(no_skip)]
+#[composable]
 pub fn Row<F>(modifier: Modifier, spec: RowSpec, content: F) -> NodeId
 where
-    F: FnMut(),
+    F: FnMut() + 'static,
 {
     let policy = RowMeasurePolicy::new(spec.horizontal_arrangement, spec.vertical_alignment);
     Layout(modifier, policy, content)
 }
 
-#[composable(no_skip)]
-pub fn Layout<F, P>(modifier: Modifier, measure_policy: P, mut content: F) -> NodeId
+#[composable]
+pub fn Layout<F, P>(modifier: Modifier, measure_policy: P, content: F) -> NodeId
 where
-    F: FnMut(),
-    P: MeasurePolicy + 'static,
+    F: FnMut() + 'static,
+    P: MeasurePolicy + Clone + PartialEq + 'static,
 {
     let policy: Rc<dyn MeasurePolicy> = Rc::new(measure_policy);
     let id = compose_node(|| LayoutNode::new(modifier.clone(), Rc::clone(&policy)));
@@ -433,7 +433,7 @@ where
     id
 }
 
-#[composable(no_skip)]
+#[composable]
 pub fn SubcomposeLayout(
     modifier: Modifier,
     measure_policy: impl for<'scope> Fn(&mut SubcomposeMeasureScopeImpl<'scope>, Constraints) -> MeasureResult
@@ -603,7 +603,7 @@ where
     id
 }
 
-#[composable(no_skip)]
+#[composable]
 pub fn Spacer(size: Size) -> NodeId {
     let id = compose_node(|| SpacerNode { size });
     if let Err(err) = compose_core::with_node_mut(id, |node: &mut SpacerNode| {
@@ -614,11 +614,11 @@ pub fn Spacer(size: Size) -> NodeId {
     id
 }
 
-#[composable(no_skip)]
+#[composable]
 pub fn Button<F, G>(modifier: Modifier, on_click: F, mut content: G) -> NodeId
 where
     F: FnMut() + 'static,
-    G: FnMut(),
+    G: FnMut() + 'static,
 {
     let on_click_rc: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(on_click));
     let id = compose_node(|| ButtonNode {
@@ -642,7 +642,7 @@ where
 pub fn ForEach<T, F>(items: &[T], mut row: F)
 where
     T: Hash,
-    F: FnMut(&T),
+    F: FnMut(&T) + 'static,
 {
     for item in items {
         compose_core::with_key(item, || row(item));
@@ -738,7 +738,7 @@ mod tests {
     #[composable]
     fn CounterRow(label: &'static str, count: State<i32>) -> NodeId {
         COUNTER_ROW_INVOCATIONS.with(|calls| calls.set(calls.get() + 1));
-        Column(Modifier::empty(), ColumnSpec::default(), || {
+        Column(Modifier::empty(), ColumnSpec::default(), move || {
             Text(label, Modifier::empty());
             let count_for_text = count.clone();
             let text_id = Text(
@@ -760,7 +760,7 @@ mod tests {
                 if button_state.is_none() {
                     button_state = Some(counter.clone());
                 }
-                Column(Modifier::empty(), ColumnSpec::default(), || {
+                Column(Modifier::empty(), ColumnSpec::default(), move || {
                     Text(format!("Count = {}", counter.get()), Modifier::empty());
                     button_id = Some(Button(
                         Modifier::empty(),
@@ -797,14 +797,17 @@ mod tests {
         let mut composition = Composition::new(MemoryApplier::new());
         let root_key = location_key(file!(), line!(), column!());
         let mut text_node_id = None;
-        let mut captured_state: Option<MutableState<i32>> = None;
+        let mut captured_state: Rc<RefCell<Option<MutableState<i32>>>> = Rc::new(RefCell::new(None));
 
+        let captured_state2 = Rc::clone(&captured_state);
         composition
-            .render(root_key, || {
-                Column(Modifier::empty(), ColumnSpec::default(), || {
+            .render(root_key, move || {
+                let captured_state3 = Rc::clone(&captured_state2);
+                Column(Modifier::empty(), ColumnSpec::default(), move || {
+                    let captured_state = &captured_state3;
                     let count = compose_core::useState(|| 0);
-                    if captured_state.is_none() {
-                        captured_state = Some(count.clone());
+                    if captured_state.borrow().is_none() {
+                        *captured_state.borrow_mut() = Some(count.clone());
                     }
                     let count_for_text = count.clone();
                     text_node_id = Some(Text(
@@ -827,7 +830,8 @@ mod tests {
                 .expect("read text node");
         }
 
-        let state = captured_state.expect("captured state");
+        let captured_state = captured_state.borrow();
+        let state = captured_state.clone().expect("captured state");
         state.set(1);
         assert!(composition.should_render());
 
@@ -962,7 +966,7 @@ mod tests {
 
         composition
             .render(key, || {
-                Column(Modifier::padding(10.0), ColumnSpec::default(), || {
+                Column(Modifier::padding(10.0), ColumnSpec::default(), move || {
                     let id = Text("Hello", Modifier::empty());
                     text_id = Some(id);
                     Spacer(Size {
@@ -1006,7 +1010,7 @@ mod tests {
 
         composition
             .render(key, || {
-                Column(Modifier::padding(10.0), ColumnSpec::default(), || {
+                Column(Modifier::padding(10.0), ColumnSpec::default(), move || {
                     text_id = Some(Text("Hello", Modifier::offset(5.0, 7.5)));
                 });
             })

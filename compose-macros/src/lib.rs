@@ -1,7 +1,120 @@
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
-use syn::{parse_macro_input, FnArg, Ident, ItemFn, Pat, PatType, ReturnType};
+use syn::{parse_macro_input, FnArg, Ident, ItemFn, Pat, PatType, ReturnType, Type};
+
+/// Check if a type is Fn-like (impl FnMut/Fn/FnOnce, Box<dyn FnMut>, generic with Fn bound, etc.)
+/// For generic type parameters (e.g., `F` where F: FnMut()), we need to check the bounds.
+fn is_fn_like_type(ty: &Type) -> bool {
+    match ty {
+        // impl FnMut(...) + 'static, impl Fn(...), etc.
+        Type::ImplTrait(impl_trait) => {
+            impl_trait.bounds.iter().any(|bound| {
+                if let syn::TypeParamBound::Trait(trait_bound) = bound {
+                    let path = &trait_bound.path;
+                    if let Some(segment) = path.segments.last() {
+                        let ident_str = segment.ident.to_string();
+                        return ident_str == "FnMut" || ident_str == "Fn" || ident_str == "FnOnce";
+                    }
+                }
+                false
+            })
+        }
+        // Box<dyn FnMut(...)>
+        Type::Path(type_path) => {
+            if let Some(segment) = type_path.path.segments.last() {
+                if segment.ident == "Box" {
+                    if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                        if let Some(syn::GenericArgument::Type(Type::TraitObject(trait_obj))) =
+                            args.args.first()
+                        {
+                            return trait_obj.bounds.iter().any(|bound| {
+                                if let syn::TypeParamBound::Trait(trait_bound) = bound {
+                                    let path = &trait_bound.path;
+                                    if let Some(segment) = path.segments.last() {
+                                        let ident_str = segment.ident.to_string();
+                                        return ident_str == "FnMut"
+                                            || ident_str == "Fn"
+                                            || ident_str == "FnOnce";
+                                    }
+                                }
+                                false
+                            });
+                        }
+                    }
+                }
+            }
+            false
+        }
+        // bare fn(...) -> ...
+        Type::BareFn(_) => true,
+        _ => false,
+    }
+}
+
+/// Check if a generic type parameter has Fn-like bounds by looking at the where clause and bounds
+fn is_generic_fn_like(ty: &Type, generics: &syn::Generics) -> bool {
+    // Extract the ident for Type::Path that might be a generic param
+    let type_ident = match ty {
+        Type::Path(type_path) if type_path.path.segments.len() == 1 => {
+            &type_path.path.segments[0].ident
+        }
+        _ => return false,
+    };
+
+    // Check if it's a type parameter with Fn bounds
+    for param in &generics.params {
+        if let syn::GenericParam::Type(type_param) = param {
+            if type_param.ident == *type_ident {
+                // Check the bounds on the type parameter
+                for bound in &type_param.bounds {
+                    if let syn::TypeParamBound::Trait(trait_bound) = bound {
+                        if let Some(segment) = trait_bound.path.segments.last() {
+                            let ident_str = segment.ident.to_string();
+                            if ident_str == "FnMut" || ident_str == "Fn" || ident_str == "FnOnce" {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Also check where clause
+    if let Some(where_clause) = &generics.where_clause {
+        for predicate in &where_clause.predicates {
+            if let syn::WherePredicate::Type(pred) = predicate {
+                if let Type::Path(bounded_type) = &pred.bounded_ty {
+                    if bounded_type.path.segments.len() == 1
+                        && bounded_type.path.segments[0].ident == *type_ident
+                    {
+                        for bound in &pred.bounds {
+                            if let syn::TypeParamBound::Trait(trait_bound) = bound {
+                                if let Some(segment) = trait_bound.path.segments.last() {
+                                    let ident_str = segment.ident.to_string();
+                                    if ident_str == "FnMut"
+                                        || ident_str == "Fn"
+                                        || ident_str == "FnOnce"
+                                    {
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    false
+}
+
+/// Unified check: is this type Fn-like, either syntactically or via generic bounds?
+fn is_fn_param(ty: &Type, generics: &syn::Generics) -> bool {
+    is_fn_like_type(ty) || is_generic_fn_like(ty, generics)
+}
 
 #[proc_macro_attribute]
 pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -26,17 +139,31 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     for (index, arg) in func.sig.inputs.iter_mut().enumerate() {
         if let FnArg::Typed(PatType { pat, ty, .. }) = arg {
-            let ident = Ident::new(&format!("__arg{}", index), Span::call_site());
-            let original_pat: Box<Pat> = pat.clone();
-            *pat = Box::new(syn::parse_quote! { #ident });
-            param_info.push((ident, original_pat, (*ty).clone()));
+            // For impl Trait types, we can't create intermediate bindings
+            // Keep the original pattern and use it directly
+            let is_impl_trait = matches!(**ty, Type::ImplTrait(_));
+
+            if is_impl_trait {
+                // Keep original pattern for impl Trait params
+                let original_pat: Box<Pat> = pat.clone();
+                if let Pat::Ident(pat_ident) = &**pat {
+                    param_info.push((pat_ident.ident.clone(), original_pat, (*ty).clone()));
+                }
+            } else {
+                // Rename other params to __argN
+                let ident = Ident::new(&format!("__arg{}", index), Span::call_site());
+                let original_pat: Box<Pat> = pat.clone();
+                *pat = Box::new(syn::parse_quote! { #ident });
+                param_info.push((ident, original_pat, (*ty).clone()));
+            }
         }
     }
 
     let original_block = func.block.clone();
     let key_expr = quote! { compose_core::location_key(file!(), line!(), column!()) };
 
-    let rebinds: Vec<_> = param_info
+    // Rebinds will be generated later in the helper_body context where we have access to slots
+    let rebinds_for_no_skip: Vec<_> = param_info
         .iter()
         .map(|(ident, pat, _)| {
             quote! { let #pat = #ident; }
@@ -59,7 +186,10 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
         .map(|(ident, _pat, ty)| quote! { #ident: #ty })
         .collect();
 
-    if enable_skip {
+    // Check if any params are impl Trait - if so, can't use skip optimization
+    let has_impl_trait = param_info.iter().any(|(_, _, ty)| matches!(**ty, Type::ImplTrait(_)));
+
+    if enable_skip && !has_impl_trait {
         let helper_ident = Ident::new(
             &format!("__compose_impl_{}", func.sig.ident),
             Span::call_site(),
@@ -67,11 +197,20 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
         let generics = func.sig.generics.clone();
         let (impl_generics, _ty_generics, where_clause) = generics.split_for_impl();
 
+        // Helper function signature: all params except impl Trait (which can't be named)
         let helper_inputs: Vec<TokenStream2> = param_info
             .iter()
-            .map(|(ident, _pat, ty)| quote! { #ident: #ty })
+            .filter_map(|(ident, _pat, ty)| {
+                let is_impl_trait = matches!(**ty, Type::ImplTrait(_));
+                if is_impl_trait {
+                    None
+                } else {
+                    Some(quote! { #ident: #ty })
+                }
+            })
             .collect();
 
+        // Separate Fn-like params from regular params
         let param_state_ptrs: Vec<Ident> = (0..param_info.len())
             .map(|index| Ident::new(&format!("__param_state_ptr{}", index), Span::call_site()))
             .collect();
@@ -79,31 +218,89 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
         let param_setup: Vec<TokenStream2> = param_info
             .iter()
             .zip(param_state_ptrs.iter())
-            .map(|((ident, _pat, ty), ptr_ident)| {
-                quote! {
-                    let #ptr_ident: *mut compose_core::ParamState<#ty> = {
-                        let __state_ref = __composer
-                            .remember(|| compose_core::ParamState::<#ty>::default());
-                        __state_ref as *mut compose_core::ParamState<#ty>
-                    };
-                    if unsafe { (&mut *#ptr_ident).update(&#ident) } {
+            .filter_map(|((ident, _pat, ty), ptr_ident)| {
+                // Skip impl Trait types - can't create intermediate bindings for them
+                let is_impl_trait = matches!(**ty, Type::ImplTrait(_));
+                if is_impl_trait {
+                    // For impl Trait, always mark as changed (can't track)
+                    return Some(quote! { __changed = true; });
+                }
+
+                if is_fn_param(ty, &generics) {
+                    // Fn-like parameters: use ParamSlot (no PartialEq/Clone required)
+                    // Store by move, always mark as changed
+                    Some(quote! {
+                        let #ptr_ident: *mut compose_core::ParamSlot<#ty> = {
+                            let __slot_ref = __composer
+                                .remember(|| compose_core::ParamSlot::<#ty>::default());
+                            __slot_ref as *mut compose_core::ParamSlot<#ty>
+                        };
+                        // Move the closure into the slot; always mark as changed
+                        unsafe { (&mut *#ptr_ident).set(#ident) };
                         __changed = true;
+                    })
+                } else {
+                    // Regular parameters: use ParamState with PartialEq comparison
+                    Some(quote! {
+                        let #ptr_ident: *mut compose_core::ParamState<#ty> = {
+                            let __slot_ref = __composer
+                                .remember(|| compose_core::ParamState::<#ty>::default());
+                            __slot_ref as *mut compose_core::ParamState<#ty>
+                        };
+                        if unsafe { (&mut *#ptr_ident).update(&#ident) } {
+                            __changed = true;
+                        }
+                    })
+                }
+            })
+            .collect();
+
+        // Generate rebinds: regular params get normal rebinds, Fn params get rebound from slots
+        let rebinds: Vec<TokenStream2> = param_info
+            .iter()
+            .zip(param_state_ptrs.iter())
+            .map(|((ident, pat, ty), ptr_ident)| {
+                let is_impl_trait = matches!(**ty, Type::ImplTrait(_));
+                if is_impl_trait {
+                    // impl Trait: no rebind needed, already has original name
+                    quote! {}
+                } else if is_fn_param(ty, &generics) {
+                    // Fn-like param: rebind as &mut from slot
+                    quote! {
+                        let #pat = unsafe { (&mut *#ptr_ident).as_mut() };
+                    }
+                } else {
+                    // Regular rebind
+                    quote! {
+                        let #pat = #ident;
                     }
                 }
             })
             .collect();
 
-        let recompose_args: Vec<TokenStream2> = param_state_ptrs
+        // Recompose args: for Fn params take from ParamSlot, for regular params clone from ParamState
+        let recompose_args: Vec<TokenStream2> = param_info
             .iter()
-            .enumerate()
-            .map(|(index, ptr_ident)| {
-                let message = format!("composable parameter {} missing for recomposition", index);
-                quote! {
-                    unsafe {
-                        (&*#ptr_ident)
-                            .value()
-                            .expect(#message)
-                    }
+            .zip(param_state_ptrs.iter())
+            .filter_map(|((_, _, ty), ptr_ident)| {
+                let is_impl_trait = matches!(**ty, Type::ImplTrait(_));
+                if is_impl_trait {
+                    // impl Trait: can't pass through recompose callback
+                    None
+                } else if is_fn_param(ty, &generics) {
+                    // Fn-like params: take from ParamSlot (will be set again by param_setup)
+                    Some(quote! {
+                        unsafe { (&mut *#ptr_ident).take() }
+                    })
+                } else {
+                    // Regular params: clone from ParamState
+                    Some(quote! {
+                        unsafe {
+                            (&*#ptr_ident)
+                                .value()
+                                .expect("composable parameter missing for recomposition")
+                        }
+                    })
                 }
             })
             .collect();
@@ -158,9 +355,17 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         };
 
+        // Wrapper args: pass all params except impl Trait on initial call
         let wrapper_args: Vec<TokenStream2> = param_info
             .iter()
-            .map(|(ident, _pat, _)| quote! { #ident })
+            .filter_map(|(ident, _pat, ty)| {
+                let is_impl_trait = matches!(**ty, Type::ImplTrait(_));
+                if is_impl_trait {
+                    None
+                } else {
+                    Some(quote! { #ident })
+                }
+            })
             .collect();
 
         let wrapped = quote!({
@@ -176,10 +381,11 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
             #func
         })
     } else {
+        // no_skip path: still uses simple rebinds
         let wrapped = quote!({
             compose_core::with_current_composer(|__composer: &mut compose_core::Composer<'_>| {
                 __composer.with_group(#key_expr, |__scope: &mut compose_core::Composer<'_>| {
-                    #(#rebinds)*
+                    #(#rebinds_for_no_skip)*
                     #original_block
                 })
             })

@@ -2070,6 +2070,33 @@ impl<T> ParamState<T> {
     }
 }
 
+/// ParamSlot holds function/closure parameters by ownership (no PartialEq/Clone required).
+/// Used by the #[composable] macro to store Fn-like parameters in the slot table.
+pub struct ParamSlot<T> {
+    val: Option<T>,
+}
+
+impl<T> Default for ParamSlot<T> {
+    fn default() -> Self {
+        Self { val: None }
+    }
+}
+
+impl<T> ParamSlot<T> {
+    pub fn set(&mut self, v: T) {
+        self.val = Some(v);
+    }
+
+    pub fn as_mut(&mut self) -> &mut T {
+        self.val.as_mut().expect("ParamSlot accessed before set")
+    }
+
+    /// Takes the value out temporarily (for recomposition callback)
+    pub fn take(&mut self) -> T {
+        self.val.take().expect("ParamSlot take() called before set")
+    }
+}
+
 pub struct ReturnSlot<T> {
     value: Option<T>,
 }
