@@ -6,7 +6,7 @@ use crate::modifier::Point;
 use crate::subcompose_layout::{Constraints, MeasureResult, Placement};
 
 /// MeasurePolicy for Box layout - overlays children according to alignment.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct BoxMeasurePolicy {
     pub content_alignment: Alignment,
     pub propagate_min_constraints: bool,
@@ -106,7 +106,7 @@ impl MeasurePolicy for BoxMeasurePolicy {
 }
 
 /// MeasurePolicy for Column layout - arranges children vertically.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ColumnMeasurePolicy {
     pub vertical_arrangement: LinearArrangement,
     pub horizontal_alignment: HorizontalAlignment,
@@ -237,7 +237,7 @@ impl MeasurePolicy for ColumnMeasurePolicy {
 }
 
 /// MeasurePolicy for Row layout - arranges children horizontally.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RowMeasurePolicy {
     pub horizontal_arrangement: LinearArrangement,
     pub vertical_alignment: VerticalAlignment,
@@ -483,8 +483,10 @@ mod tests {
 
     #[test]
     fn row_measure_policy_sums_widths() {
-        let policy =
-            RowMeasurePolicy::new(LinearArrangement::Start, VerticalAlignment::CenterVertically);
+        let policy = RowMeasurePolicy::new(
+            LinearArrangement::Start,
+            VerticalAlignment::CenterVertically,
+        );
         let measurables: Vec<Box<dyn Measurable>> = vec![
             Box::new(MockMeasurable::new(40.0, 20.0, 1)),
             Box::new(MockMeasurable::new(60.0, 30.0, 2)),

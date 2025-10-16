@@ -1,7 +1,82 @@
+use std::collections::HashSet;
+
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
-use syn::{parse_macro_input, FnArg, Ident, ItemFn, Pat, PatType, ReturnType};
+use syn::{
+    parse_macro_input, FnArg, GenericParam, Generics, Ident, ItemFn, Pat, PatIdent, PatType,
+    ReturnType, Type,
+};
+
+fn path_is_fn_trait(path: &syn::Path) -> bool {
+    path.segments
+        .last()
+        .map(|seg| {
+            let ident = seg.ident.to_string();
+            ident == "Fn" || ident == "FnMut" || ident == "FnOnce"
+        })
+        .unwrap_or(false)
+}
+
+fn bound_is_fn_like(bound: &syn::TypeParamBound) -> bool {
+    match bound {
+        syn::TypeParamBound::Trait(trait_bound) => path_is_fn_trait(&trait_bound.path),
+        _ => false,
+    }
+}
+
+fn collect_fn_like_generics(generics: &Generics) -> HashSet<String> {
+    let mut result = HashSet::new();
+    for param in generics.params.iter() {
+        if let GenericParam::Type(type_param) = param {
+            if type_param.bounds.iter().any(bound_is_fn_like) {
+                result.insert(type_param.ident.to_string());
+            }
+        }
+    }
+    if let Some(where_clause) = &generics.where_clause {
+        for predicate in where_clause.predicates.iter() {
+            if let syn::WherePredicate::Type(pred_type) = predicate {
+                if let Type::Path(type_path) = &pred_type.bounded_ty {
+                    if let Some(ident) = type_path.path.get_ident() {
+                        if pred_type.bounds.iter().any(bound_is_fn_like) {
+                            result.insert(ident.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    result
+}
+
+fn type_is_fn_like(ty: &Type, fn_like_generics: &HashSet<String>) -> bool {
+    match ty {
+        Type::BareFn(_) => true,
+        Type::TraitObject(trait_obj) => trait_obj.bounds.iter().any(bound_is_fn_like),
+        Type::ImplTrait(impl_trait) => impl_trait.bounds.iter().any(bound_is_fn_like),
+        Type::Path(type_path) => {
+            if path_is_fn_trait(&type_path.path) {
+                return true;
+            }
+            if let Some(ident) = type_path.path.get_ident() {
+                return fn_like_generics.contains(&ident.to_string());
+            }
+            false
+        }
+        Type::Reference(reference) => type_is_fn_like(&reference.elem, fn_like_generics),
+        Type::Paren(paren) => type_is_fn_like(&paren.elem, fn_like_generics),
+        Type::Group(group) => type_is_fn_like(&group.elem, fn_like_generics),
+        _ => false,
+    }
+}
+
+fn extract_binding_ident(pat: &Pat) -> Option<Ident> {
+    match pat {
+        Pat::Ident(PatIdent { ident, .. }) => Some(ident.clone()),
+        _ => None,
+    }
+}
 
 #[proc_macro_attribute]
 pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -22,23 +97,44 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     let mut func = parse_macro_input!(item as ItemFn);
-    let mut param_info = Vec::new();
+    let fn_like_generics = collect_fn_like_generics(&func.sig.generics);
+
+    struct ParamInfo {
+        ident: Ident,
+        original_pat: Box<Pat>,
+        ty: Type,
+        is_fn_like: bool,
+        binding_ident: Option<Ident>,
+    }
+
+    let mut param_info: Vec<ParamInfo> = Vec::new();
 
     for (index, arg) in func.sig.inputs.iter_mut().enumerate() {
         if let FnArg::Typed(PatType { pat, ty, .. }) = arg {
             let ident = Ident::new(&format!("__arg{}", index), Span::call_site());
             let original_pat: Box<Pat> = pat.clone();
+            let ty_clone: Type = ty.as_ref().clone();
+            let is_fn_like = type_is_fn_like(&ty_clone, &fn_like_generics);
+            let binding_ident = extract_binding_ident(&original_pat);
             *pat = Box::new(syn::parse_quote! { #ident });
-            param_info.push((ident, original_pat, (*ty).clone()));
+            param_info.push(ParamInfo {
+                ident,
+                original_pat,
+                ty: ty_clone,
+                is_fn_like,
+                binding_ident,
+            });
         }
     }
 
     let original_block = func.block.clone();
     let key_expr = quote! { compose_core::location_key(file!(), line!(), column!()) };
 
-    let rebinds: Vec<_> = param_info
+    let rebinds_plain: Vec<_> = param_info
         .iter()
-        .map(|(ident, pat, _)| {
+        .map(|info| {
+            let ident = &info.ident;
+            let pat = &info.original_pat;
             quote! { let #pat = #ident; }
         })
         .collect();
@@ -56,7 +152,11 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let _helper_inputs: Vec<TokenStream2> = param_info
         .iter()
-        .map(|(ident, _pat, ty)| quote! { #ident: #ty })
+        .map(|info| {
+            let ident = &info.ident;
+            let ty = &info.ty;
+            quote! { #ident: #ty }
+        })
         .collect();
 
     if enable_skip {
@@ -69,7 +169,11 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         let helper_inputs: Vec<TokenStream2> = param_info
             .iter()
-            .map(|(ident, _pat, ty)| quote! { #ident: #ty })
+            .map(|info| {
+                let ident = &info.ident;
+                let ty = &info.ty;
+                quote! { #ident: #ty }
+            })
             .collect();
 
         let param_state_ptrs: Vec<Ident> = (0..param_info.len())
@@ -79,30 +183,88 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
         let param_setup: Vec<TokenStream2> = param_info
             .iter()
             .zip(param_state_ptrs.iter())
-            .map(|((ident, _pat, ty), ptr_ident)| {
-                quote! {
-                    let #ptr_ident: *mut compose_core::ParamState<#ty> = {
-                        let __state_ref = __composer
-                            .remember(|| compose_core::ParamState::<#ty>::default());
-                        __state_ref as *mut compose_core::ParamState<#ty>
-                    };
-                    if unsafe { (&mut *#ptr_ident).update(&#ident) } {
+            .map(|(info, ptr_ident)| {
+                let ident = &info.ident;
+                let ty = &info.ty;
+                if info.is_fn_like {
+                    quote! {
+                        let #ptr_ident: *mut compose_core::ParamSlot<#ty> = {
+                            let __slot_ref = __composer
+                                .remember(|| compose_core::ParamSlot::<#ty>::default());
+                            __slot_ref as *mut compose_core::ParamSlot<#ty>
+                        };
+                        unsafe { (&mut *#ptr_ident).set(#ident); }
                         __changed = true;
+                    }
+                } else {
+                    quote! {
+                        let #ptr_ident: *mut compose_core::ParamState<#ty> = {
+                            let __state_ref = __composer
+                                .remember(|| compose_core::ParamState::<#ty>::default());
+                            __state_ref as *mut compose_core::ParamState<#ty>
+                        };
+                        if unsafe { (&mut *#ptr_ident).update(&#ident) } {
+                            __changed = true;
+                        }
                     }
                 }
             })
             .collect();
 
-        let recompose_args: Vec<TokenStream2> = param_state_ptrs
+        let rebinds: Vec<TokenStream2> = param_info
             .iter()
+            .zip(param_state_ptrs.iter())
+            .map(|(info, ptr_ident)| {
+                let pat = &info.original_pat;
+                if info.is_fn_like {
+                    quote! {
+                        let #pat = unsafe { (&mut *#ptr_ident).take() };
+                    }
+                } else {
+                    let ident = &info.ident;
+                    quote! { let #pat = #ident; }
+                }
+            })
+            .collect();
+
+        let store_back: Vec<TokenStream2> = param_info
+            .iter()
+            .zip(param_state_ptrs.iter())
+            .filter_map(|(info, ptr_ident)| {
+                if info.is_fn_like {
+                    if let Some(binding_ident) = &info.binding_ident {
+                        Some(quote! {
+                            unsafe { (&mut *#ptr_ident).set(#binding_ident); }
+                        })
+                    } else {
+                        Some(quote! {
+                            compile_error!("function-like parameters must bind to an identifier");
+                        })
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let recompose_args: Vec<TokenStream2> = param_info
+            .iter()
+            .zip(param_state_ptrs.iter())
             .enumerate()
-            .map(|(index, ptr_ident)| {
-                let message = format!("composable parameter {} missing for recomposition", index);
-                quote! {
-                    unsafe {
-                        (&*#ptr_ident)
-                            .value()
-                            .expect(#message)
+            .map(|(index, (info, ptr_ident))| {
+                if info.is_fn_like {
+                    quote! {
+                        unsafe { (&mut *#ptr_ident).take() }
+                    }
+                } else {
+                    let message =
+                        format!("composable parameter {} missing for recomposition", index);
+                    quote! {
+                        unsafe {
+                            (&*#ptr_ident)
+                                .value()
+                                .expect(#message)
+                        }
                     }
                 }
             })
@@ -131,6 +293,7 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
             #(#rebinds)*
             let __value: #return_ty = { #original_block };
+            #(#store_back)*
             unsafe {
                 (*__result_slot_ptr).store(__value.clone());
             }
@@ -160,7 +323,10 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         let wrapper_args: Vec<TokenStream2> = param_info
             .iter()
-            .map(|(ident, _pat, _)| quote! { #ident })
+            .map(|info| {
+                let ident = &info.ident;
+                quote! { #ident }
+            })
             .collect();
 
         let wrapped = quote!({
@@ -179,7 +345,7 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
         let wrapped = quote!({
             compose_core::with_current_composer(|__composer: &mut compose_core::Composer<'_>| {
                 __composer.with_group(#key_expr, |__scope: &mut compose_core::Composer<'_>| {
-                    #(#rebinds)*
+                    #(#rebinds_plain)*
                     #original_block
                 })
             })

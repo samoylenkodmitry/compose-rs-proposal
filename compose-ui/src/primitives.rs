@@ -291,7 +291,7 @@ impl Node for ButtonNode {
 }
 
 /// Specification for Box layout behavior.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BoxSpec {
     pub content_alignment: Alignment,
     pub propagate_min_constraints: bool,
@@ -323,7 +323,7 @@ impl Default for BoxSpec {
 }
 
 /// Specification for Column layout behavior.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ColumnSpec {
     pub vertical_arrangement: LinearArrangement,
     pub horizontal_alignment: HorizontalAlignment,
@@ -355,7 +355,7 @@ impl Default for ColumnSpec {
 }
 
 /// Specification for Row layout behavior.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RowSpec {
     pub horizontal_arrangement: LinearArrangement,
     pub vertical_alignment: VerticalAlignment,
