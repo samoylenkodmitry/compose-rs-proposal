@@ -8,17 +8,17 @@ use compose_core::{
 };
 use compose_runtime_std::StdRuntime;
 use compose_ui::{
-    composable, Brush, Button, ButtonNode, Color, Column, ColumnSpec, CornerRadii, DrawCommand,
-    DrawPrimitive, EdgeInsets, GraphicsLayer, LayoutBox, LayoutEngine, LayoutNode,
-    LinearArrangement, Modifier, Point, PointerEvent, PointerEventKind, Rect,
-    RoundedCornerShape, Row, RowSpec, Size, Spacer, SpacerNode, Text, TextNode,
-    VerticalAlignment,
+    composable, log_layout_tree, log_render_scene, log_screen_summary, Brush, Button, ButtonNode,
+    Color, Column, ColumnSpec, CornerRadii, DrawCommand, DrawPrimitive, EdgeInsets, GraphicsLayer,
+    HeadlessRenderer, LayoutBox, LayoutEngine, LayoutNode, LinearArrangement, Modifier, Point,
+    PointerEvent, PointerEventKind, Rect, RoundedCornerShape, Row, RowSpec, Size, Spacer,
+    SpacerNode, Text, TextNode, VerticalAlignment,
 };
 use once_cell::sync::Lazy;
 use pixels::{Pixels, SurfaceTexture};
 use rusttype::{point, Font, Scale};
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, Event, MouseButton, WindowEvent};
+use winit::event::{ElementState, Event, MouseButton, WindowEvent, VirtualKeyCode};
 use winit::event_loop::{ControlFlow, EventLoopBuilder};
 use winit::window::WindowBuilder;
 
@@ -39,6 +39,8 @@ fn main() {
     println!("  - Frame clock callbacks firing");
     println!("  - Smart recomposition (only affected parts update)");
     println!("  - Intrinsic measurements in layout");
+    println!();
+    println!("Press 'D' key to dump debug info about what's on screen");
     println!();
 
     let event_loop = EventLoopBuilder::new().build();
@@ -113,6 +115,13 @@ fn main() {
                         ElementState::Pressed => app.pointer_pressed(),
                         ElementState::Released => app.pointer_released(),
                     },
+                    WindowEvent::KeyboardInput { input, .. } => {
+                        if let Some(keycode) = input.virtual_keycode {
+                            if input.state == ElementState::Pressed && keycode == VirtualKeyCode::D {
+                                app.log_debug_info();
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -153,6 +162,7 @@ struct ComposeDesktopApp {
     viewport: (f32, f32),
     buffer_size: (u32, u32),
     start_time: Instant,
+    last_layout: Option<LayoutBox>,
 }
 
 impl ComposeDesktopApp {
@@ -172,6 +182,7 @@ impl ComposeDesktopApp {
             viewport: (INITIAL_WIDTH as f32, INITIAL_HEIGHT as f32),
             buffer_size: (INITIAL_WIDTH, INITIAL_HEIGHT),
             start_time,
+            last_layout: None,
         };
         app.rebuild_scene();
         app
@@ -245,6 +256,7 @@ impl ComposeDesktopApp {
             match applier.compute_layout(root, viewport_size) {
                 Ok(layout_tree) => {
                     let root_layout = layout_tree.into_root();
+                    self.last_layout = Some(root_layout.clone());
                     render_layout_node(
                         applier,
                         &root_layout,
@@ -257,6 +269,38 @@ impl ComposeDesktopApp {
                 }
             }
         }
+    }
+
+    fn log_debug_info(&mut self) {
+        println!("\n\n");
+        println!("════════════════════════════════════════════════════════");
+        println!("           DEBUG: CURRENT SCREEN STATE");
+        println!("════════════════════════════════════════════════════════");
+
+        // Log the layout tree
+        if let Some(ref layout) = self.last_layout {
+            use compose_ui::LayoutTree;
+            let layout_tree = LayoutTree::new(layout.clone());
+            log_layout_tree(&layout_tree);
+
+            // Use the HeadlessRenderer to generate a RenderScene for debugging
+            let applier = self.composition.applier_mut();
+            let mut renderer = HeadlessRenderer::new(applier);
+            match renderer.render(&layout_tree) {
+                Ok(render_scene) => {
+                    log_render_scene(&render_scene);
+                    log_screen_summary(&layout_tree, &render_scene);
+                }
+                Err(err) => {
+                    println!("Failed to render scene for debug: {}", err);
+                }
+            }
+        } else {
+            println!("No layout available");
+        }
+
+        println!("════════════════════════════════════════════════════════");
+        println!("\n\n");
     }
 }
 

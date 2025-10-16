@@ -4,6 +4,7 @@ use compose_core::{location_key, MemoryApplier};
 pub use compose_core::{Composition, Key};
 pub use compose_macros::composable;
 
+mod debug;
 mod layout;
 mod modifier;
 mod modifier_nodes;
@@ -36,6 +37,12 @@ pub use renderer::{HeadlessRenderer, PaintLayer, RenderOp, RenderScene};
 pub use subcompose_layout::{
     Constraints, Dp, MeasureResult, Placement, SubcomposeLayoutNode, SubcomposeMeasureScope,
     SubcomposeMeasureScopeImpl,
+};
+
+// Debug utilities
+pub use debug::{
+    format_layout_tree, format_render_scene, log_layout_tree, log_render_scene,
+    log_screen_summary,
 };
 
 /// Convenience alias used in examples and tests.
