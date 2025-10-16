@@ -1991,12 +1991,18 @@ impl<T> MutableState<T> {
     }
 
     fn notify_watchers(&self) {
-        let mut watchers = self.inner.watchers.borrow_mut();
-        watchers.retain(|w| w.strong_count() > 0);
-        for watcher in watchers.iter() {
-            if let Some(scope) = watcher.upgrade() {
-                RecomposeScope { inner: scope }.invalidate();
-            }
+        let watchers: Vec<RecomposeScope> = {
+            let mut watchers = self.inner.watchers.borrow_mut();
+            watchers.retain(|w| w.strong_count() > 0);
+            watchers
+                .iter()
+                .filter_map(|w| w.upgrade())
+                .map(|inner| RecomposeScope { inner })
+                .collect()
+        };
+
+        for watcher in watchers {
+            watcher.invalidate();
         }
     }
 }
