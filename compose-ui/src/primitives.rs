@@ -753,16 +753,17 @@ mod tests {
     fn button_triggers_state_update() {
         let mut composition = Composition::new(MemoryApplier::new());
         let mut button_state: Option<SnapshotState<i32>> = None;
-        let mut button_id = None;
+        let button_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
         composition
             .render(location_key(file!(), line!(), column!()), || {
                 let counter = compose_core::useState(|| 0);
                 if button_state.is_none() {
                     button_state = Some(counter.clone());
                 }
+                let button_id_capture = Rc::clone(&button_id);
                 Column(Modifier::empty(), ColumnSpec::default(), move || {
                     Text(format!("Count = {}", counter.get()), Modifier::empty());
-                    button_id = Some(Button(
+                    *button_id_capture.borrow_mut() = Some(Button(
                         Modifier::empty(),
                         {
                             let counter = counter.clone();
@@ -780,7 +781,7 @@ mod tests {
 
         let state = button_state.expect("button state stored");
         assert_eq!(state.get(), 0);
-        let button_node_id = button_id.expect("button id");
+        let button_node_id = button_id.borrow().as_ref().copied().expect("button id");
         {
             let applier = composition.applier_mut();
             applier
@@ -796,13 +797,16 @@ mod tests {
     fn text_updates_with_state_after_write() {
         let mut composition = Composition::new(MemoryApplier::new());
         let root_key = location_key(file!(), line!(), column!());
-        let mut text_node_id = None;
-        let mut captured_state: Rc<RefCell<Option<MutableState<i32>>>> = Rc::new(RefCell::new(None));
+        let text_node_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+        let mut captured_state: Rc<RefCell<Option<MutableState<i32>>>> =
+            Rc::new(RefCell::new(None));
 
         let captured_state2 = Rc::clone(&captured_state);
+        let text_node_id_capture = Rc::clone(&text_node_id);
         composition
             .render(root_key, move || {
                 let captured_state3 = Rc::clone(&captured_state2);
+                let text_node_id_capture = Rc::clone(&text_node_id_capture);
                 Column(Modifier::empty(), ColumnSpec::default(), move || {
                     let captured_state = &captured_state3;
                     let count = compose_core::useState(|| 0);
@@ -810,7 +814,7 @@ mod tests {
                         *captured_state.borrow_mut() = Some(count.clone());
                     }
                     let count_for_text = count.clone();
-                    text_node_id = Some(Text(
+                    *text_node_id_capture.borrow_mut() = Some(Text(
                         DynamicTextSource::new(move || {
                             format!("Count = {}", count_for_text.value())
                         }),
@@ -820,7 +824,11 @@ mod tests {
             })
             .expect("render succeeds");
 
-        let id = text_node_id.expect("text node id");
+        let id = text_node_id
+            .borrow()
+            .as_ref()
+            .copied()
+            .expect("text node id");
         {
             let applier = composition.applier_mut();
             applier
@@ -962,13 +970,15 @@ mod tests {
     fn layout_column_produces_expected_measurements() {
         let mut composition = Composition::new(MemoryApplier::new());
         let key = location_key(file!(), line!(), column!());
-        let mut text_id = None;
+        let text_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+        let text_id_capture = Rc::clone(&text_id);
 
         composition
-            .render(key, || {
+            .render(key, move || {
+                let text_id_capture = Rc::clone(&text_id_capture);
                 Column(Modifier::padding(10.0), ColumnSpec::default(), move || {
                     let id = Text("Hello", Modifier::empty());
-                    text_id = Some(id);
+                    *text_id_capture.borrow_mut() = Some(id);
                     Spacer(Size {
                         width: 0.0,
                         height: 30.0,
@@ -995,7 +1005,10 @@ mod tests {
         assert_eq!(root_layout.children.len(), 2);
 
         let text_layout = &root_layout.children[0];
-        assert_eq!(text_layout.node_id, text_id.expect("text node id"));
+        assert_eq!(
+            text_layout.node_id,
+            text_id.borrow().as_ref().copied().expect("text node id")
+        );
         assert!((text_layout.rect.x - 10.0).abs() < 1e-3);
         assert!((text_layout.rect.y - 10.0).abs() < 1e-3);
         assert!((text_layout.rect.width - 40.0).abs() < 1e-3);
@@ -1006,12 +1019,15 @@ mod tests {
     fn modifier_offset_translates_layout() {
         let mut composition = Composition::new(MemoryApplier::new());
         let key = location_key(file!(), line!(), column!());
-        let mut text_id = None;
+        let text_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+
+        let text_id_capture = Rc::clone(&text_id);
 
         composition
-            .render(key, || {
+            .render(key, move || {
+                let text_id_capture = Rc::clone(&text_id_capture);
                 Column(Modifier::padding(10.0), ColumnSpec::default(), move || {
-                    text_id = Some(Text("Hello", Modifier::offset(5.0, 7.5)));
+                    *text_id_capture.borrow_mut() = Some(Text("Hello", Modifier::offset(5.0, 7.5)));
                 });
             })
             .expect("initial render");
@@ -1031,7 +1047,10 @@ mod tests {
         let root_layout = layout_tree.root().clone();
         assert_eq!(root_layout.children.len(), 1);
         let text_layout = &root_layout.children[0];
-        assert_eq!(text_layout.node_id, text_id.expect("text node id"));
+        assert_eq!(
+            text_layout.node_id,
+            text_id.borrow().as_ref().copied().expect("text node id")
+        );
         assert!((text_layout.rect.x - 15.0).abs() < 1e-3);
         assert!((text_layout.rect.y - 17.5).abs() < 1e-3);
     }
