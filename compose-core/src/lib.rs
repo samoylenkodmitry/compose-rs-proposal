@@ -1,5 +1,7 @@
 #![doc = r"Core runtime pieces for the Compose-RS experiment."]
 
+extern crate self as compose_core;
+
 pub mod animation;
 pub mod modifier;
 pub mod owned;
@@ -851,6 +853,23 @@ impl SlotTable {
         }
     }
 
+    pub fn node_ids_in_current_group(&self) -> Vec<NodeId> {
+        let Some(frame) = self.group_stack.last() else {
+            return Vec::new();
+        };
+        let Some(entry) = self.groups.get(frame.index) else {
+            return Vec::new();
+        };
+        let end = entry.end_slot.min(self.slots.len());
+        self.slots[entry.start_slot..end]
+            .iter()
+            .filter_map(|slot| match slot {
+                Slot::Node(id) => Some(*id),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub fn remember<T: 'static>(&mut self, init: impl FnOnce() -> T) -> Owned<T> {
         let cursor = self.cursor;
         if cursor < self.slots.len() {
@@ -1657,7 +1676,11 @@ impl<'a> Composer<'a> {
     }
 
     pub fn skip_current_group(&mut self) {
+        let nodes = self.slots.node_ids_in_current_group();
         self.slots.skip_current();
+        for id in nodes {
+            self.attach_to_parent(id);
+        }
     }
 
     pub fn runtime_handle(&self) -> RuntimeHandle {
@@ -1810,6 +1833,15 @@ impl<'a> Composer<'a> {
                             .push(Box::new(move |applier: &mut dyn Applier| {
                                 let parent_node = applier.get_mut(id)?;
                                 parent_node.remove_child(child);
+                                Ok(())
+                            }));
+                        self.commands
+                            .push(Box::new(move |applier: &mut dyn Applier| {
+                                {
+                                    let node = applier.get_mut(child)?;
+                                    node.unmount();
+                                }
+                                applier.remove(child)?;
                                 Ok(())
                             }));
                     }
@@ -2347,21 +2379,18 @@ impl<A: Applier> Composition<A> {
                 continue;
             }
             let runtime_clone = runtime_handle.clone();
-            let (root, commands, side_effects) = {
-                self.slots.reset();
+            let (commands, side_effects) = {
                 let mut composer =
                     Composer::new(&mut self.slots, &mut self.applier, runtime_clone, self.root);
                 composer.install(|composer| {
                     for scope in scopes.iter() {
                         composer.recompose_group(scope);
                     }
-                    let root = composer.root;
                     let commands = composer.take_commands();
                     let side_effects = composer.take_side_effects();
-                    (root, commands, side_effects)
+                    (commands, side_effects)
                 })
             };
-            self.root = root;
             for mut command in commands {
                 command(&mut self.applier)?;
             }
@@ -2371,7 +2400,6 @@ impl<A: Applier> Composition<A> {
             for effect in side_effects {
                 effect();
             }
-            self.slots.trim_to_cursor();
         }
         if !self.runtime.has_updates()
             && !runtime_handle.has_invalid_scopes()
@@ -3273,7 +3301,7 @@ mod tests {
             .with_node(parent_id, |node: &mut RecordingNode| node.children.clone())
             .expect("read children after remove");
         assert_eq!(after_remove_children, vec![child_a, child_c]);
-        assert_eq!(applier.len(), initial_len + 1);
+        assert_eq!(applier.len(), initial_len);
     }
 
     #[test]
