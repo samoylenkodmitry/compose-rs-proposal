@@ -389,6 +389,24 @@ impl<T: Clone + 'static> LocalStateEntry<T> {
     }
 }
 
+struct StaticLocalEntry<T: Clone + 'static> {
+    value: RefCell<T>,
+}
+
+impl<T: Clone + 'static> StaticLocalEntry<T> {
+    fn new(value: T) -> Self {
+        Self { value: RefCell::new(value) }
+    }
+
+    fn set(&self, value: T) {
+        *self.value.borrow_mut() = value;
+    }
+
+    fn value(&self) -> T {
+        self.value.borrow().clone()
+    }
+}
+
 #[derive(Clone)]
 pub struct CompositionLocal<T: Clone + 'static> {
     key: LocalKey,
@@ -442,9 +460,65 @@ pub fn compositionLocalOf<T: Clone + 'static>(
     }
 }
 
+/// A `StaticCompositionLocal` is a CompositionLocal that is optimized for values that are
+/// unlikely to change. Unlike `CompositionLocal`, reads of a `StaticCompositionLocal` are not
+/// tracked by the recomposition system, which means:
+/// - Reading `.current()` does NOT establish a subscription
+/// - Changing the provided value does NOT automatically invalidate readers
+/// - This makes it more efficient for truly static values
+///
+/// This matches the API of Jetpack Compose's `staticCompositionLocalOf` but with simplified
+/// semantics. Use this for values that are guaranteed to never change during the lifetime of
+/// the CompositionLocalProvider scope (e.g., application-wide constants, configuration)
+#[derive(Clone)]
+pub struct StaticCompositionLocal<T: Clone + 'static> {
+    key: LocalKey,
+    default: Rc<dyn Fn() -> T>, // FUTURE(no_std): store default provider in arena-managed cell.
+}
+
+impl<T: Clone + 'static> PartialEq for StaticCompositionLocal<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+    }
+}
+
+impl<T: Clone + 'static> Eq for StaticCompositionLocal<T> {}
+
+impl<T: Clone + 'static> StaticCompositionLocal<T> {
+    pub fn provides(&self, value: T) -> ProvidedValue {
+        let key = self.key;
+        ProvidedValue {
+            key,
+            apply: Box::new(move |composer: &mut Composer<'_>| {
+                // For static locals, we don't use MutableState - just store the value directly
+                // This means reads won't be tracked, and changes will cause full subtree recomposition
+                let entry_ref = composer.remember(|| {
+                    Rc::new(StaticLocalEntry::new(value.clone()))
+                });
+                let entry = Rc::clone(entry_ref); // FUTURE(no_std): clone arena-managed pointer instead of Rc.
+                entry.set(value.clone()); // Update the value on each recomposition
+                entry as Rc<dyn Any> // FUTURE(no_std): expose erased handle without Rc boxing.
+            }),
+        }
+    }
+
+    pub fn current(&self) -> T {
+        with_current_composer(|composer| composer.read_static_composition_local(self))
+    }
+
+    pub fn default_value(&self) -> T {
+        (self.default)()
+    }
+}
+
 #[allow(non_snake_case)]
-pub fn staticCompositionLocalOf<T: Clone + 'static>(value: T) -> CompositionLocal<T> {
-    compositionLocalOf(move || value.clone())
+pub fn staticCompositionLocalOf<T: Clone + 'static>(
+    default: impl Fn() -> T + 'static,
+) -> StaticCompositionLocal<T> {
+    StaticCompositionLocal {
+        key: next_local_key(),
+        default: Rc::new(default), // FUTURE(no_std): allocate default provider in arena storage.
+    }
 }
 
 #[derive(Default)]
@@ -1493,6 +1567,19 @@ impl<'a> Composer<'a> {
                     .clone()
                     .downcast::<LocalStateEntry<T>>()
                     .expect("composition local type mismatch");
+                return typed.value();
+            }
+        }
+        local.default_value()
+    }
+
+    pub fn read_static_composition_local<T: Clone + 'static>(&mut self, local: &StaticCompositionLocal<T>) -> T {
+        for context in self.local_stack.iter().rev() {
+            if let Some(entry) = context.values.get(&local.key) {
+                let typed = entry
+                    .clone()
+                    .downcast::<StaticLocalEntry<T>>()
+                    .expect("static composition local type mismatch");
                 return typed.value();
             }
         }
@@ -3232,6 +3319,213 @@ mod tests {
 
         #[composable]
         fn reader(local_counter: CompositionLocal<i32>) {
+            let value = local_counter.current();
+            READ_VALUE.with(|slot| slot.set(value));
+        }
+
+        composition
+            .render(2, || reader(local_counter.clone()))
+            .expect("compose reader");
+
+        assert_eq!(READ_VALUE.with(|slot| slot.get()), 7);
+    }
+
+    #[test]
+    fn composition_local_simple_subscription_test() {
+        // Simplified test to verify basic subscription behavior
+        thread_local! {
+            static READER_RECOMPOSITIONS: Cell<usize> = Cell::new(0);
+            static LAST_VALUE: Cell<i32> = Cell::new(-1);
+        }
+
+        let local_value = compositionLocalOf(|| 0);
+        let mut composition = Composition::new(MemoryApplier::new());
+        let runtime = composition.runtime_handle();
+        let trigger = MutableState::with_runtime(10, runtime.clone());
+
+        #[composable]
+        fn reader(local_value: CompositionLocal<i32>) {
+            READER_RECOMPOSITIONS.with(|c| c.set(c.get() + 1));
+            let val = local_value.current();
+            LAST_VALUE.with(|v| v.set(val));
+        }
+
+        #[composable]
+        fn root(local_value: CompositionLocal<i32>, trigger: MutableState<i32>) {
+            let val = trigger.value();
+            CompositionLocalProvider(vec![local_value.provides(val)], || {
+                reader(local_value.clone());
+            });
+        }
+
+        composition
+            .render(1, || root(local_value.clone(), trigger.clone()))
+            .expect("initial composition");
+
+        assert_eq!(READER_RECOMPOSITIONS.with(|c| c.get()), 1);
+        assert_eq!(LAST_VALUE.with(|v| v.get()), 10);
+
+        // Change trigger - should update the provided value and reader should see it
+        trigger.set_value(20);
+        composition
+            .process_invalid_scopes()
+            .expect("recomposition");
+
+        // Reader should have recomposed and seen the new value
+        assert_eq!(READER_RECOMPOSITIONS.with(|c| c.get()), 2, "reader should recompose");
+        assert_eq!(LAST_VALUE.with(|v| v.get()), 20, "reader should see new value");
+    }
+
+    #[test]
+    fn composition_local_tracks_reads_and_recomposes_selectively() {
+        // This test verifies that CompositionLocal establishes subscriptions
+        // and ONLY recomposes composables that actually read .current()
+        thread_local! {
+            static OUTSIDE_RECOMPOSITIONS: Cell<usize> = Cell::new(0);
+            static NOT_CHANGING_TEXT_RECOMPOSITIONS: Cell<usize> = Cell::new(0);
+            static INSIDE_RECOMPOSITIONS: Cell<usize> = Cell::new(0);
+            static READING_TEXT_RECOMPOSITIONS: Cell<usize> = Cell::new(0);
+            static NON_READING_TEXT_RECOMPOSITIONS: Cell<usize> = Cell::new(0);
+            static INSIDE_INSIDE_RECOMPOSITIONS: Cell<usize> = Cell::new(0);
+            static LAST_READ_VALUE: Cell<i32> = Cell::new(-999);
+        }
+
+        let local_count = compositionLocalOf(|| 0);
+        let mut composition = Composition::new(MemoryApplier::new());
+        let runtime = composition.runtime_handle();
+        let trigger = MutableState::with_runtime(0, runtime.clone());
+
+        #[composable]
+        fn inside_inside() {
+            INSIDE_INSIDE_RECOMPOSITIONS.with(|c| c.set(c.get() + 1));
+            // Does NOT read LocalCount - should NOT recompose when it changes
+        }
+
+        #[composable]
+        fn inside(local_count: CompositionLocal<i32>) {
+            INSIDE_RECOMPOSITIONS.with(|c| c.set(c.get() + 1));
+            // Does NOT read LocalCount directly - should NOT recompose when it changes
+
+            // This text reads the local - SHOULD recompose
+            #[composable]
+            fn reading_text(local_count: CompositionLocal<i32>) {
+                READING_TEXT_RECOMPOSITIONS.with(|c| c.set(c.get() + 1));
+                let count = local_count.current();
+                LAST_READ_VALUE.with(|v| v.set(count));
+            }
+
+            reading_text(local_count.clone());
+
+            // This text does NOT read the local - should NOT recompose
+            #[composable]
+            fn non_reading_text() {
+                NON_READING_TEXT_RECOMPOSITIONS.with(|c| c.set(c.get() + 1));
+            }
+
+            non_reading_text();
+            inside_inside();
+        }
+
+        #[composable]
+        fn not_changing_text() {
+            NOT_CHANGING_TEXT_RECOMPOSITIONS.with(|c| c.set(c.get() + 1));
+            // Does NOT read anything reactive - should NOT recompose
+        }
+
+        #[composable]
+        fn outside(local_count: CompositionLocal<i32>, trigger: MutableState<i32>) {
+            OUTSIDE_RECOMPOSITIONS.with(|c| c.set(c.get() + 1));
+            let count = trigger.value(); // Read trigger to establish subscription
+            CompositionLocalProvider(vec![local_count.provides(count)], || {
+                // Directly call reading_text without the inside() wrapper
+                #[composable]
+                fn reading_text(local_count: CompositionLocal<i32>) {
+                    READING_TEXT_RECOMPOSITIONS.with(|c| c.set(c.get() + 1));
+                    let count = local_count.current();
+                    LAST_READ_VALUE.with(|v| v.set(count));
+                }
+
+                not_changing_text();
+                reading_text(local_count.clone());
+            });
+        }
+
+        // Initial composition
+        composition
+            .render(1, || outside(local_count.clone(), trigger.clone()))
+            .expect("initial composition");
+
+        assert_eq!(OUTSIDE_RECOMPOSITIONS.with(|c| c.get()), 1);
+        assert_eq!(NOT_CHANGING_TEXT_RECOMPOSITIONS.with(|c| c.get()), 1);
+        assert_eq!(READING_TEXT_RECOMPOSITIONS.with(|c| c.get()), 1);
+        assert_eq!(LAST_READ_VALUE.with(|v| v.get()), 0);
+
+        // Change the trigger - this should update the provided value
+        trigger.set_value(1);
+        composition
+            .process_invalid_scopes()
+            .expect("process recomposition");
+
+        // Expected behavior:
+        // - outside: RECOMPOSES (reads trigger.value())
+        // - not_changing_text: SKIPPED (no reactive reads)
+        // - reading_text: RECOMPOSES (reads local_count.current())
+
+        assert_eq!(OUTSIDE_RECOMPOSITIONS.with(|c| c.get()), 2, "outside should recompose");
+        assert_eq!(NOT_CHANGING_TEXT_RECOMPOSITIONS.with(|c| c.get()), 1, "not_changing_text should NOT recompose");
+        assert_eq!(READING_TEXT_RECOMPOSITIONS.with(|c| c.get()), 2, "reading_text SHOULD recompose (reads .current())");
+        assert_eq!(LAST_READ_VALUE.with(|v| v.get()), 1, "should read new value");
+
+        // Change again
+        trigger.set_value(2);
+        composition
+            .process_invalid_scopes()
+            .expect("process second recomposition");
+
+        assert_eq!(OUTSIDE_RECOMPOSITIONS.with(|c| c.get()), 3);
+        assert_eq!(NOT_CHANGING_TEXT_RECOMPOSITIONS.with(|c| c.get()), 1);
+        assert_eq!(READING_TEXT_RECOMPOSITIONS.with(|c| c.get()), 3);
+        assert_eq!(LAST_READ_VALUE.with(|v| v.get()), 2);
+    }
+
+    #[test]
+    fn static_composition_local_provides_values() {
+        thread_local! {
+            static READ_VALUE: Cell<i32> = Cell::new(0);
+        }
+
+        let local_counter = staticCompositionLocalOf(|| 0);
+        let mut composition = Composition::new(MemoryApplier::new());
+
+        #[composable]
+        fn reader(local_counter: StaticCompositionLocal<i32>) {
+            let value = local_counter.current();
+            READ_VALUE.with(|slot| slot.set(value));
+        }
+
+        composition
+            .render(1, || {
+                CompositionLocalProvider(vec![local_counter.provides(5)], || {
+                    reader(local_counter.clone());
+                })
+            })
+            .expect("initial composition");
+
+        // Verify the provided value is accessible
+        assert_eq!(READ_VALUE.with(|slot| slot.get()), 5);
+    }
+
+    #[test]
+    fn static_composition_local_default_value_used_outside_provider() {
+        thread_local! {
+            static READ_VALUE: Cell<i32> = Cell::new(0);
+        }
+
+        let local_counter = staticCompositionLocalOf(|| 7);
+        let mut composition = Composition::new(MemoryApplier::new());
+
+        #[composable]
+        fn reader(local_counter: StaticCompositionLocal<i32>) {
             let value = local_counter.current();
             READ_VALUE.with(|slot| slot.set(value));
         }

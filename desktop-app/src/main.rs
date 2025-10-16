@@ -3,8 +3,8 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use compose_core::{
-    self, location_key, Composition, DisposableEffect, Key, LaunchedEffect, MemoryApplier, Node,
-    NodeError, NodeId,
+    self, compositionLocalOf, location_key, CompositionLocal, CompositionLocalProvider,
+    Composition, DisposableEffect, Key, LaunchedEffect, MemoryApplier, Node, NodeError, NodeId,
 };
 use compose_runtime_std::StdRuntime;
 use compose_ui::{
@@ -159,7 +159,7 @@ impl ComposeDesktopApp {
     fn new(root_key: Key) -> Self {
         let runtime = StdRuntime::new();
         let mut composition = Composition::with_runtime(MemoryApplier::new(), runtime.runtime());
-        if let Err(err) = composition.render(root_key, counter_app) {
+        if let Err(err) = composition.render(root_key, combined_app) {
             log::error!("initial render failed: {err}");
         }
         let scene = Scene::new();
@@ -569,6 +569,207 @@ fn counter_app() {
                 );
             });
         },
+    );
+}
+
+// CompositionLocal Example - Demonstrates subscription behavior
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct Holder {
+    count: i32,
+}
+
+// Create the CompositionLocal inside a composable function instead of using a static
+fn local_holder() -> CompositionLocal<Holder> {
+    use std::cell::RefCell;
+    thread_local! {
+        static LOCAL_HOLDER: RefCell<Option<CompositionLocal<Holder>>> = RefCell::new(None);
+    }
+    LOCAL_HOLDER.with(|cell| {
+        let mut opt = cell.borrow_mut();
+        if opt.is_none() {
+            *opt = Some(compositionLocalOf(|| Holder { count: 0 }));
+        }
+        opt.as_ref().unwrap().clone()
+    })
+}
+
+fn random() -> i32 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos();
+    (nanos % 10000) as i32
+}
+
+#[composable]
+fn combined_app() {
+    let show_counter = compose_core::useState(|| false);
+
+    Column(
+        Modifier::padding(20.0),
+        ColumnSpec::default(),
+        || {
+            let is_counter = show_counter.get();
+            Row(
+                Modifier::padding(8.0),
+                RowSpec::default(),
+                || {
+                    Button(
+                        Modifier::rounded_corners(12.0)
+                            .then(Modifier::draw_behind(move |scope| {
+                                scope.draw_round_rect(
+                                    Brush::solid(if is_counter {
+                                        Color(0.2, 0.45, 0.9, 1.0)
+                                    } else {
+                                        Color(0.3, 0.3, 0.3, 0.5)
+                                    }),
+                                    CornerRadii::uniform(12.0),
+                                );
+                            }))
+                            .then(Modifier::padding(10.0)),
+                        {
+                            println!("Counter App button clicked");
+                            let show_counter = show_counter.clone();
+                            move || show_counter.set(true)
+                        },
+                        || {
+                            Text("Counter App", Modifier::padding(4.0));
+                        },
+                    );
+                    Spacer(Size { width: 8.0, height: 0.0 });
+                    Button(
+                        Modifier::rounded_corners(12.0)
+                            .then(Modifier::draw_behind(move |scope| {
+                                scope.draw_round_rect(
+                                    Brush::solid(if !is_counter {
+                                        Color(0.2, 0.45, 0.9, 1.0)
+                                    } else {
+                                        Color(0.3, 0.3, 0.3, 0.5)
+                                    }),
+                                    CornerRadii::uniform(12.0),
+                                );
+                            }))
+                            .then(Modifier::padding(10.0)),
+                        {
+                            println!("Composition Local button clicked");
+                            let show_counter = show_counter.clone();
+                            move || show_counter.set(false)
+                        },
+                        || {
+                            Text("CompositionLocal Test", Modifier::padding(4.0));
+                        },
+                    );
+                },
+            );
+
+            Spacer(Size { width: 0.0, height: 12.0 });
+
+            if show_counter.get() {
+                println!("if show counter");
+                counter_app();
+            } else {
+                println!("if not show counter");
+                composition_local_example();
+            }
+        },
+    );
+}
+
+#[composable]
+fn composition_local_example() {
+    let counter = compose_core::useState(|| 0);
+
+    Column(
+        Modifier::padding(32.0)
+            .then(Modifier::background(Color(0.12, 0.10, 0.24, 1.0)))
+            .then(Modifier::rounded_corners(24.0))
+            .then(Modifier::padding(20.0)),
+        ColumnSpec::default(),
+        || {
+            Text(
+                "CompositionLocal Subscription Test",
+                Modifier::padding(12.0)
+                    .then(Modifier::background(Color(1.0, 1.0, 1.0, 0.1)))
+                    .then(Modifier::rounded_corners(16.0)),
+            );
+
+            Spacer(Size { width: 0.0, height: 16.0 });
+
+            Text(
+                format!("Counter: {}", counter.get()),
+                Modifier::padding(8.0)
+                    .then(Modifier::background(Color(0.2, 0.3, 0.4, 0.7)))
+                    .then(Modifier::rounded_corners(12.0)),
+            );
+
+            Spacer(Size { width: 0.0, height: 12.0 });
+
+            Button(
+                Modifier::rounded_corners(16.0)
+                    .then(Modifier::draw_behind(|scope| {
+                        scope.draw_round_rect(
+                            Brush::solid(Color(0.2, 0.45, 0.9, 1.0)),
+                            CornerRadii::uniform(16.0),
+                        );
+                    }))
+                    .then(Modifier::padding(12.0)),
+                {
+                    let counter = counter.clone();
+                    move || {
+                        let new_val = counter.get() + 1;
+                        println!("Incrementing counter to {}", new_val);
+                        counter.set(new_val);
+                    }
+                },
+                || {
+                    Text("Increment", Modifier::padding(6.0));
+                },
+            );
+
+            Spacer(Size { width: 0.0, height: 16.0 });
+
+            // Provide the composition local
+            let local = local_holder();
+            let count = counter.get();
+
+            CompositionLocalProvider(vec![local.provides(Holder { count })], || {
+                composition_local_content();
+            });
+        },
+    );
+}
+
+#[composable]
+fn composition_local_content() {
+    let r1 = random();
+    Text(
+        format!("Outside provider (NOT reading): rand={}", r1),
+        Modifier::padding(8.0)
+            .then(Modifier::background(Color(0.3, 0.3, 0.3, 0.5)))
+            .then(Modifier::rounded_corners(12.0)),
+    );
+
+    Spacer(Size { width: 0.0, height: 8.0 });
+
+    let local = local_holder();
+    let holder = local.current(); // This establishes subscription
+    let r2 = random();
+    Text(
+        format!("READING local: count={}, rand={}", holder.count, r2),
+        Modifier::padding(8.0)
+            .then(Modifier::background(Color(0.6, 0.9, 0.4, 0.7)))
+            .then(Modifier::rounded_corners(12.0)),
+    );
+
+    Spacer(Size { width: 0.0, height: 8.0 });
+
+    let r3 = random();
+    Text(
+        format!("NOT reading local: rand={}", r3),
+        Modifier::padding(8.0)
+            .then(Modifier::background(Color(0.9, 0.6, 0.4, 0.5)))
+            .then(Modifier::rounded_corners(12.0)),
     );
 }
 
