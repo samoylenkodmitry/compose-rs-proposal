@@ -274,6 +274,10 @@ fn counter_app() {
     let wave = compose_core::animateFloatAsState(target_wave, "wave").value();
     LaunchedEffect!(counter.get(), |_| println!("effect call")); // todo: provide a way to use mutablestate from lambda
 
+    let counter_for_content = counter.clone();
+    let pointer_position_for_content = pointer_position.clone();
+    let pointer_down_for_content = pointer_down.clone();
+
     Column(
         Modifier::padding(32.0)
             .then(Modifier::rounded_corners(24.0))
@@ -290,7 +294,10 @@ fn counter_app() {
                 }
             }))
             .then(Modifier::padding(20.0)),
-        || {
+        move || {
+            let counter = counter_for_content.clone();
+            let pointer_position = pointer_position_for_content.clone();
+            let pointer_down = pointer_down_for_content.clone();
             Text(
                 "Compose-RS Playground",
                 Modifier::padding(12.0)
@@ -310,13 +317,14 @@ fn counter_app() {
                 height: 12.0,
             });
 
+            let counter_for_row = counter.clone();
             RowWithAlignment(
                 Modifier::padding(8.0),
                 LinearArrangement::SpacedBy(12.0),
                 VerticalAlignment::CenterVertically,
-                || {
+                move || {
                     Text(
-                        format!("Counter: {}", counter.get()),
+                        format!("Counter: {}", counter_for_row.get()),
                         Modifier::padding(8.0)
                             .then(Modifier::background(Color(0.0, 0.0, 0.0, 0.35)))
                             .then(Modifier::rounded_corners(12.0)),
@@ -341,6 +349,9 @@ fn counter_app() {
                 height: 16.0,
             });
 
+            let counter_for_inner = counter.clone();
+            let pointer_position_for_inner = pointer_position.clone();
+            let pointer_down_for_inner = pointer_down.clone();
             Column(
                 Modifier::size(Size {
                     width: 360.0,
@@ -387,8 +398,11 @@ fn counter_app() {
                     move |_| pointer_down.set(!pointer_down.get())
                 }))
                 .then(Modifier::padding(12.0)),
-                || {
-                    if counter.get() % 2 == 0 {
+                move || {
+                    let counter = counter_for_inner.clone();
+                    let pointer_position = pointer_position_for_inner.clone();
+                    let pointer_down = pointer_down_for_inner.clone();
+                    if counter.clone().get() % 2 == 0 {
                         LaunchedEffect!("", |_| { println!("launch playground") });
                         DisposableEffect!("", |x| {
                             println!("dispose effect playground");
@@ -469,7 +483,13 @@ fn counter_app() {
                             .then(Modifier::padding(10.0)),
                         || {},
                         || {
-                            Text("OK", Modifier::padding(4.0).then(Modifier::size(Size { width: 50.0, height:50.0})));
+                            Text(
+                                "OK",
+                                Modifier::padding(4.0).then(Modifier::size(Size {
+                                    width: 50.0,
+                                    height: 50.0,
+                                })),
+                            );
                         },
                     );
                     Spacer(Size {
@@ -518,7 +538,7 @@ fn counter_app() {
                 height: 16.0,
             });
 
-            Row(Modifier::padding(8.0), || {
+            Row(Modifier::padding(8.0), move || {
                 Button(
                     Modifier::rounded_corners(16.0)
                         .then(Modifier::draw_with_cache(|cache| {

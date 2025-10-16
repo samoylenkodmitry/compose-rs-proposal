@@ -5,12 +5,10 @@ pub mod modifier;
 pub mod platform;
 pub mod testing;
 
-pub use animation::{
-    Animatable, AnimationSpec, AnimationType, Easing, Lerp, SpringSpec,
-};
+pub use animation::{Animatable, AnimationSpec, AnimationType, Easing, Lerp, SpringSpec};
 pub use modifier::{
     modifier_element, AnyModifierElement, Constraints, DrawModifierNode, DrawScope,
-    DynModifierElement, InvalidationKind, LayoutModifierNode, MeasureResult, Measurable,
+    DynModifierElement, InvalidationKind, LayoutModifierNode, Measurable, MeasureResult,
     ModifierElement, ModifierNode, ModifierNodeChain, ModifierNodeContext, NodeCapabilities,
     PointerEvent, PointerInputNode, SemanticsConfiguration, SemanticsNode,
 };
@@ -1983,6 +1981,22 @@ impl<T> ParamState<T> {
     }
 }
 
+pub struct ParamSlot<T> {
+    value: Option<T>,
+}
+
+impl<T> ParamSlot<T> {
+    pub fn set(&mut self, value: T) {
+        self.value = Some(value);
+    }
+
+    pub fn take(&mut self) -> T {
+        self.value
+            .take()
+            .expect("composable parameter missing during recomposition")
+    }
+}
+
 pub struct ReturnSlot<T> {
     value: Option<T>,
 }
@@ -1998,6 +2012,12 @@ impl<T: Clone> ReturnSlot<T> {
 }
 
 impl<T> Default for ParamState<T> {
+    fn default() -> Self {
+        Self { value: None }
+    }
+}
+
+impl<T> Default for ParamSlot<T> {
     fn default() -> Self {
         Self { value: None }
     }

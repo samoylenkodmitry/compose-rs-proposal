@@ -442,7 +442,7 @@ impl Node for ButtonNode {
 #[composable(no_skip)]
 pub fn Column<F>(modifier: Modifier, content: F) -> NodeId
 where
-    F: FnMut(),
+    F: FnMut() + 'static,
 {
     ColumnWithAlignment(
         modifier,
@@ -455,12 +455,12 @@ where
 #[composable(no_skip)]
 pub fn Box<F>(modifier: Modifier, content: F) -> NodeId
 where
-    F: FnMut(),
+    F: FnMut() + 'static,
 {
     BoxWithOptions(modifier, Alignment::TOP_START, false, content)
 }
 
-#[composable(no_skip)]
+#[composable]
 pub fn BoxWithOptions<F>(
     modifier: Modifier,
     content_alignment: Alignment,
@@ -468,7 +468,7 @@ pub fn BoxWithOptions<F>(
     mut content: F,
 ) -> NodeId
 where
-    F: FnMut(),
+    F: FnMut() + 'static,
 {
     let id = compose_node(|| BoxNode {
         modifier: modifier.clone(),
@@ -489,7 +489,7 @@ where
     id
 }
 
-#[composable(no_skip)]
+#[composable]
 pub fn ColumnWithAlignment<F>(
     modifier: Modifier,
     vertical_arrangement: LinearArrangement,
@@ -497,7 +497,7 @@ pub fn ColumnWithAlignment<F>(
     mut content: F,
 ) -> NodeId
 where
-    F: FnMut(),
+    F: FnMut() + 'static,
 {
     let id = compose_node(|| ColumnNode {
         modifier: modifier.clone(),
@@ -521,7 +521,7 @@ where
 #[composable(no_skip)]
 pub fn Row<F>(modifier: Modifier, content: F) -> NodeId
 where
-    F: FnMut(),
+    F: FnMut() + 'static,
 {
     RowWithAlignment(
         modifier,
@@ -531,7 +531,7 @@ where
     )
 }
 
-#[composable(no_skip)]
+#[composable]
 pub fn RowWithAlignment<F>(
     modifier: Modifier,
     horizontal_arrangement: LinearArrangement,
@@ -539,7 +539,7 @@ pub fn RowWithAlignment<F>(
     mut content: F,
 ) -> NodeId
 where
-    F: FnMut(),
+    F: FnMut() + 'static,
 {
     let id = compose_node(|| RowNode {
         modifier: modifier.clone(),
@@ -563,7 +563,7 @@ where
 #[composable(no_skip)]
 pub fn Layout<F, P>(modifier: Modifier, measure_policy: P, mut content: F) -> NodeId
 where
-    F: FnMut(),
+    F: FnMut() + 'static,
     P: MeasurePolicy + 'static,
 {
     let policy: Rc<dyn MeasurePolicy> = Rc::new(measure_policy);
@@ -765,7 +765,7 @@ pub fn Spacer(size: Size) -> NodeId {
 pub fn Button<F, G>(modifier: Modifier, on_click: F, mut content: G) -> NodeId
 where
     F: FnMut() + 'static,
-    G: FnMut(),
+    G: FnMut() + 'static,
 {
     let on_click_rc: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(on_click));
     let id = compose_node(|| ButtonNode {
@@ -789,7 +789,7 @@ where
 pub fn ForEach<T, F>(items: &[T], mut row: F)
 where
     T: Hash,
-    F: FnMut(&T),
+    F: FnMut(&T) + 'static,
 {
     for item in items {
         compose_core::with_key(item, || row(item));
