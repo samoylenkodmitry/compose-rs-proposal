@@ -945,6 +945,9 @@ pub trait Node: Any {
     fn remove_child(&mut self, _child: NodeId) {}
     fn move_child(&mut self, _from: usize, _to: usize) {}
     fn update_children(&mut self, _children: &[NodeId]) {}
+    fn children(&self) -> Vec<NodeId> {
+        Vec::new()
+    }
 }
 
 impl dyn Node {
@@ -995,6 +998,31 @@ impl MemoryApplier {
     pub fn len(&self) -> usize {
         self.nodes.iter().filter(|n| n.is_some()).count()
     }
+
+    pub fn dump_tree(&self, root: Option<NodeId>) -> String {
+        let mut output = String::new();
+        if let Some(root_id) = root {
+            self.dump_node(&mut output, root_id, 0);
+        } else {
+            output.push_str("(no root)\n");
+        }
+        output
+    }
+
+    fn dump_node(&self, output: &mut String, id: NodeId, depth: usize) {
+        let indent = "  ".repeat(depth);
+        if let Some(Some(node)) = self.nodes.get(id) {
+            let type_name = std::any::type_name_of_val(&**node);
+            output.push_str(&format!("{}[{}] {}\n", indent, id, type_name));
+
+            let children = node.children();
+            for child_id in children {
+                self.dump_node(output, child_id, depth + 1);
+            }
+        } else {
+            output.push_str(&format!("{}[{}] (missing)\n", indent, id));
+        }
+    }
 }
 
 impl Applier for MemoryApplier {
@@ -1015,6 +1043,23 @@ impl Applier for MemoryApplier {
     }
 
     fn remove(&mut self, id: NodeId) -> Result<(), NodeError> {
+        // First, get the list of children before removing the node
+        let children = {
+            let slot = self.nodes.get(id).ok_or(NodeError::Missing { id })?;
+            if let Some(node) = slot {
+                node.children()
+            } else {
+                return Err(NodeError::Missing { id });
+            }
+        };
+
+        // Recursively remove all children
+        for child_id in children {
+            // Ignore errors if child is already removed
+            let _ = self.remove(child_id);
+        }
+
+        // Finally, remove this node
         let slot = self.nodes.get_mut(id).ok_or(NodeError::Missing { id })?;
         slot.take();
         Ok(())

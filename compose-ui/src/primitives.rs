@@ -219,6 +219,10 @@ impl Node for LayoutNode {
             self.children.insert(child);
         }
     }
+
+    fn children(&self) -> Vec<NodeId> {
+        self.children.iter().copied().collect()
+    }
 }
 
 #[derive(Clone, Default)]
@@ -287,6 +291,10 @@ impl Node for ButtonNode {
         for &child in children {
             self.children.insert(child);
         }
+    }
+
+    fn children(&self) -> Vec<NodeId> {
+        self.children.iter().copied().collect()
     }
 }
 

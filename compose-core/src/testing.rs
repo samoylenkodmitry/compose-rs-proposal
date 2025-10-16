@@ -90,6 +90,12 @@ impl ComposeTestRule {
         self.composition.applier_mut()
     }
 
+    /// Dump the current node tree as text for debugging
+    pub fn dump_tree(&mut self) -> String {
+        let root = self.composition.root();
+        self.composition.applier_mut().dump_tree(root)
+    }
+
     /// Returns whether user content has been installed in this rule.
     pub fn has_content(&self) -> bool {
         self.content.is_some()
