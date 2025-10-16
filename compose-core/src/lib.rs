@@ -5,12 +5,10 @@ pub mod modifier;
 pub mod platform;
 pub mod testing;
 
-pub use animation::{
-    Animatable, AnimationSpec, AnimationType, Easing, Lerp, SpringSpec,
-};
+pub use animation::{Animatable, AnimationSpec, AnimationType, Easing, Lerp, SpringSpec};
 pub use modifier::{
     modifier_element, AnyModifierElement, Constraints, DrawModifierNode, DrawScope,
-    DynModifierElement, InvalidationKind, LayoutModifierNode, MeasureResult, Measurable,
+    DynModifierElement, InvalidationKind, LayoutModifierNode, Measurable, MeasureResult,
     ModifierElement, ModifierNode, ModifierNodeChain, ModifierNodeContext, NodeCapabilities,
     PointerEvent, PointerInputNode, SemanticsConfiguration, SemanticsNode,
 };
@@ -23,6 +21,7 @@ use std::collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque}; // 
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::mem;
+use std::ptr::NonNull;
 use std::rc::{Rc, Weak}; // FUTURE(no_std): replace Rc/Weak with arena-managed handles.
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -2006,6 +2005,49 @@ impl<T> Default for ParamState<T> {
 impl<T> Default for ReturnSlot<T> {
     fn default() -> Self {
         Self { value: None }
+    }
+}
+
+pub struct ClosureSlot<F> {
+    ptr: Option<NonNull<F>>,
+}
+
+impl<F> ClosureSlot<F> {
+    pub fn store(&mut self, value: F) {
+        if let Some(ptr) = self.ptr.take() {
+            unsafe {
+                drop(Box::from_raw(ptr.as_ptr()));
+            }
+        }
+        let boxed = Box::new(value);
+        // SAFETY: `Box::into_raw` never returns null.
+        self.ptr = Some(unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) });
+    }
+
+    pub fn take(&mut self) -> Option<F> {
+        self.ptr
+            .take()
+            .map(|ptr| unsafe { *Box::from_raw(ptr.as_ptr()) })
+    }
+
+    pub fn with_mut<R>(&mut self, f: impl FnOnce(&mut F) -> R) -> Option<R> {
+        self.ptr.as_mut().map(|ptr| unsafe { f(ptr.as_mut()) })
+    }
+}
+
+impl<F> Default for ClosureSlot<F> {
+    fn default() -> Self {
+        Self { ptr: None }
+    }
+}
+
+impl<F> Drop for ClosureSlot<F> {
+    fn drop(&mut self) {
+        if let Some(ptr) = self.ptr.take() {
+            unsafe {
+                drop(Box::from_raw(ptr.as_ptr()));
+            }
+        }
     }
 }
 

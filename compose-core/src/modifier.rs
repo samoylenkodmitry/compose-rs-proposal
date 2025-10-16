@@ -377,7 +377,12 @@ struct ModifierNodeEntry {
 }
 
 impl ModifierNodeEntry {
-    fn new(type_id: TypeId, key: Option<u64>, node: Box<dyn ModifierNode>, capabilities: NodeCapabilities) -> Self {
+    fn new(
+        type_id: TypeId,
+        key: Option<u64>,
+        node: Box<dyn ModifierNode>,
+        capabilities: NodeCapabilities,
+    ) -> Self {
         Self {
             type_id,
             key,
@@ -526,7 +531,9 @@ impl ModifierNodeChain {
 
     /// Returns true if the chain contains any nodes matching the given invalidation kind.
     pub fn has_nodes_for_invalidation(&self, kind: InvalidationKind) -> bool {
-        self.entries.iter().any(|entry| entry.matches_invalidation(kind))
+        self.entries
+            .iter()
+            .any(|entry| entry.matches_invalidation(kind))
     }
 
     /// Iterates over all layout nodes in the chain.
@@ -875,7 +882,11 @@ mod tests {
     impl ModifierNode for TestDrawNode {}
 
     impl DrawModifierNode for TestDrawNode {
-        fn draw(&mut self, _context: &mut dyn ModifierNodeContext, _draw_scope: &mut dyn DrawScope) {
+        fn draw(
+            &mut self,
+            _context: &mut dyn ModifierNodeContext,
+            _draw_scope: &mut dyn DrawScope,
+        ) {
             self.draw_count.set(self.draw_count.get() + 1);
         }
     }

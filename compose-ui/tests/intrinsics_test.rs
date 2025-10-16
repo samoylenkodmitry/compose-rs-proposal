@@ -85,18 +85,27 @@ fn row_with_intrinsic_height() {
             Modifier::height_intrinsic(IntrinsicSize::Max)
                 .then(Modifier::background(Color(0.8, 0.8, 0.8, 1.0))),
             || {
-                Box(Modifier::size(Size {
-                    width: 50.0,
-                    height: 30.0,
-                }), || {});
-                Box(Modifier::size(Size {
-                    width: 50.0,
-                    height: 80.0,
-                }), || {});
-                Box(Modifier::size(Size {
-                    width: 50.0,
-                    height: 50.0,
-                }), || {});
+                Box(
+                    Modifier::size(Size {
+                        width: 50.0,
+                        height: 30.0,
+                    }),
+                    || {},
+                );
+                Box(
+                    Modifier::size(Size {
+                        width: 50.0,
+                        height: 80.0,
+                    }),
+                    || {},
+                );
+                Box(
+                    Modifier::size(Size {
+                        width: 50.0,
+                        height: 50.0,
+                    }),
+                    || {},
+                );
             },
         );
     });

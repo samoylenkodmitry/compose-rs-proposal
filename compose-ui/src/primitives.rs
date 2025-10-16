@@ -442,7 +442,7 @@ impl Node for ButtonNode {
 #[composable(no_skip)]
 pub fn Column<F>(modifier: Modifier, content: F) -> NodeId
 where
-    F: FnMut(),
+    F: FnMut() + 'static,
 {
     ColumnWithAlignment(
         modifier,
@@ -455,12 +455,12 @@ where
 #[composable(no_skip)]
 pub fn Box<F>(modifier: Modifier, content: F) -> NodeId
 where
-    F: FnMut(),
+    F: FnMut() + 'static,
 {
     BoxWithOptions(modifier, Alignment::TOP_START, false, content)
 }
 
-#[composable(no_skip)]
+#[composable]
 pub fn BoxWithOptions<F>(
     modifier: Modifier,
     content_alignment: Alignment,
@@ -468,7 +468,7 @@ pub fn BoxWithOptions<F>(
     mut content: F,
 ) -> NodeId
 where
-    F: FnMut(),
+    F: FnMut() + 'static,
 {
     let id = compose_node(|| BoxNode {
         modifier: modifier.clone(),
@@ -489,7 +489,7 @@ where
     id
 }
 
-#[composable(no_skip)]
+#[composable]
 pub fn ColumnWithAlignment<F>(
     modifier: Modifier,
     vertical_arrangement: LinearArrangement,
@@ -497,7 +497,7 @@ pub fn ColumnWithAlignment<F>(
     mut content: F,
 ) -> NodeId
 where
-    F: FnMut(),
+    F: FnMut() + 'static,
 {
     let id = compose_node(|| ColumnNode {
         modifier: modifier.clone(),
@@ -521,7 +521,7 @@ where
 #[composable(no_skip)]
 pub fn Row<F>(modifier: Modifier, content: F) -> NodeId
 where
-    F: FnMut(),
+    F: FnMut() + 'static,
 {
     RowWithAlignment(
         modifier,
@@ -531,7 +531,7 @@ where
     )
 }
 
-#[composable(no_skip)]
+#[composable]
 pub fn RowWithAlignment<F>(
     modifier: Modifier,
     horizontal_arrangement: LinearArrangement,
@@ -539,7 +539,7 @@ pub fn RowWithAlignment<F>(
     mut content: F,
 ) -> NodeId
 where
-    F: FnMut(),
+    F: FnMut() + 'static,
 {
     let id = compose_node(|| RowNode {
         modifier: modifier.clone(),
@@ -880,7 +880,7 @@ mod tests {
     #[composable]
     fn CounterRow(label: &'static str, count: State<i32>) -> NodeId {
         COUNTER_ROW_INVOCATIONS.with(|calls| calls.set(calls.get() + 1));
-        Column(Modifier::empty(), || {
+        Column(Modifier::empty(), move || {
             Text(label, Modifier::empty());
             let count_for_text = count.clone();
             let text_id = Text(
@@ -894,35 +894,41 @@ mod tests {
     #[test]
     fn button_triggers_state_update() {
         let mut composition = Composition::new(MemoryApplier::new());
-        let mut button_state: Option<SnapshotState<i32>> = None;
-        let mut button_id = None;
+        let button_state: Rc<RefCell<Option<SnapshotState<i32>>>> = Rc::new(RefCell::new(None));
+        let button_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
         composition
-            .render(location_key(file!(), line!(), column!()), || {
-                let counter = compose_core::useState(|| 0);
-                if button_state.is_none() {
-                    button_state = Some(counter.clone());
-                }
-                Column(Modifier::empty(), || {
-                    Text(format!("Count = {}", counter.get()), Modifier::empty());
-                    button_id = Some(Button(
-                        Modifier::empty(),
-                        {
-                            let counter = counter.clone();
+            .render(location_key(file!(), line!(), column!()), {
+                let button_state = Rc::clone(&button_state);
+                let button_id = Rc::clone(&button_id);
+                move || {
+                    let counter = compose_core::useState(|| 0);
+                    if button_state.borrow().is_none() {
+                        *button_state.borrow_mut() = Some(counter.clone());
+                    }
+                    let button_id = Rc::clone(&button_id);
+                    Column(Modifier::empty(), move || {
+                        Text(format!("Count = {}", counter.get()), Modifier::empty());
+                        let button_node = Button(
+                            Modifier::empty(),
+                            {
+                                let counter = counter.clone();
+                                move || {
+                                    counter.set(counter.get() + 1);
+                                }
+                            },
                             move || {
-                                counter.set(counter.get() + 1);
-                            }
-                        },
-                        || {
-                            Text("+", Modifier::empty());
-                        },
-                    ));
-                });
+                                Text("+", Modifier::empty());
+                            },
+                        );
+                        *button_id.borrow_mut() = Some(button_node);
+                    });
+                }
             })
             .expect("render succeeds");
 
-        let state = button_state.expect("button state stored");
+        let state = button_state.borrow().clone().expect("button state stored");
         assert_eq!(state.get(), 0);
-        let button_node_id = button_id.expect("button id");
+        let button_node_id = button_id.borrow().expect("button id");
         {
             let applier = composition.applier_mut();
             applier
@@ -938,28 +944,37 @@ mod tests {
     fn text_updates_with_state_after_write() {
         let mut composition = Composition::new(MemoryApplier::new());
         let root_key = location_key(file!(), line!(), column!());
-        let mut text_node_id = None;
-        let mut captured_state: Option<MutableState<i32>> = None;
+        let text_node_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+        let captured_state: Rc<RefCell<Option<MutableState<i32>>>> = Rc::new(RefCell::new(None));
 
         composition
-            .render(root_key, || {
-                Column(Modifier::empty(), || {
-                    let count = compose_core::useState(|| 0);
-                    if captured_state.is_none() {
-                        captured_state = Some(count.clone());
-                    }
-                    let count_for_text = count.clone();
-                    text_node_id = Some(Text(
-                        DynamicTextSource::new(move || {
-                            format!("Count = {}", count_for_text.value())
-                        }),
-                        Modifier::empty(),
-                    ));
-                });
+            .render(root_key, {
+                let text_node_id = Rc::clone(&text_node_id);
+                let captured_state = Rc::clone(&captured_state);
+                move || {
+                    Column(Modifier::empty(), {
+                        let text_node_id = Rc::clone(&text_node_id);
+                        let captured_state = Rc::clone(&captured_state);
+                        move || {
+                            let count = compose_core::useState(|| 0);
+                            if captured_state.borrow().is_none() {
+                                *captured_state.borrow_mut() = Some(count.clone());
+                            }
+                            let count_for_text = count.clone();
+                            let node_id = Text(
+                                DynamicTextSource::new(move || {
+                                    format!("Count = {}", count_for_text.value())
+                                }),
+                                Modifier::empty(),
+                            );
+                            *text_node_id.borrow_mut() = Some(node_id);
+                        }
+                    });
+                }
             })
             .expect("render succeeds");
 
-        let id = text_node_id.expect("text node id");
+        let id = text_node_id.borrow().expect("text node id");
         {
             let applier = composition.applier_mut();
             applier
@@ -969,7 +984,7 @@ mod tests {
                 .expect("read text node");
         }
 
-        let state = captured_state.expect("captured state");
+        let state = captured_state.borrow().clone().expect("captured state");
         state.set(1);
         assert!(composition.should_render());
 
@@ -995,15 +1010,18 @@ mod tests {
 
         let mut composition = Composition::new(MemoryApplier::new());
         let root_key = location_key(file!(), line!(), column!());
-        let mut captured_state: Option<MutableState<i32>> = None;
+        let captured_state: Rc<RefCell<Option<MutableState<i32>>>> = Rc::new(RefCell::new(None));
 
         composition
-            .render(root_key, || {
-                let count = compose_core::useState(|| 0);
-                if captured_state.is_none() {
-                    captured_state = Some(count.clone());
+            .render(root_key, {
+                let captured_state = Rc::clone(&captured_state);
+                move || {
+                    let count = compose_core::useState(|| 0);
+                    if captured_state.borrow().is_none() {
+                        *captured_state.borrow_mut() = Some(count.clone());
+                    }
+                    CounterRow("Counter", count.as_state());
                 }
-                CounterRow("Counter", count.as_state());
             })
             .expect("initial render succeeds");
 
@@ -1019,7 +1037,7 @@ mod tests {
                 .expect("read text node");
         }
 
-        let state = captured_state.expect("captured state");
+        let state = captured_state.borrow().clone().expect("captured state");
         state.set(1);
         assert!(composition.should_render());
 
@@ -1068,9 +1086,9 @@ mod tests {
 
         composition
             .render(key, || {
-                Column(Modifier::empty(), || {
+                Column(Modifier::empty(), move || {
                     let items = ["A", "B", "C"];
-                    ForEach(&items, |item| {
+                    ForEach(&items, move |item| {
                         Text(item.to_string(), Modifier::empty());
                     });
                 });
@@ -1082,9 +1100,9 @@ mod tests {
 
         composition
             .render(key, || {
-                Column(Modifier::empty(), || {
+                Column(Modifier::empty(), move || {
                     let items = ["C", "B", "A"];
-                    ForEach(&items, |item| {
+                    ForEach(&items, move |item| {
                         Text(item.to_string(), Modifier::empty());
                     });
                 });
@@ -1099,18 +1117,24 @@ mod tests {
     fn layout_column_produces_expected_measurements() {
         let mut composition = Composition::new(MemoryApplier::new());
         let key = location_key(file!(), line!(), column!());
-        let mut text_id = None;
+        let text_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
 
         composition
-            .render(key, || {
-                Column(Modifier::padding(10.0), || {
-                    let id = Text("Hello", Modifier::empty());
-                    text_id = Some(id);
-                    Spacer(Size {
-                        width: 0.0,
-                        height: 30.0,
+            .render(key, {
+                let text_id = Rc::clone(&text_id);
+                move || {
+                    Column(Modifier::padding(10.0), {
+                        let text_id = Rc::clone(&text_id);
+                        move || {
+                            let id = Text("Hello", Modifier::empty());
+                            *text_id.borrow_mut() = Some(id);
+                            Spacer(Size {
+                                width: 0.0,
+                                height: 30.0,
+                            });
+                        }
                     });
-                });
+                }
             })
             .expect("initial render");
 
@@ -1132,7 +1156,7 @@ mod tests {
         assert_eq!(root_layout.children.len(), 2);
 
         let text_layout = &root_layout.children[0];
-        assert_eq!(text_layout.node_id, text_id.expect("text node id"));
+        assert_eq!(text_layout.node_id, text_id.borrow().expect("text node id"));
         assert!((text_layout.rect.x - 10.0).abs() < 1e-3);
         assert!((text_layout.rect.y - 10.0).abs() < 1e-3);
         assert!((text_layout.rect.width - 40.0).abs() < 1e-3);
@@ -1143,13 +1167,19 @@ mod tests {
     fn modifier_offset_translates_layout() {
         let mut composition = Composition::new(MemoryApplier::new());
         let key = location_key(file!(), line!(), column!());
-        let mut text_id = None;
+        let text_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
 
         composition
-            .render(key, || {
-                Column(Modifier::padding(10.0), || {
-                    text_id = Some(Text("Hello", Modifier::offset(5.0, 7.5)));
-                });
+            .render(key, {
+                let text_id = Rc::clone(&text_id);
+                move || {
+                    Column(Modifier::padding(10.0), {
+                        let text_id = Rc::clone(&text_id);
+                        move || {
+                            *text_id.borrow_mut() = Some(Text("Hello", Modifier::offset(5.0, 7.5)));
+                        }
+                    });
+                }
             })
             .expect("initial render");
 
@@ -1168,7 +1198,7 @@ mod tests {
         let root_layout = layout_tree.root().clone();
         assert_eq!(root_layout.children.len(), 1);
         let text_layout = &root_layout.children[0];
-        assert_eq!(text_layout.node_id, text_id.expect("text node id"));
+        assert_eq!(text_layout.node_id, text_id.borrow().expect("text node id"));
         assert!((text_layout.rect.x - 15.0).abs() < 1e-3);
         assert!((text_layout.rect.y - 17.5).abs() < 1e-3);
     }
@@ -1177,21 +1207,23 @@ mod tests {
     fn box_with_constraints_composes_different_content() {
         let mut composition = Composition::new(MemoryApplier::new());
         let record = Rc::new(RefCell::new(Vec::new()));
-        let record_capture = Rc::clone(&record);
         composition
-            .render(location_key(file!(), line!(), column!()), || {
-                BoxWithConstraints(Modifier::empty(), {
-                    let record_capture = Rc::clone(&record_capture);
-                    move |scope| {
-                        let label = if scope.max_width().value() > 100.0 {
-                            "wide"
-                        } else {
-                            "narrow"
-                        };
-                        record_capture.borrow_mut().push(label.to_string());
-                        Text(label, Modifier::empty());
-                    }
-                });
+            .render(location_key(file!(), line!(), column!()), {
+                let record = Rc::clone(&record);
+                move || {
+                    BoxWithConstraints(Modifier::empty(), {
+                        let record = Rc::clone(&record);
+                        move |scope| {
+                            let label = if scope.max_width().value() > 100.0 {
+                                "wide"
+                            } else {
+                                "narrow"
+                            };
+                            record.borrow_mut().push(label.to_string());
+                            Text(label, Modifier::empty());
+                        }
+                    });
+                }
             })
             .expect("render succeeds");
 
@@ -1232,17 +1264,19 @@ mod tests {
     fn box_with_constraints_reacts_to_constraint_changes() {
         let mut composition = Composition::new(MemoryApplier::new());
         let invocations = Rc::new(Cell::new(0));
-        let invocations_capture = Rc::clone(&invocations);
         composition
-            .render(location_key(file!(), line!(), column!()), || {
-                BoxWithConstraints(Modifier::empty(), {
-                    let invocations_capture = Rc::clone(&invocations_capture);
-                    move |scope| {
-                        let _ = scope.max_width();
-                        invocations_capture.set(invocations_capture.get() + 1);
-                        Text("child", Modifier::empty());
-                    }
-                });
+            .render(location_key(file!(), line!(), column!()), {
+                let invocations = Rc::clone(&invocations);
+                move || {
+                    BoxWithConstraints(Modifier::empty(), {
+                        let invocations = Rc::clone(&invocations);
+                        move |scope| {
+                            let _ = scope.max_width();
+                            invocations.set(invocations.get() + 1);
+                            Text("child", Modifier::empty());
+                        }
+                    });
+                }
             })
             .expect("render succeeds");
 

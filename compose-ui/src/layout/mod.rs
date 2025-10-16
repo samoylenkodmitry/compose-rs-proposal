@@ -330,8 +330,13 @@ impl<'a> LayoutBuilder<'a> {
                 } else {
                     0.0
                 };
-                compute_row_intrinsic_width(self.applier, &node.children, intrinsic, cross_axis, spacing)
-                    + padding.horizontal_sum()
+                compute_row_intrinsic_width(
+                    self.applier,
+                    &node.children,
+                    intrinsic,
+                    cross_axis,
+                    spacing,
+                ) + padding.horizontal_sum()
             },
         );
         height = resolve_dimension_with_intrinsics(
@@ -1148,9 +1153,7 @@ fn compute_column_intrinsic_width(
 ) -> f32 {
     children
         .iter()
-        .map(|&child_id| {
-            compute_node_intrinsic_width(applier, child_id, intrinsic, height)
-        })
+        .map(|&child_id| compute_node_intrinsic_width(applier, child_id, intrinsic, height))
         .fold(0.0, f32::max)
 }
 
@@ -1170,9 +1173,7 @@ fn compute_column_intrinsic_height(
     };
     children
         .iter()
-        .map(|&child_id| {
-            compute_node_intrinsic_height(applier, child_id, intrinsic, width)
-        })
+        .map(|&child_id| compute_node_intrinsic_height(applier, child_id, intrinsic, width))
         .sum::<f32>()
         + total_spacing
 }
@@ -1193,9 +1194,7 @@ fn compute_row_intrinsic_width(
     };
     children
         .iter()
-        .map(|&child_id| {
-            compute_node_intrinsic_width(applier, child_id, intrinsic, height)
-        })
+        .map(|&child_id| compute_node_intrinsic_width(applier, child_id, intrinsic, height))
         .sum::<f32>()
         + total_spacing
 }
@@ -1209,9 +1208,7 @@ fn compute_row_intrinsic_height(
 ) -> f32 {
     children
         .iter()
-        .map(|&child_id| {
-            compute_node_intrinsic_height(applier, child_id, intrinsic, width)
-        })
+        .map(|&child_id| compute_node_intrinsic_height(applier, child_id, intrinsic, width))
         .fold(0.0, f32::max)
 }
 
@@ -1224,9 +1221,7 @@ fn compute_box_intrinsic_width(
 ) -> f32 {
     children
         .iter()
-        .map(|&child_id| {
-            compute_node_intrinsic_width(applier, child_id, intrinsic, height)
-        })
+        .map(|&child_id| compute_node_intrinsic_width(applier, child_id, intrinsic, height))
         .fold(0.0, f32::max)
 }
 
@@ -1239,9 +1234,7 @@ fn compute_box_intrinsic_height(
 ) -> f32 {
     children
         .iter()
-        .map(|&child_id| {
-            compute_node_intrinsic_height(applier, child_id, intrinsic, width)
-        })
+        .map(|&child_id| compute_node_intrinsic_height(applier, child_id, intrinsic, width))
         .fold(0.0, f32::max)
 }
 

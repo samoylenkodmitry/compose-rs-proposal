@@ -290,7 +290,14 @@ fn counter_app() {
                 }
             }))
             .then(Modifier::padding(20.0)),
-        || {
+        move || {
+            let pointer_position_state = pointer_position.clone();
+            let pointer_down_state = pointer_down.clone();
+            let wave_value = wave;
+            let counter_for_row = counter.clone();
+            let counter_for_pointer = counter.clone();
+            let counter_for_buttons = counter.clone();
+
             Text(
                 "Compose-RS Playground",
                 Modifier::padding(12.0)
@@ -310,27 +317,28 @@ fn counter_app() {
                 height: 12.0,
             });
 
+            let wave_for_row = wave_value;
             RowWithAlignment(
                 Modifier::padding(8.0),
                 LinearArrangement::SpacedBy(12.0),
                 VerticalAlignment::CenterVertically,
-                || {
+                move || {
                     Text(
-                        format!("Counter: {}", counter.get()),
+                        format!("Counter: {}", counter_for_row.clone().get()),
                         Modifier::padding(8.0)
                             .then(Modifier::background(Color(0.0, 0.0, 0.0, 0.35)))
                             .then(Modifier::rounded_corners(12.0)),
                     );
                     Text(
-                        format!("Wave {:.2}", wave),
+                        format!("Wave {:.2}", wave_for_row),
                         Modifier::padding(8.0)
                             .then(Modifier::background(Color(0.35, 0.55, 0.9, 0.5)))
                             .then(Modifier::rounded_corners(12.0))
                             .then(Modifier::graphics_layer(GraphicsLayer {
-                                alpha: 0.7 + wave * 0.3,
-                                scale: 0.85 + wave * 0.3,
+                                alpha: 0.7 + wave_for_row * 0.3,
+                                scale: 0.85 + wave_for_row * 0.3,
                                 translation_x: 0.0,
-                                translation_y: (wave - 0.5) * 12.0,
+                                translation_y: (wave_for_row - 0.5) * 12.0,
                             })),
                     );
                 },
@@ -356,8 +364,8 @@ fn counter_app() {
                     });
                 }))
                 .then(Modifier::draw_with_content({
-                    let position = pointer_position.get();
-                    let pressed = pointer_down.get();
+                    let position = pointer_position_state.get();
+                    let pressed = pointer_down_state.get();
                     move |scope| {
                         let intensity = if pressed { 0.45 } else { 0.25 };
                         scope.draw_round_rect(
@@ -371,8 +379,8 @@ fn counter_app() {
                     }
                 }))
                 .then(Modifier::pointer_input({
-                    let pointer_position = pointer_position.clone();
-                    let pointer_down = pointer_down.clone();
+                    let pointer_position = pointer_position_state.clone();
+                    let pointer_down = pointer_down_state.clone();
                     move |event: PointerEvent| {
                         pointer_position.set(event.position);
                         match event.kind {
@@ -383,12 +391,12 @@ fn counter_app() {
                     }
                 }))
                 .then(Modifier::clickable({
-                    let pointer_down = pointer_down.clone();
+                    let pointer_down = pointer_down_state.clone();
                     move |_| pointer_down.set(!pointer_down.get())
                 }))
                 .then(Modifier::padding(12.0)),
-                || {
-                    if counter.get() % 2 == 0 {
+                move || {
+                    if counter_for_pointer.clone().get() % 2 == 0 {
                         LaunchedEffect!("", |_| { println!("launch playground") });
                         DisposableEffect!("", |x| {
                             println!("dispose effect playground");
@@ -417,16 +425,13 @@ fn counter_app() {
                         width: 0.0,
                         height: 8.0,
                     });
+                    let position = pointer_position_state.get();
                     Text(
-                        format!(
-                            "Local pointer: ({:.0}, {:.0})",
-                            pointer_position.get().x,
-                            pointer_position.get().y
-                        ),
+                        format!("Local pointer: ({:.0}, {:.0})", position.x, position.y),
                         Modifier::padding(6.0),
                     );
                     Text(
-                        format!("Pressed: {}", pointer_down.get()),
+                        format!("Pressed: {}", pointer_down_state.get()),
                         Modifier::padding(6.0),
                     );
                 },
@@ -437,7 +442,6 @@ fn counter_app() {
                 height: 16.0,
             });
 
-            // Intrinsics demonstration: Equal-width buttons
             Text(
                 "Intrinsic Sizing Demo (Equal Width):",
                 Modifier::padding(8.0)
@@ -455,8 +459,7 @@ fn counter_app() {
                     .then(Modifier::rounded_corners(12.0))
                     .then(Modifier::background(Color(0.1, 0.1, 0.15, 0.6)))
                     .then(Modifier::padding(8.0)),
-                || {
-                    // All buttons will have the same width as the widest one ("Long Button Text")
+                move || {
                     Button(
                         Modifier::width_intrinsic(compose_ui::IntrinsicSize::Max)
                             .then(Modifier::rounded_corners(12.0))
@@ -469,7 +472,13 @@ fn counter_app() {
                             .then(Modifier::padding(10.0)),
                         || {},
                         || {
-                            Text("OK", Modifier::padding(4.0).then(Modifier::size(Size { width: 50.0, height:50.0})));
+                            Text(
+                                "OK",
+                                Modifier::padding(4.0).then(Modifier::size(Size {
+                                    width: 50.0,
+                                    height: 50.0,
+                                })),
+                            );
                         },
                     );
                     Spacer(Size {
@@ -518,7 +527,7 @@ fn counter_app() {
                 height: 16.0,
             });
 
-            Row(Modifier::padding(8.0), || {
+            Row(Modifier::padding(8.0), move || {
                 Button(
                     Modifier::rounded_corners(16.0)
                         .then(Modifier::draw_with_cache(|cache| {
@@ -534,7 +543,7 @@ fn counter_app() {
                         }))
                         .then(Modifier::padding(12.0)),
                     {
-                        let counter = counter.clone();
+                        let counter = counter_for_buttons.clone();
                         move || counter.set(counter.get() + 1)
                     },
                     || {
@@ -555,7 +564,7 @@ fn counter_app() {
                         }))
                         .then(Modifier::padding(12.0)),
                     {
-                        let counter = counter.clone();
+                        let counter = counter_for_buttons.clone();
                         move || counter.set(counter.get() - 1)
                     },
                     || {

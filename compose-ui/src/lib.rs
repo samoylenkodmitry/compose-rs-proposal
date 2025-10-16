@@ -20,8 +20,7 @@ pub use layout::{
 };
 pub use modifier::{
     Brush, Color, CornerRadii, DrawCommand, DrawPrimitive, EdgeInsets, GraphicsLayer,
-    IntrinsicSize, Modifier, Point, PointerEvent, PointerEventKind, Rect, RoundedCornerShape,
-    Size,
+    IntrinsicSize, Modifier, Point, PointerEvent, PointerEventKind, Rect, RoundedCornerShape, Size,
 };
 pub use modifier_nodes::{
     AlphaElement, AlphaNode, BackgroundElement, BackgroundNode, ClickableElement, ClickableNode,
