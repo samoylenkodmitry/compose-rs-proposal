@@ -5,12 +5,10 @@ pub mod modifier;
 pub mod platform;
 pub mod testing;
 
-pub use animation::{
-    Animatable, AnimationSpec, AnimationType, Easing, Lerp, SpringSpec,
-};
+pub use animation::{Animatable, AnimationSpec, AnimationType, Easing, Lerp, SpringSpec};
 pub use modifier::{
     modifier_element, AnyModifierElement, Constraints, DrawModifierNode, DrawScope,
-    DynModifierElement, InvalidationKind, LayoutModifierNode, MeasureResult, Measurable,
+    DynModifierElement, InvalidationKind, LayoutModifierNode, Measurable, MeasureResult,
     ModifierElement, ModifierNode, ModifierNodeChain, ModifierNodeContext, NodeCapabilities,
     PointerEvent, PointerInputNode, SemanticsConfiguration, SemanticsNode,
 };
@@ -346,17 +344,28 @@ pub fn derivedStateOf<T: 'static + Clone>(compute: impl Fn() -> T + 'static) -> 
     })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProvidedValueKind {
+    Dynamic,
+    Static,
+}
+
 pub struct ProvidedValue {
     key: LocalKey,
+    kind: ProvidedValueKind,
     apply: Box<dyn Fn(&mut Composer<'_>) -> Rc<dyn Any>>, // FUTURE(no_std): return arena-backed local storage pointer.
 }
 
 impl ProvidedValue {
     fn into_entry(self, composer: &mut Composer<'_>) -> (LocalKey, Rc<dyn Any>) {
         // FUTURE(no_std): avoid Rc allocation per entry.
-        let ProvidedValue { key, apply } = self;
+        let ProvidedValue { key, apply, .. } = self;
         let entry = apply(composer);
         (key, entry)
+    }
+
+    fn is_static(&self) -> bool {
+        matches!(self.kind, ProvidedValueKind::Static)
     }
 }
 
@@ -367,6 +376,29 @@ pub fn CompositionLocalProvider(
 ) {
     with_current_composer(|composer| {
         let provided: Vec<ProvidedValue> = values.into_iter().collect(); // FUTURE(no_std): replace Vec with stack-allocated small vec.
+        composer.with_composition_locals(provided, |_composer| content());
+    })
+}
+
+#[allow(non_snake_case)]
+pub fn LocalCompositionProvider(
+    values: impl IntoIterator<Item = ProvidedValue>,
+    content: impl FnOnce(),
+) {
+    CompositionLocalProvider(values, content);
+}
+
+#[allow(non_snake_case)]
+pub fn StaticCompositionProvider(
+    values: impl IntoIterator<Item = ProvidedValue>,
+    content: impl FnOnce(),
+) {
+    with_current_composer(|composer| {
+        let provided: Vec<ProvidedValue> = values.into_iter().collect();
+        // FUTURE(no_std): replace Vec with stack-allocated small vec.
+        if provided.iter().any(|value| !value.is_static()) {
+            panic!("StaticCompositionProvider requires static composition locals");
+        }
         composer.with_composition_locals(provided, |_composer| content());
     })
 }
@@ -389,10 +421,37 @@ impl<T: Clone + 'static> LocalStateEntry<T> {
     }
 }
 
+struct StaticLocalEntry<T: Clone + 'static> {
+    value: RefCell<T>,
+}
+
+impl<T: Clone + 'static> StaticLocalEntry<T> {
+    fn new(value: T) -> Self {
+        Self {
+            value: RefCell::new(value),
+        }
+    }
+
+    fn set(&self, value: T) {
+        *self.value.borrow_mut() = value;
+    }
+
+    fn value(&self) -> T {
+        self.value.borrow().clone()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CompositionLocalKind {
+    Dynamic,
+    Static,
+}
+
 #[derive(Clone)]
 pub struct CompositionLocal<T: Clone + 'static> {
     key: LocalKey,
     default: Rc<dyn Fn() -> T>, // FUTURE(no_std): store default provider in arena-managed cell.
+    kind: CompositionLocalKind,
 }
 
 impl<T: Clone + 'static> PartialEq for CompositionLocal<T> {
@@ -406,20 +465,34 @@ impl<T: Clone + 'static> Eq for CompositionLocal<T> {}
 impl<T: Clone + 'static> CompositionLocal<T> {
     pub fn provides(&self, value: T) -> ProvidedValue {
         let key = self.key;
-        ProvidedValue {
-            key,
-            apply: Box::new(move |composer: &mut Composer<'_>| {
-                let runtime = composer.runtime_handle();
-                let entry_ref = composer.remember(|| {
-                    Rc::new(LocalStateEntry::new(MutableState::with_runtime(
-                        value.clone(),
-                        runtime.clone(),
-                    )))
-                });
-                let entry = Rc::clone(entry_ref); // FUTURE(no_std): clone arena-managed pointer instead of Rc.
-                entry.set(value.clone());
-                entry as Rc<dyn Any> // FUTURE(no_std): expose erased handle without Rc boxing.
-            }),
+        match self.kind {
+            CompositionLocalKind::Dynamic => ProvidedValue {
+                key,
+                kind: ProvidedValueKind::Dynamic,
+                apply: Box::new(move |composer: &mut Composer<'_>| {
+                    let runtime = composer.runtime_handle();
+                    let entry_ref = composer.remember(|| {
+                        Rc::new(LocalStateEntry::new(MutableState::with_runtime(
+                            value.clone(),
+                            runtime.clone(),
+                        )))
+                    });
+                    let entry = Rc::clone(entry_ref); // FUTURE(no_std): clone arena-managed pointer instead of Rc.
+                    entry.set(value.clone());
+                    entry as Rc<dyn Any> // FUTURE(no_std): expose erased handle without Rc boxing.
+                }),
+            },
+            CompositionLocalKind::Static => ProvidedValue {
+                key,
+                kind: ProvidedValueKind::Static,
+                apply: Box::new(move |composer: &mut Composer<'_>| {
+                    let entry_ref =
+                        composer.remember(|| Rc::new(StaticLocalEntry::new(value.clone())));
+                    let entry = Rc::clone(entry_ref); // FUTURE(no_std): clone arena-managed pointer instead of Rc.
+                    entry.set(value.clone());
+                    entry as Rc<dyn Any>
+                }),
+            },
         }
     }
 
@@ -439,12 +512,17 @@ pub fn compositionLocalOf<T: Clone + 'static>(
     CompositionLocal {
         key: next_local_key(),
         default: Rc::new(default), // FUTURE(no_std): allocate default provider in arena storage.
+        kind: CompositionLocalKind::Dynamic,
     }
 }
 
 #[allow(non_snake_case)]
 pub fn staticCompositionLocalOf<T: Clone + 'static>(value: T) -> CompositionLocal<T> {
-    compositionLocalOf(move || value.clone())
+    CompositionLocal {
+        key: next_local_key(),
+        default: Rc::new(move || value.clone()),
+        kind: CompositionLocalKind::Static,
+    }
 }
 
 #[derive(Default)]
@@ -1489,11 +1567,14 @@ impl<'a> Composer<'a> {
     pub fn read_composition_local<T: Clone + 'static>(&mut self, local: &CompositionLocal<T>) -> T {
         for context in self.local_stack.iter().rev() {
             if let Some(entry) = context.values.get(&local.key) {
-                let typed = entry
-                    .clone()
-                    .downcast::<LocalStateEntry<T>>()
-                    .expect("composition local type mismatch");
-                return typed.value();
+                let cloned = entry.clone();
+                if let Ok(state_entry) = cloned.clone().downcast::<LocalStateEntry<T>>() {
+                    return state_entry.value();
+                }
+                if let Ok(static_entry) = cloned.downcast::<StaticLocalEntry<T>>() {
+                    return static_entry.value();
+                }
+                panic!("composition local type mismatch");
             }
         }
         local.default_value()
@@ -3241,6 +3322,62 @@ mod tests {
             .expect("compose reader");
 
         assert_eq!(READ_VALUE.with(|slot| slot.get()), 7);
+    }
+
+    #[test]
+    fn static_composition_provider_supplies_values() {
+        thread_local! {
+            static READ_VALUE: Cell<i32> = Cell::new(0);
+        }
+
+        let local_counter = staticCompositionLocalOf(0);
+        let mut composition = Composition::new(MemoryApplier::new());
+
+        #[composable]
+        fn reader(local_counter: CompositionLocal<i32>) {
+            let value = local_counter.current();
+            READ_VALUE.with(|slot| slot.set(value));
+        }
+
+        composition
+            .render(3, || {
+                StaticCompositionProvider(vec![local_counter.provides(11)], || {
+                    reader(local_counter.clone());
+                });
+            })
+            .expect("compose reader");
+
+        assert_eq!(READ_VALUE.with(|slot| slot.get()), 11);
+    }
+
+    #[test]
+    fn static_composition_provider_rejects_dynamic_locals() {
+        let local_counter = compositionLocalOf(|| 0);
+        let mut composition = Composition::new(MemoryApplier::new());
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            composition
+                .render(4, || {
+                    StaticCompositionProvider(vec![local_counter.provides(5)], || {});
+                })
+                .expect("composition should not fail before panic");
+        }));
+
+        // Ensure the panic propagates with the expected message.
+        match result {
+            Err(payload) => {
+                if let Some(message) = payload.downcast_ref::<&str>() {
+                    assert!(message
+                        .contains("StaticCompositionProvider requires static composition locals"));
+                } else if let Some(message) = payload.downcast_ref::<String>() {
+                    assert!(message
+                        .contains("StaticCompositionProvider requires static composition locals"));
+                } else {
+                    panic!("unexpected panic payload type");
+                }
+            }
+            Ok(_) => panic!("expected panic when providing dynamic local"),
+        }
     }
 
     #[test]

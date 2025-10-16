@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -28,6 +28,18 @@ static FONT: Lazy<Font<'static>> = Lazy::new(|| {
     let f = Font::try_from_bytes(include_bytes!("../assets/Roboto-Light.ttf") as &[u8]);
     f.expect("font")
 });
+
+thread_local! {
+    static NEXT_DEMO_TOKEN: Cell<u32> = Cell::new(1);
+}
+
+fn next_demo_token() -> u32 {
+    NEXT_DEMO_TOKEN.with(|cell| {
+        let value = cell.get();
+        cell.set(value.wrapping_add(1));
+        value
+    })
+}
 
 fn main() {
     env_logger::init();
@@ -437,6 +449,13 @@ fn counter_app() {
                 height: 16.0,
             });
 
+            composition_local_demo(counter.clone());
+
+            Spacer(Size {
+                width: 0.0,
+                height: 16.0,
+            });
+
             // Intrinsics demonstration: Equal-width buttons
             Text(
                 "Intrinsic Sizing Demo (Equal Width):",
@@ -469,7 +488,13 @@ fn counter_app() {
                             .then(Modifier::padding(10.0)),
                         || {},
                         || {
-                            Text("OK", Modifier::padding(4.0).then(Modifier::size(Size { width: 50.0, height:50.0})));
+                            Text(
+                                "OK",
+                                Modifier::padding(4.0).then(Modifier::size(Size {
+                                    width: 50.0,
+                                    height: 50.0,
+                                })),
+                            );
                         },
                     );
                     Spacer(Size {
@@ -564,6 +589,137 @@ fn counter_app() {
                 );
             });
         },
+    );
+}
+
+#[derive(Clone)]
+struct Holder {
+    count: i32,
+}
+
+#[composable]
+fn composition_local_demo(counter: compose_core::MutableState<i32>) {
+    let local_holder =
+        compose_core::remember(|| compose_core::compositionLocalOf(|| Holder { count: 0 }));
+    let local_holder = local_holder.clone();
+    let accent_color = compose_core::remember(|| {
+        compose_core::staticCompositionLocalOf(Color(0.82, 0.58, 0.28, 0.95))
+    });
+    let accent_color = accent_color.clone();
+    let stable_token = *compose_core::remember(next_demo_token);
+
+    Column(
+        Modifier::padding(12.0)
+            .then(Modifier::rounded_corners(16.0))
+            .then(Modifier::background(Color(0.1, 0.1, 0.16, 0.6)))
+            .then(Modifier::padding(12.0)),
+        || {
+            Text(
+                "CompositionLocal Demo",
+                Modifier::padding(6.0)
+                    .then(Modifier::background(Color(0.22, 0.22, 0.28, 0.8)))
+                    .then(Modifier::rounded_corners(10.0)),
+            );
+
+            Spacer(Size {
+                width: 0.0,
+                height: 8.0,
+            });
+
+            Text(
+                format!("Not changing {stable_token}"),
+                Modifier::padding(6.0)
+                    .then(Modifier::background(Color(0.05, 0.05, 0.1, 0.6)))
+                    .then(Modifier::rounded_corners(8.0)),
+            );
+
+            Spacer(Size {
+                width: 0.0,
+                height: 8.0,
+            });
+
+            compose_core::StaticCompositionProvider(
+                vec![accent_color.provides(Color(0.9, 0.66, 0.32, 0.95))],
+                || {
+                    compose_core::LocalCompositionProvider(
+                        vec![local_holder.provides(Holder {
+                            count: counter.get(),
+                        })],
+                        || {
+                            local_holder_section(local_holder.clone(), accent_color.clone());
+                        },
+                    );
+                },
+            );
+        },
+    );
+}
+
+#[composable]
+fn local_holder_section(
+    local_holder: compose_core::CompositionLocal<Holder>,
+    accent_color: compose_core::CompositionLocal<Color>,
+) {
+    Text(
+        format!("I am change! {}", next_demo_token()),
+        Modifier::padding(6.0)
+            .then(Modifier::background(Color(0.0, 0.0, 0.0, 0.35)))
+            .then(Modifier::rounded_corners(8.0)),
+    );
+
+    Spacer(Size {
+        width: 0.0,
+        height: 6.0,
+    });
+
+    Column(
+        Modifier::padding(8.0)
+            .then(Modifier::background(Color(0.14, 0.14, 0.22, 0.7)))
+            .then(Modifier::rounded_corners(12.0))
+            .then(Modifier::padding(8.0)),
+        || {
+            Text(
+                format!(
+                    "I am change! Holder count: {}",
+                    local_holder.current().count
+                ),
+                Modifier::padding(4.0)
+                    .then(Modifier::background(Color(0.08, 0.28, 0.52, 0.55)))
+                    .then(Modifier::rounded_corners(8.0)),
+            );
+
+            Spacer(Size {
+                width: 0.0,
+                height: 4.0,
+            });
+
+            Text(
+                format!("I am change! {}", next_demo_token()),
+                Modifier::padding(4.0)
+                    .then(Modifier::background(Color(0.36, 0.18, 0.48, 0.55)))
+                    .then(Modifier::rounded_corners(8.0)),
+            );
+
+            Spacer(Size {
+                width: 0.0,
+                height: 6.0,
+            });
+
+            local_holder_leaf(accent_color.clone());
+        },
+    );
+}
+
+#[composable]
+fn local_holder_leaf(accent_color: compose_core::CompositionLocal<Color>) {
+    let accent = accent_color.current();
+    let stable_leaf = *compose_core::remember(next_demo_token);
+
+    Text(
+        format!("Not changing {stable_leaf}"),
+        Modifier::padding(6.0)
+            .then(Modifier::background(accent))
+            .then(Modifier::rounded_corners(8.0)),
     );
 }
 
