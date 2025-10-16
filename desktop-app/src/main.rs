@@ -674,13 +674,13 @@ fn combined_app() {
         Modifier::padding(20.0),
         ColumnSpec::default(),
         move || {
-            let show_counter_copy = show_counter.clone();
-            let show_counter = show_counter.clone();
+            let show_counter_for_row = show_counter.clone();
+            let show_counter_for_condition = show_counter.clone();
             Row(
                 Modifier::padding(8.0),
                 RowSpec::default(),
                 move || {
-                    let is_counter = show_counter.get();
+                    let is_counter = show_counter_for_row.get();
                     Button(
                         Modifier::rounded_corners(12.0)
                             .then(Modifier::draw_behind(move |scope| {
@@ -695,10 +695,12 @@ fn combined_app() {
                             }))
                             .then(Modifier::padding(10.0)),
                         {
-                            let show_counter = show_counter.clone();
+                            let show_counter = show_counter_for_row.clone();
                             move || {
                                 println!("Counter App button clicked");
-                                show_counter.set(true)
+                                if !show_counter.get() {
+                                    show_counter.set(true);
+                                }
                             }
                         },
                         || {
@@ -720,10 +722,12 @@ fn combined_app() {
                             }))
                             .then(Modifier::padding(10.0)),
                         {
-                            let show_counter = show_counter.clone();
+                            let show_counter = show_counter_for_row.clone();
                             move || {
                                 println!("Composition Local button clicked");
-                                show_counter.set(false)
+                                if show_counter.get() {
+                                    show_counter.set(false);
+                                }
                             }
                         },
                         || {
@@ -736,7 +740,7 @@ fn combined_app() {
             Spacer(Size { width: 0.0, height: 12.0 });
 
             println!("if recomposed");
-            if show_counter_copy.get() {
+            if show_counter_for_condition.get() {
                 println!("if show counter");
                 counter_app();
             } else {

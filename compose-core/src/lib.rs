@@ -1865,6 +1865,12 @@ impl<'a> Composer<'a> {
                 previous,
                 new_children,
             } = frame;
+            // Debug logging
+            if std::env::var("COMPOSE_DEBUG").is_ok() {
+                eprintln!("pop_parent: node #{}", id);
+                eprintln!("  previous children: {:?}", previous);
+                eprintln!("  new children: {:?}", new_children);
+            }
             if previous != new_children {
                 let mut current = previous.clone();
                 let target = new_children.clone();
