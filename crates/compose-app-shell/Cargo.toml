@@ -6,3 +6,10 @@ license = "MIT"
 description = "Application orchestration shell for Compose-RS"
 
 [dependencies]
+compose-core = { path = "../compose-core" }
+compose-runtime-std = { path = "../compose-runtime-std" }
+compose-render-common = { path = "../compose-render/common" }
+compose-ui = { path = "../compose-ui" }
+compose-ui-graphics = { path = "../compose-ui-graphics" }
+compose-foundation = { path = "../compose-foundation" }
+log = "0.4"

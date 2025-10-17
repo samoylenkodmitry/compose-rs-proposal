@@ -11,6 +11,8 @@ compose-macros = { path = "../compose-macros" }
 compose-runtime-std = { path = "../compose-runtime-std" }
 compose-foundation = { path = "../compose-foundation" }
 compose-ui-layout = { path = "../compose-ui-layout" }
+compose-ui-graphics = { path = "../compose-ui-graphics" }
+compose-render-common = { path = "../compose-render/common" }
 indexmap = "2"
 
 [features]

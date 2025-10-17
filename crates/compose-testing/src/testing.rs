@@ -1,7 +1,11 @@
-use compose_core::{location_key, Composition, Key, MemoryApplier, NodeError, NodeId, RuntimeHandle};
+use compose_core::{
+    location_key, Composition, Key, MemoryApplier, NodeError, NodeId, RuntimeHandle,
+};
 
 #[cfg(test)]
-use compose_core::{pop_parent, push_parent, with_current_composer, with_node_mut, MutableState, Node};
+use compose_core::{
+    pop_parent, push_parent, with_current_composer, with_node_mut, MutableState, Node,
+};
 #[cfg(test)]
 use std::cell::Cell;
 #[cfg(test)]

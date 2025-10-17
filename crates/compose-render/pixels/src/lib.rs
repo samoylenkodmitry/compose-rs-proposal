@@ -1,19 +1,59 @@
-//! Pixels renderer backend placeholder implementation.
+mod draw;
+mod pipeline;
+pub mod scene;
+pub mod style;
 
-use compose_render_common::{DrawCommands, Renderer};
+use compose_core::MemoryApplier;
+use compose_render_common::{RenderScene, Renderer};
+use compose_ui::LayoutBox;
+use compose_ui_graphics::{GraphicsLayer, Size};
 
-/// Stub renderer that will forward drawing commands to the `pixels` crate later on.
-pub struct PixelsRenderer;
+pub use draw::draw_scene;
+pub use scene::{HitRegion, Scene};
+
+#[derive(Debug)]
+pub enum PixelsRendererError {
+    Layout(String),
+}
+
+pub struct PixelsRenderer {
+    scene: Scene,
+}
 
 impl PixelsRenderer {
-    /// Creates a new placeholder `PixelsRenderer`.
     pub fn new() -> Self {
-        Self
+        Self {
+            scene: Scene::new(),
+        }
+    }
+
+    pub fn draw(&self, frame: &mut [u8], width: u32, height: u32) {
+        draw::draw_scene(frame, width, height, &self.scene);
     }
 }
 
 impl Renderer for PixelsRenderer {
-    fn render(&mut self) {
-        let _commands = DrawCommands::default();
+    type Scene = Scene;
+    type Error = PixelsRendererError;
+    type Applier = MemoryApplier;
+    type LayoutRoot = LayoutBox;
+
+    fn scene(&self) -> &Self::Scene {
+        &self.scene
+    }
+
+    fn scene_mut(&mut self) -> &mut Self::Scene {
+        &mut self.scene
+    }
+
+    fn rebuild_scene(
+        &mut self,
+        applier: &mut Self::Applier,
+        root: &Self::LayoutRoot,
+        _viewport: Size,
+    ) -> Result<(), Self::Error> {
+        self.scene.clear();
+        pipeline::render_layout_node(applier, root, GraphicsLayer::default(), &mut self.scene);
+        Ok(())
     }
 }

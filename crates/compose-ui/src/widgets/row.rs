@@ -2,12 +2,12 @@
 
 #![allow(non_snake_case)]
 
-use compose_core::NodeId;
+use super::layout::Layout;
 use crate::composable;
-use crate::layout::core::{LinearArrangement, VerticalAlignment};
 use crate::layout::policies::RowMeasurePolicy;
 use crate::modifier::Modifier;
-use super::layout::Layout;
+use compose_core::NodeId;
+use compose_ui_layout::{LinearArrangement, VerticalAlignment};
 
 /// Specification for Row layout behavior.
 #[derive(Clone, Copy, Debug, PartialEq)]

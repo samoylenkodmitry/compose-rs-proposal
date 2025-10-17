@@ -2,13 +2,13 @@
 
 #![allow(non_snake_case)]
 
-use std::cell::RefCell;
-use std::rc::Rc;
-use compose_core::NodeId;
-use indexmap::IndexSet;
+use super::nodes::ButtonNode;
 use crate::composable;
 use crate::modifier::Modifier;
-use super::nodes::ButtonNode;
+use compose_core::NodeId;
+use indexmap::IndexSet;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 #[composable]
 pub fn Button<F, G>(modifier: Modifier, on_click: F, content: G) -> NodeId

@@ -51,7 +51,8 @@
 use compose_foundation::BasicModifierNodeContext;
 use compose_foundation::{
     DrawModifierNode, LayoutModifierNode, Measurable, MeasureResult, ModifierElement, ModifierNode,
-    ModifierNodeContext, NodeCapabilities, PointerInputNode,
+    ModifierNodeContext, NodeCapabilities, PointerButton, PointerButtons, PointerEvent,
+    PointerEventKind, PointerInputNode, PointerPhase,
 };
 use std::rc::Rc;
 
@@ -384,11 +385,10 @@ impl PointerInputNode for ClickableNode {
         _context: &mut dyn ModifierNodeContext,
         event: &compose_foundation::PointerEvent,
     ) -> bool {
-        if event.pressed {
-            // Convert to UI Point type
+        if matches!(event.kind, compose_foundation::PointerEventKind::Down) {
             let point = Point {
-                x: event.x,
-                y: event.y,
+                x: event.position.x,
+                y: event.position.y,
             };
             (self.on_click)(point);
             true
@@ -691,15 +691,19 @@ mod tests {
         }))];
         chain.update_from_slice(&elements, &mut context);
 
-        assert!(chain
-            .has_nodes_for_invalidation(compose_foundation::InvalidationKind::PointerInput));
+        assert!(
+            chain.has_nodes_for_invalidation(compose_foundation::InvalidationKind::PointerInput)
+        );
 
         // Simulate a pointer event
         let node = chain.node_mut::<ClickableNode>(0).unwrap();
-        let event = compose_foundation::PointerEvent {
-            x: 10.0,
-            y: 20.0,
-            pressed: true,
+        let event = PointerEvent {
+            id: 0,
+            kind: PointerEventKind::Down,
+            phase: PointerPhase::Start,
+            position: Point { x: 10.0, y: 20.0 },
+            global_position: Point { x: 10.0, y: 20.0 },
+            buttons: PointerButtons::new().with(PointerButton::Primary),
         };
 
         let consumed = node.on_pointer_event(&mut context, &event);
@@ -763,8 +767,9 @@ mod tests {
         assert_eq!(chain.len(), 4);
         assert!(chain.has_nodes_for_invalidation(compose_foundation::InvalidationKind::Layout));
         assert!(chain.has_nodes_for_invalidation(compose_foundation::InvalidationKind::Draw));
-        assert!(chain
-            .has_nodes_for_invalidation(compose_foundation::InvalidationKind::PointerInput));
+        assert!(
+            chain.has_nodes_for_invalidation(compose_foundation::InvalidationKind::PointerInput)
+        );
 
         // Verify correct node counts by type
         assert_eq!(chain.layout_nodes().count(), 1); // padding

@@ -10,6 +10,8 @@
 use std::any::{type_name, Any, TypeId};
 use std::fmt;
 
+use crate::nodes::input::types::PointerEvent;
+
 /// Identifies which part of the rendering pipeline should be invalidated
 /// after a modifier node changes state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -229,14 +231,6 @@ pub trait Measurable {
 /// Drawing scope for draw operations.
 pub trait DrawScope {
     fn draw_content(&mut self);
-}
-
-/// Pointer event information.
-#[derive(Clone, Debug)]
-pub struct PointerEvent {
-    pub x: f32,
-    pub y: f32,
-    pub pressed: bool,
 }
 
 /// Semantics configuration for accessibility.
