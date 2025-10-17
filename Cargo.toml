@@ -1,5 +1,7 @@
 [workspace]
 members = [
+    "crates/compose-app-shell",
+    "crates/compose-assets",
     "crates/compose-core",
     "crates/compose-macros",
     "crates/compose-runtime-std",
@@ -9,6 +11,10 @@ members = [
     "crates/compose-animation",
     "crates/compose-ui",
     "crates/compose-testing",
+    "crates/compose-platform/desktop-winit",
+    "crates/compose-render/common",
+    "crates/compose-render/pixels",
+    "crates/compose-render/wgpu",
     "apps/desktop-demo",
 ]
 resolver = "2"

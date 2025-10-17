@@ -1,0 +1,8 @@
+[package]
+name = "compose-platform-desktop-winit"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Desktop winit platform adapter for Compose-RS"
+
+[dependencies]
