@@ -317,7 +317,8 @@ impl<T: Lerp + Clone + 'static> Animatable<T> {
                         let animation_elapsed = elapsed_nanos - delay_nanos;
                         let duration_nanos = spec.duration_millis * 1_000_000;
                         let duration_nanos = duration_nanos.max(1);
-                        let linear_progress = (animation_elapsed as f32 / duration_nanos as f32).clamp(0.0, 1.0);
+                        let linear_progress =
+                            (animation_elapsed as f32 / duration_nanos as f32).clamp(0.0, 1.0);
                         let progress = spec.easing.transform(linear_progress);
 
                         let new_value = inner.start.lerp(&inner.target, progress);
@@ -360,7 +361,8 @@ impl<T: Lerp + Clone + 'static> Animatable<T> {
                             // Spring force: F = -k * displacement - damping * velocity
                             // For interpolation between start and target:
                             // We treat position as progress from 0 to 1
-                            let current_progress = if let Some(start_val) = try_as_f32(&inner.start) {
+                            let current_progress = if let Some(start_val) = try_as_f32(&inner.start)
+                            {
                                 if let Some(target_val) = try_as_f32(&inner.target) {
                                     if let Some(current_val) = try_as_f32(&inner.current) {
                                         if (target_val - start_val).abs() < f32::EPSILON {
@@ -386,7 +388,9 @@ impl<T: Lerp + Clone + 'static> Animatable<T> {
                             let new_progress = current_progress + inner.velocity * step;
 
                             // Update current value
-                            inner.current = inner.start.lerp(&inner.target, new_progress.clamp(0.0, 2.0));
+                            inner.current = inner
+                                .start
+                                .lerp(&inner.target, new_progress.clamp(0.0, 2.0));
 
                             prev_time += step;
                         }
@@ -457,8 +461,16 @@ mod tests {
         for easing in easings {
             let start = easing.transform(0.0);
             let end = easing.transform(1.0);
-            assert!((start - 0.0).abs() < 0.01, "Start should be ~0 for {:?}", easing);
-            assert!((end - 1.0).abs() < 0.01, "End should be ~1 for {:?}", easing);
+            assert!(
+                (start - 0.0).abs() < 0.01,
+                "Start should be ~0 for {:?}",
+                easing
+            );
+            assert!(
+                (end - 1.0).abs() < 0.01,
+                "End should be ~1 for {:?}",
+                easing
+            );
         }
     }
 
@@ -480,7 +492,10 @@ mod tests {
     fn spring_spec_bouncy_has_low_damping() {
         let spec = SpringSpec::bouncy();
         assert_eq!(spec.damping_ratio, 0.5);
-        assert!(spec.damping_ratio < 1.0, "Bouncy spring should be under-damped");
+        assert!(
+            spec.damping_ratio < 1.0,
+            "Bouncy spring should be under-damped"
+        );
     }
 
     #[test]

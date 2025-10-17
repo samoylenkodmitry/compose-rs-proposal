@@ -38,12 +38,7 @@ fn log_layout_box(layout_box: &LayoutBox, depth: usize) {
 
     println!(
         "{}[Node #{}] pos: ({:.1}, {:.1}), size: ({:.1}x{:.1})",
-        indent,
-        layout_box.node_id,
-        rect.x,
-        rect.y,
-        rect.width,
-        rect.height
+        indent, layout_box.node_id, rect.x, rect.y, rect.width, rect.height
     );
 
     for child in &layout_box.children {
@@ -99,13 +94,9 @@ fn format_layout_box(output: &mut String, layout_box: &LayoutBox, depth: usize) 
     writeln!(
         output,
         "{}[Node #{}] pos: ({:.1}, {:.1}), size: ({:.1}x{:.1})",
-        indent,
-        layout_box.node_id,
-        rect.x,
-        rect.y,
-        rect.width,
-        rect.height
-    ).ok();
+        indent, layout_box.node_id, rect.x, rect.y, rect.width, rect.height
+    )
+    .ok();
 
     for child in &layout_box.children {
         format_layout_box(output, child, depth + 1);
@@ -129,7 +120,8 @@ pub fn format_render_scene(scene: &RenderScene) -> String {
                     output,
                     "[{}] Node #{} - Layer: {:?}, Primitive: {:?}",
                     idx, node_id, layer, primitive
-                ).ok();
+                )
+                .ok();
             }
             RenderOp::Text {
                 node_id,
@@ -140,7 +132,8 @@ pub fn format_render_scene(scene: &RenderScene) -> String {
                     output,
                     "[{}] Node #{} - Text at ({:.1}, {:.1}): \"{}\"",
                     idx, node_id, rect.x, rect.y, value
-                ).ok();
+                )
+                .ok();
             }
         }
     }

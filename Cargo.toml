@@ -1,9 +1,9 @@
 [workspace]
 members = [
-    "compose-core",
-    "compose-macros",
-    "compose-runtime-std",
-    "compose-ui",
-    "desktop-app",
+    "crates/compose-core",
+    "crates/compose-macros",
+    "crates/compose-runtime-std",
+    "crates/compose-ui",
+    "apps/desktop-demo",
 ]
 resolver = "2"

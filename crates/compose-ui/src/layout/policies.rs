@@ -483,8 +483,10 @@ mod tests {
 
     #[test]
     fn row_measure_policy_sums_widths() {
-        let policy =
-            RowMeasurePolicy::new(LinearArrangement::Start, VerticalAlignment::CenterVertically);
+        let policy = RowMeasurePolicy::new(
+            LinearArrangement::Start,
+            VerticalAlignment::CenterVertically,
+        );
         let measurables: Vec<Box<dyn Measurable>> = vec![
             Box::new(MockMeasurable::new(40.0, 20.0, 1)),
             Box::new(MockMeasurable::new(60.0, 30.0, 2)),

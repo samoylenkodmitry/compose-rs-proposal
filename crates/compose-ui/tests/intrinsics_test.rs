@@ -87,18 +87,30 @@ fn row_with_intrinsic_height() {
                 .then(Modifier::background(Color(0.8, 0.8, 0.8, 1.0))),
             RowSpec::default(),
             || {
-                Box(Modifier::size(Size {
-                    width: 50.0,
-                    height: 30.0,
-                }), BoxSpec::default(), || {});
-                Box(Modifier::size(Size {
-                    width: 50.0,
-                    height: 80.0,
-                }), BoxSpec::default(), || {});
-                Box(Modifier::size(Size {
-                    width: 50.0,
-                    height: 50.0,
-                }), BoxSpec::default(), || {});
+                Box(
+                    Modifier::size(Size {
+                        width: 50.0,
+                        height: 30.0,
+                    }),
+                    BoxSpec::default(),
+                    || {},
+                );
+                Box(
+                    Modifier::size(Size {
+                        width: 50.0,
+                        height: 80.0,
+                    }),
+                    BoxSpec::default(),
+                    || {},
+                );
+                Box(
+                    Modifier::size(Size {
+                        width: 50.0,
+                        height: 50.0,
+                    }),
+                    BoxSpec::default(),
+                    || {},
+                );
             },
         );
     });
@@ -110,15 +122,23 @@ fn row_with_intrinsic_height() {
 fn min_intrinsic_vs_max_intrinsic() {
     // Demonstrate the difference between Min and Max intrinsic sizes
     let comp_min = run_test_composition(|| {
-        Column(Modifier::width_intrinsic(IntrinsicSize::Min), ColumnSpec::default(), || {
-            Text("Content", Modifier::empty());
-        });
+        Column(
+            Modifier::width_intrinsic(IntrinsicSize::Min),
+            ColumnSpec::default(),
+            || {
+                Text("Content", Modifier::empty());
+            },
+        );
     });
 
     let comp_max = run_test_composition(|| {
-        Column(Modifier::width_intrinsic(IntrinsicSize::Max), ColumnSpec::default(), || {
-            Text("Content", Modifier::empty());
-        });
+        Column(
+            Modifier::width_intrinsic(IntrinsicSize::Max),
+            ColumnSpec::default(),
+            || {
+                Text("Content", Modifier::empty());
+            },
+        );
     });
 
     assert!(comp_min.root().is_some());
@@ -149,14 +169,22 @@ fn nested_intrinsic_sizing() {
     // Test nested layouts with intrinsic sizing
     let composition = run_test_composition(|| {
         Column(Modifier::empty(), ColumnSpec::default(), || {
-            Row(Modifier::width_intrinsic(IntrinsicSize::Max), RowSpec::default(), || {
-                Text("Left", Modifier::empty());
-                Text("Right", Modifier::empty());
-            });
-            Row(Modifier::width_intrinsic(IntrinsicSize::Max), RowSpec::default(), || {
-                Text("A", Modifier::empty());
-                Text("B", Modifier::empty());
-            });
+            Row(
+                Modifier::width_intrinsic(IntrinsicSize::Max),
+                RowSpec::default(),
+                || {
+                    Text("Left", Modifier::empty());
+                    Text("Right", Modifier::empty());
+                },
+            );
+            Row(
+                Modifier::width_intrinsic(IntrinsicSize::Max),
+                RowSpec::default(),
+                || {
+                    Text("A", Modifier::empty());
+                    Text("B", Modifier::empty());
+                },
+            );
         });
     });
 

@@ -3,15 +3,15 @@
 
 # Compose-RS Proposal
 
-Compose-RS is an experimental Rust workspace that sketches out a Jetpack Compose–inspired declarative UI framework. The repository accompanies the architectural proposal documented in [`proposal.md`](proposal.md) and provides crate scaffolding for the core runtime, procedural macros, UI primitives, and example applications.
+Compose-RS is an experimental Rust workspace that sketches out a Jetpack Compose–inspired declarative UI framework. The repository accompanies the architectural proposal documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and provides crate scaffolding for the core runtime, procedural macros, UI primitives, and example applications.
 
 ## Workspace layout
 
-- **`compose-core/`** – Core runtime with slot table, composer, state management, side effects, and frame clock.
-- **`compose-macros/`** – Procedural macro crate providing the `#[composable]` attribute.
-- **`compose-runtime-std/`** – Standard runtime scheduler implementation with frame callbacks.
-- **`compose-ui/`** – Declarative UI primitives (Column, Row, Box, Text), layout system with intrinsics, and modifier infrastructure.
-- **`desktop-app/`** – Working desktop demo with winit + pixels renderer showcasing interactive UI.
+- **`crates/compose-core/`** – Core runtime with slot table, composer, state management, side effects, and frame clock.
+- **`crates/compose-macros/`** – Procedural macro crate providing the `#[composable]` attribute.
+- **`crates/compose-runtime-std/`** – Standard runtime scheduler implementation with frame callbacks.
+- **`crates/compose-ui/`** – Declarative UI primitives (Column, Row, Box, Text), layout system with intrinsics, and modifier infrastructure.
+- **`apps/desktop-demo/`** – Working desktop demo with winit + pixels renderer showcasing interactive UI.
 
 ## Current Status
 
@@ -50,7 +50,7 @@ cargo run --example test_cleanup
 
 ## Roadmap
 
-See [`ROADMAP.md`](ROADMAP.md) for detailed progress tracking, implementation status, and upcoming milestones. Also see [`proposal.md`](proposal.md) for the original design goals and architecture.
+See [`docs/ROADMAP.md`](docs/ROADMAP.md) for detailed progress tracking, implementation status, and upcoming milestones. Also see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the original design goals and architecture.
 
 ## Contributing
 

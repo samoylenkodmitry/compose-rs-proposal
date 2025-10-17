@@ -263,7 +263,6 @@ struct MeasuredChild {
     offset: Point,
 }
 
-
 struct ChildRecord {
     measured: Rc<RefCell<Option<MeasuredNode>>>,
     last_position: Rc<RefCell<Option<Point>>>,

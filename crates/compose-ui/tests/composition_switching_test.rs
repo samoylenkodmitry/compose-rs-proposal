@@ -13,29 +13,25 @@ fn counter_view(counter: MutableState<i32>, render_count: MutableState<i32>) {
     // Track render count
     render_count.set(render_count.get() + 1);
 
-    Column(
-        Modifier::padding(20.0),
-        ColumnSpec::default(),
-        move || {
-            Text(
-                format!("Counter: {}", counter.get()),
-                Modifier::padding(8.0),
-            );
+    Column(Modifier::padding(20.0), ColumnSpec::default(), move || {
+        Text(
+            format!("Counter: {}", counter.get()),
+            Modifier::padding(8.0),
+        );
 
-            Button(
-                Modifier::padding(10.0),
-                {
-                    let counter = counter.clone();
-                    move || {
-                        counter.set(counter.get() + 1);
-                    }
-                },
-                || {
-                    Text("Increment", Modifier::padding(4.0));
-                },
-            );
-        },
-    );
+        Button(
+            Modifier::padding(10.0),
+            {
+                let counter = counter.clone();
+                move || {
+                    counter.set(counter.get() + 1);
+                }
+            },
+            || {
+                Text("Increment", Modifier::padding(4.0));
+            },
+        );
+    });
 }
 
 /// Helper for an alternative view
@@ -44,29 +40,25 @@ fn alternative_view(counter: MutableState<i32>, render_count: MutableState<i32>)
     // Track render count
     render_count.set(render_count.get() + 1);
 
-    Column(
-        Modifier::padding(20.0),
-        ColumnSpec::default(),
-        move || {
-            Text(
-                format!("Alternative: {}", counter.get()),
-                Modifier::padding(8.0),
-            );
+    Column(Modifier::padding(20.0), ColumnSpec::default(), move || {
+        Text(
+            format!("Alternative: {}", counter.get()),
+            Modifier::padding(8.0),
+        );
 
-            Button(
-                Modifier::padding(10.0),
-                {
-                    let counter = counter.clone();
-                    move || {
-                        counter.set(counter.get() + 1);
-                    }
-                },
-                || {
-                    Text("Add", Modifier::padding(4.0));
-                },
-            );
-        },
-    );
+        Button(
+            Modifier::padding(10.0),
+            {
+                let counter = counter.clone();
+                move || {
+                    counter.set(counter.get() + 1);
+                }
+            },
+            || {
+                Text("Add", Modifier::padding(4.0));
+            },
+        );
+    });
 }
 
 /// Combined app that switches between views
@@ -78,63 +70,61 @@ fn combined_switching_app(
     render_count1: MutableState<i32>,
     render_count2: MutableState<i32>,
 ) {
-    Column(
-        Modifier::padding(20.0),
-        ColumnSpec::default(),
-        move || {
-            let show_counter_inner = show_counter.clone();
-            let show_counter_for_button1 = show_counter.clone();
-            let show_counter_for_button2 = show_counter.clone();
-            let counter1_inner = counter1.clone();
-            let counter2_inner = counter2.clone();
-            let render_count1_inner = render_count1.clone();
-            let render_count2_inner = render_count2.clone();
+    Column(Modifier::padding(20.0), ColumnSpec::default(), move || {
+        let show_counter_inner = show_counter.clone();
+        let show_counter_for_button1 = show_counter.clone();
+        let show_counter_for_button2 = show_counter.clone();
+        let counter1_inner = counter1.clone();
+        let counter2_inner = counter2.clone();
+        let render_count1_inner = render_count1.clone();
+        let render_count2_inner = render_count2.clone();
 
-            // Switch buttons
-            Row(
-                Modifier::padding(8.0),
-                RowSpec::default(),
-                move || {
-                    Button(
-                        Modifier::padding(10.0),
-                        {
-                            let show_counter = show_counter_for_button1.clone();
-                            move || {
-                                show_counter.set(true);
-                            }
-                        },
-                        || {
-                            Text("Counter View", Modifier::padding(4.0));
-                        },
-                    );
-
-                    Spacer(Size { width: 8.0, height: 0.0 });
-
-                    Button(
-                        Modifier::padding(10.0),
-                        {
-                            let show_counter = show_counter_for_button2.clone();
-                            move || {
-                                show_counter.set(false);
-                            }
-                        },
-                        || {
-                            Text("Alternative View", Modifier::padding(4.0));
-                        },
-                    );
+        // Switch buttons
+        Row(Modifier::padding(8.0), RowSpec::default(), move || {
+            Button(
+                Modifier::padding(10.0),
+                {
+                    let show_counter = show_counter_for_button1.clone();
+                    move || {
+                        show_counter.set(true);
+                    }
+                },
+                || {
+                    Text("Counter View", Modifier::padding(4.0));
                 },
             );
 
-            Spacer(Size { width: 0.0, height: 12.0 });
+            Spacer(Size {
+                width: 8.0,
+                height: 0.0,
+            });
 
-            // Conditionally show one view or the other
-            if show_counter_inner.get() {
-                counter_view(counter1_inner.clone(), render_count1_inner.clone());
-            } else {
-                alternative_view(counter2_inner.clone(), render_count2_inner.clone());
-            }
-        },
-    );
+            Button(
+                Modifier::padding(10.0),
+                {
+                    let show_counter = show_counter_for_button2.clone();
+                    move || {
+                        show_counter.set(false);
+                    }
+                },
+                || {
+                    Text("Alternative View", Modifier::padding(4.0));
+                },
+            );
+        });
+
+        Spacer(Size {
+            width: 0.0,
+            height: 12.0,
+        });
+
+        // Conditionally show one view or the other
+        if show_counter_inner.get() {
+            counter_view(counter1_inner.clone(), render_count1_inner.clone());
+        } else {
+            alternative_view(counter2_inner.clone(), render_count2_inner.clone());
+        }
+    });
 }
 
 #[test]
@@ -170,8 +160,16 @@ fn test_switching_between_views_doesnt_duplicate_content() {
     let initial_node_count = rule.applier_mut().len();
     println!("Initial node count: {}", initial_node_count);
     println!("Counter view render count: {}", render_count1.get());
-    assert_eq!(render_count1.get(), 1, "Counter view should render once initially");
-    assert_eq!(render_count2.get(), 0, "Alternative view should not render initially");
+    assert_eq!(
+        render_count1.get(),
+        1,
+        "Counter view should render once initially"
+    );
+    assert_eq!(
+        render_count2.get(),
+        0,
+        "Alternative view should not render initially"
+    );
 
     // Switch to alternative view
     show_counter.set(false);
@@ -180,32 +178,53 @@ fn test_switching_between_views_doesnt_duplicate_content() {
     let after_switch_node_count = rule.applier_mut().len();
     println!("After switch node count: {}", after_switch_node_count);
     println!("Alternative view render count: {}", render_count2.get());
-    assert_eq!(render_count1.get(), 1, "Counter view should still have 1 render");
-    assert_eq!(render_count2.get(), 1, "Alternative view should render once");
+    assert_eq!(
+        render_count1.get(),
+        1,
+        "Counter view should still have 1 render"
+    );
+    assert_eq!(
+        render_count2.get(),
+        1,
+        "Alternative view should render once"
+    );
 
     // Switch back to counter view
     show_counter.set(true);
-    rule.pump_until_idle().expect("recompose after switching back");
+    rule.pump_until_idle()
+        .expect("recompose after switching back");
 
     let after_switch_back_node_count = rule.applier_mut().len();
-    println!("After switch back node count: {}", after_switch_back_node_count);
-    println!("Counter view render count after switch back: {}", render_count1.get());
+    println!(
+        "After switch back node count: {}",
+        after_switch_back_node_count
+    );
+    println!(
+        "Counter view render count after switch back: {}",
+        render_count1.get()
+    );
 
     // The bug: if content is being duplicated, node count will grow
     assert_eq!(
         after_switch_back_node_count, initial_node_count,
         "Node count should return to initial value after switching back"
     );
-    assert_eq!(render_count1.get(), 2, "Counter view should render twice total");
+    assert_eq!(
+        render_count1.get(),
+        2,
+        "Counter view should render twice total"
+    );
 
     // Click increment button twice in counter view
     counter1.set(1);
-    rule.pump_until_idle().expect("recompose after first increment");
+    rule.pump_until_idle()
+        .expect("recompose after first increment");
     let after_first_click = rule.applier_mut().len();
     println!("After first increment node count: {}", after_first_click);
 
     counter1.set(2);
-    rule.pump_until_idle().expect("recompose after second increment");
+    rule.pump_until_idle()
+        .expect("recompose after second increment");
     let after_second_click = rule.applier_mut().len();
     println!("After second increment node count: {}", after_second_click);
 
@@ -221,7 +240,8 @@ fn test_switching_between_views_doesnt_duplicate_content() {
 
     // Switch to alternative view again
     show_counter.set(false);
-    rule.pump_until_idle().expect("recompose after switching to alternative");
+    rule.pump_until_idle()
+        .expect("recompose after switching to alternative");
     let after_second_switch = rule.applier_mut().len();
     println!("After second switch node count: {}", after_second_switch);
 
@@ -269,22 +289,18 @@ fn test_node_cleanup_on_view_switch() {
         let show_first = show_first.clone();
         move || {
             let show_first_inner = show_first.clone();
-            Column(
-                Modifier::padding(20.0),
-                ColumnSpec::default(),
-                move || {
-                    if show_first_inner.get() {
-                        // First view with 3 text nodes
-                        Text("First A", Modifier::empty());
-                        Text("First B", Modifier::empty());
-                        Text("First C", Modifier::empty());
-                    } else {
-                        // Second view with 2 text nodes
-                        Text("Second A", Modifier::empty());
-                        Text("Second B", Modifier::empty());
-                    }
-                },
-            );
+            Column(Modifier::padding(20.0), ColumnSpec::default(), move || {
+                if show_first_inner.get() {
+                    // First view with 3 text nodes
+                    Text("First A", Modifier::empty());
+                    Text("First B", Modifier::empty());
+                    Text("First C", Modifier::empty());
+                } else {
+                    // Second view with 2 text nodes
+                    Text("Second A", Modifier::empty());
+                    Text("Second B", Modifier::empty());
+                }
+            });
         }
     })
     .expect("initial render succeeds");
@@ -308,7 +324,10 @@ fn test_node_cleanup_on_view_switch() {
     rule.pump_until_idle().expect("recompose after switch back");
 
     let after_switch_back = rule.applier_mut().len();
-    println!("Node count after switch back (first view): {}", after_switch_back);
+    println!(
+        "Node count after switch back (first view): {}",
+        after_switch_back
+    );
     assert_eq!(
         after_switch_back, initial_count,
         "Should return to initial node count"
@@ -346,37 +365,39 @@ fn test_multiple_switches_with_state_changes() {
             let show_view_a_inner = show_view_a.clone();
             let counter_a_inner = counter_a.clone();
             let counter_b_inner = counter_b.clone();
-            Column(
-                Modifier::empty(),
-                ColumnSpec::default(),
-                move || {
-                    if show_view_a_inner.get() {
-                        Text(format!("View A: {}", counter_a_inner.get()), Modifier::empty());
-                        Button(
-                            Modifier::empty(),
-                            {
-                                let counter_a = counter_a_inner.clone();
-                                move || counter_a.set(counter_a.get() + 1)
-                            },
-                            || {
-                                Text("Increment A", Modifier::empty());
-                            },
-                        );
-                    } else {
-                        Text(format!("View B: {}", counter_b_inner.get()), Modifier::empty());
-                        Button(
-                            Modifier::empty(),
-                            {
-                                let counter_b = counter_b_inner.clone();
-                                move || counter_b.set(counter_b.get() + 1)
-                            },
-                            || {
-                                Text("Increment B", Modifier::empty());
-                            },
-                        );
-                    }
-                },
-            );
+            Column(Modifier::empty(), ColumnSpec::default(), move || {
+                if show_view_a_inner.get() {
+                    Text(
+                        format!("View A: {}", counter_a_inner.get()),
+                        Modifier::empty(),
+                    );
+                    Button(
+                        Modifier::empty(),
+                        {
+                            let counter_a = counter_a_inner.clone();
+                            move || counter_a.set(counter_a.get() + 1)
+                        },
+                        || {
+                            Text("Increment A", Modifier::empty());
+                        },
+                    );
+                } else {
+                    Text(
+                        format!("View B: {}", counter_b_inner.get()),
+                        Modifier::empty(),
+                    );
+                    Button(
+                        Modifier::empty(),
+                        {
+                            let counter_b = counter_b_inner.clone();
+                            move || counter_b.set(counter_b.get() + 1)
+                        },
+                        || {
+                            Text("Increment B", Modifier::empty());
+                        },
+                    );
+                }
+            });
         }
     })
     .expect("initial render succeeds");
@@ -468,29 +489,21 @@ fn test_deeply_nested_conditional_switching() {
         move || {
             let show_outer_inner = show_outer.clone();
             let show_inner_inner = show_inner.clone();
-            Column(
-                Modifier::empty(),
-                ColumnSpec::default(),
-                move || {
-                    if show_outer_inner.get() {
-                        let show_inner_for_column = show_inner_inner.clone();
-                        Column(
-                            Modifier::empty(),
-                            ColumnSpec::default(),
-                            move || {
-                                if show_inner_for_column.get() {
-                                    Text("Outer A, Inner A", Modifier::empty());
-                                    Text("Nested content A", Modifier::empty());
-                                } else {
-                                    Text("Outer A, Inner B", Modifier::empty());
-                                }
-                            },
-                        );
-                    } else {
-                        Text("Outer B", Modifier::empty());
-                    }
-                },
-            );
+            Column(Modifier::empty(), ColumnSpec::default(), move || {
+                if show_outer_inner.get() {
+                    let show_inner_for_column = show_inner_inner.clone();
+                    Column(Modifier::empty(), ColumnSpec::default(), move || {
+                        if show_inner_for_column.get() {
+                            Text("Outer A, Inner A", Modifier::empty());
+                            Text("Nested content A", Modifier::empty());
+                        } else {
+                            Text("Outer A, Inner B", Modifier::empty());
+                        }
+                    });
+                } else {
+                    Text("Outer B", Modifier::empty());
+                }
+            });
         }
     })
     .expect("initial render succeeds");
@@ -503,7 +516,10 @@ fn test_deeply_nested_conditional_switching() {
     show_inner.set(false);
     rule.pump_until_idle().expect("switch inner");
     let after_inner_switch = rule.applier_mut().len();
-    assert_eq!(after_inner_switch, 3, "Should have fewer nodes after inner switch");
+    assert_eq!(
+        after_inner_switch, 3,
+        "Should have fewer nodes after inner switch"
+    );
 
     // Switch outer: outer=false -> 1 root + 1 text = 2
     show_outer.set(false);
@@ -530,37 +546,29 @@ fn test_switching_with_different_node_counts() {
         let view_type = view_type.clone();
         move || {
             let view_type_inner = view_type.clone();
-            Column(
-                Modifier::empty(),
-                ColumnSpec::default(),
-                move || {
-                    match view_type_inner.get() {
-                        0 => {
-                            // View with 1 node
-                            Text("Single", Modifier::empty());
-                        }
-                        1 => {
-                            // View with 3 nodes
-                            Text("Triple 1", Modifier::empty());
-                            Text("Triple 2", Modifier::empty());
-                            Text("Triple 3", Modifier::empty());
-                        }
-                        2 => {
-                            // View with 5 nodes including nested structure
-                            Column(
-                                Modifier::empty(),
-                                ColumnSpec::default(),
-                                || {
-                                    Text("Nested 1", Modifier::empty());
-                                    Text("Nested 2", Modifier::empty());
-                                },
-                            );
-                            Text("Extra", Modifier::empty());
-                        }
-                        _ => {}
+            Column(Modifier::empty(), ColumnSpec::default(), move || {
+                match view_type_inner.get() {
+                    0 => {
+                        // View with 1 node
+                        Text("Single", Modifier::empty());
                     }
-                },
-            );
+                    1 => {
+                        // View with 3 nodes
+                        Text("Triple 1", Modifier::empty());
+                        Text("Triple 2", Modifier::empty());
+                        Text("Triple 3", Modifier::empty());
+                    }
+                    2 => {
+                        // View with 5 nodes including nested structure
+                        Column(Modifier::empty(), ColumnSpec::default(), || {
+                            Text("Nested 1", Modifier::empty());
+                            Text("Nested 2", Modifier::empty());
+                        });
+                        Text("Extra", Modifier::empty());
+                    }
+                    _ => {}
+                }
+            });
         }
     })
     .expect("initial render succeeds");
@@ -617,58 +625,50 @@ fn test_conditional_with_complex_button_structure() {
         move || {
             let show_first_inner = show_first.clone();
             let counter_inner = counter.clone();
-            Column(
-                Modifier::empty(),
-                ColumnSpec::default(),
-                move || {
-                    if show_first_inner.get() {
-                        // Complex structure with nested buttons
-                        Column(
-                            Modifier::empty(),
-                            ColumnSpec::default(),
-                            {
-                                let counter = counter_inner.clone();
-                                move || {
-                                    Text("First View", Modifier::empty());
-                                    Button(
-                                        Modifier::empty(),
-                                        {
-                                            let counter = counter.clone();
-                                            move || counter.set(counter.get() + 1)
-                                        },
-                                        || {
-                                            Text("Button 1", Modifier::empty());
-                                        },
-                                    );
-                                    Button(
-                                        Modifier::empty(),
-                                        {
-                                            let counter = counter.clone();
-                                            move || counter.set(counter.get() + 10)
-                                        },
-                                        || {
-                                            Text("Button 2", Modifier::empty());
-                                        },
-                                    );
-                                }
-                            },
-                        );
-                    } else {
-                        // Different structure
-                        Text("Second View", Modifier::empty());
-                        Button(
-                            Modifier::empty(),
-                            {
-                                let counter = counter_inner.clone();
-                                move || counter.set(counter.get() - 1)
-                            },
-                            || {
-                                Text("Decrement", Modifier::empty());
-                            },
-                        );
-                    }
-                },
-            );
+            Column(Modifier::empty(), ColumnSpec::default(), move || {
+                if show_first_inner.get() {
+                    // Complex structure with nested buttons
+                    Column(Modifier::empty(), ColumnSpec::default(), {
+                        let counter = counter_inner.clone();
+                        move || {
+                            Text("First View", Modifier::empty());
+                            Button(
+                                Modifier::empty(),
+                                {
+                                    let counter = counter.clone();
+                                    move || counter.set(counter.get() + 1)
+                                },
+                                || {
+                                    Text("Button 1", Modifier::empty());
+                                },
+                            );
+                            Button(
+                                Modifier::empty(),
+                                {
+                                    let counter = counter.clone();
+                                    move || counter.set(counter.get() + 10)
+                                },
+                                || {
+                                    Text("Button 2", Modifier::empty());
+                                },
+                            );
+                        }
+                    });
+                } else {
+                    // Different structure
+                    Text("Second View", Modifier::empty());
+                    Button(
+                        Modifier::empty(),
+                        {
+                            let counter = counter_inner.clone();
+                            move || counter.set(counter.get() - 1)
+                        },
+                        || {
+                            Text("Decrement", Modifier::empty());
+                        },
+                    );
+                }
+            });
         }
     })
     .expect("initial render succeeds");
@@ -682,7 +682,11 @@ fn test_conditional_with_complex_button_structure() {
     // Interact with first view
     counter.set(5);
     rule.pump_until_idle().expect("update counter");
-    assert_eq!(rule.applier_mut().len(), initial, "Node count stable after state change");
+    assert_eq!(
+        rule.applier_mut().len(),
+        initial,
+        "Node count stable after state change"
+    );
 
     // Switch to second view: 1 root + 1 text + 1 button (with 1 text child) = 4
     show_first.set(false);
@@ -692,14 +696,22 @@ fn test_conditional_with_complex_button_structure() {
 
     // Interact with second view
     counter.set(3);
-    rule.pump_until_idle().expect("update counter in second view");
-    assert_eq!(rule.applier_mut().len(), after_switch, "Node count stable in second view");
+    rule.pump_until_idle()
+        .expect("update counter in second view");
+    assert_eq!(
+        rule.applier_mut().len(),
+        after_switch,
+        "Node count stable in second view"
+    );
 
     // Switch back to first view
     show_first.set(true);
     rule.pump_until_idle().expect("switch back to first");
     let restored = rule.applier_mut().len();
-    assert_eq!(restored, initial, "Should restore original complex structure");
+    assert_eq!(
+        restored, initial,
+        "Should restore original complex structure"
+    );
 }
 
 #[test]
@@ -716,62 +728,46 @@ fn test_clicking_same_switch_button_twice_no_duplication() {
         move || {
             let show_counter_copy = show_counter.clone();
             let show_counter_for_button = show_counter.clone();
-            Column(
-                Modifier::empty(),
-                ColumnSpec::default(),
-                move || {
-                    // Row with switching buttons
-                    Row(
-                        Modifier::empty(),
-                        RowSpec::default(),
-                        {
-                            let show_counter = show_counter_for_button.clone();
-                            move || {
-                                let show_counter_for_btn1 = show_counter.clone();
-                                let show_counter_for_btn2 = show_counter.clone();
+            Column(Modifier::empty(), ColumnSpec::default(), move || {
+                // Row with switching buttons
+                Row(Modifier::empty(), RowSpec::default(), {
+                    let show_counter = show_counter_for_button.clone();
+                    move || {
+                        let show_counter_for_btn1 = show_counter.clone();
+                        let show_counter_for_btn2 = show_counter.clone();
 
-                                Button(
-                                    Modifier::empty(),
-                                    move || show_counter_for_btn1.set(true),
-                                    || {
-                                        Text("Counter App", Modifier::empty());
-                                    },
-                                );
-
-                                Button(
-                                    Modifier::empty(),
-                                    move || show_counter_for_btn2.set(false),
-                                    || {
-                                        Text("CompositionLocal Test", Modifier::empty());
-                                    },
-                                );
-                            }
-                        },
-                    );
-
-                    // Conditional content
-                    if show_counter_copy.get() {
-                        Column(
+                        Button(
                             Modifier::empty(),
-                            ColumnSpec::default(),
+                            move || show_counter_for_btn1.set(true),
                             || {
-                                Text("Counter View", Modifier::empty());
-                                Text("Line 2", Modifier::empty());
+                                Text("Counter App", Modifier::empty());
                             },
                         );
-                    } else {
-                        Column(
+
+                        Button(
                             Modifier::empty(),
-                            ColumnSpec::default(),
+                            move || show_counter_for_btn2.set(false),
                             || {
-                                Text("CompositionLocal Subscription Test", Modifier::empty());
-                                Text("Counter: 0", Modifier::empty());
-                                Text("Extra content", Modifier::empty());
+                                Text("CompositionLocal Test", Modifier::empty());
                             },
                         );
                     }
-                },
-            );
+                });
+
+                // Conditional content
+                if show_counter_copy.get() {
+                    Column(Modifier::empty(), ColumnSpec::default(), || {
+                        Text("Counter View", Modifier::empty());
+                        Text("Line 2", Modifier::empty());
+                    });
+                } else {
+                    Column(Modifier::empty(), ColumnSpec::default(), || {
+                        Text("CompositionLocal Subscription Test", Modifier::empty());
+                        Text("Counter: 0", Modifier::empty());
+                        Text("Extra content", Modifier::empty());
+                    });
+                }
+            });
         }
     })
     .expect("initial render succeeds");
@@ -783,17 +779,28 @@ fn test_clicking_same_switch_button_twice_no_duplication() {
 
     // Click "CompositionLocal Test" button once
     show_counter.set(false);
-    rule.pump_until_idle().expect("first switch to composition local");
+    rule.pump_until_idle()
+        .expect("first switch to composition local");
     let after_first_click = rule.applier_mut().len();
-    println!("After first click to CompositionLocal: {}", after_first_click);
+    println!(
+        "After first click to CompositionLocal: {}",
+        after_first_click
+    );
     // Should be: 1 + 1 + 2 + 2 + 1 + 3 = 10
-    assert_eq!(after_first_click, 10, "Node count changes due to different content");
+    assert_eq!(
+        after_first_click, 10,
+        "Node count changes due to different content"
+    );
 
     // Click "CompositionLocal Test" button AGAIN (should be no-op since already showing that view)
     show_counter.set(false);
-    rule.pump_until_idle().expect("second click on composition local");
+    rule.pump_until_idle()
+        .expect("second click on composition local");
     let after_second_click = rule.applier_mut().len();
-    println!("After second click to CompositionLocal: {}", after_second_click);
+    println!(
+        "After second click to CompositionLocal: {}",
+        after_second_click
+    );
     println!("\n=== Tree structure after second click ===");
     println!("{}", rule.dump_tree());
 
@@ -808,13 +815,19 @@ fn test_clicking_same_switch_button_twice_no_duplication() {
     rule.pump_until_idle().expect("switch to counter app");
     let after_switch_to_counter = rule.applier_mut().len();
     println!("After switch to Counter App: {}", after_switch_to_counter);
-    assert_eq!(after_switch_to_counter, initial, "Should return to initial count");
+    assert_eq!(
+        after_switch_to_counter, initial,
+        "Should return to initial count"
+    );
 
     // Click Counter App button again
     show_counter.set(true);
     rule.pump_until_idle().expect("second click on counter app");
     let after_second_counter_click = rule.applier_mut().len();
-    println!("After second click to Counter App: {}", after_second_counter_click);
+    println!(
+        "After second click to Counter App: {}",
+        after_second_counter_click
+    );
     assert_eq!(
         after_second_counter_click, after_switch_to_counter,
         "Clicking Counter App button twice should not duplicate"
@@ -823,41 +836,33 @@ fn test_clicking_same_switch_button_twice_no_duplication() {
 
 #[composable]
 fn composable_view_a() {
-    Column(
-        Modifier::padding(20.0),
-        ColumnSpec::default(),
-        || {
-            Text("View A - Line 1", Modifier::empty());
-            Text("View A - Line 2", Modifier::empty());
-            Button(
-                Modifier::empty(),
-                || {},
-                || {
-                    Text("Button A", Modifier::empty());
-                },
-            );
-        },
-    );
+    Column(Modifier::padding(20.0), ColumnSpec::default(), || {
+        Text("View A - Line 1", Modifier::empty());
+        Text("View A - Line 2", Modifier::empty());
+        Button(
+            Modifier::empty(),
+            || {},
+            || {
+                Text("Button A", Modifier::empty());
+            },
+        );
+    });
 }
 
 #[composable]
 fn composable_view_b() {
-    Column(
-        Modifier::padding(20.0),
-        ColumnSpec::default(),
-        || {
-            Text("View B - Line 1", Modifier::empty());
-            Text("View B - Line 2", Modifier::empty());
-            Text("View B - Line 3", Modifier::empty());
-            Button(
-                Modifier::empty(),
-                || {},
-                || {
-                    Text("Button B", Modifier::empty());
-                },
-            );
-        },
-    );
+    Column(Modifier::padding(20.0), ColumnSpec::default(), || {
+        Text("View B - Line 1", Modifier::empty());
+        Text("View B - Line 2", Modifier::empty());
+        Text("View B - Line 3", Modifier::empty());
+        Button(
+            Modifier::empty(),
+            || {},
+            || {
+                Text("Button B", Modifier::empty());
+            },
+        );
+    });
 }
 
 #[test]
@@ -873,17 +878,13 @@ fn test_switching_between_composable_functions() {
         let show_a = show_a.clone();
         move || {
             let show_a_inner = show_a.clone();
-            Column(
-                Modifier::empty(),
-                ColumnSpec::default(),
-                move || {
-                    if show_a_inner.get() {
-                        composable_view_a();
-                    } else {
-                        composable_view_b();
-                    }
-                },
-            );
+            Column(Modifier::empty(), ColumnSpec::default(), move || {
+                if show_a_inner.get() {
+                    composable_view_a();
+                } else {
+                    composable_view_b();
+                }
+            });
         }
     })
     .expect("initial render succeeds");
@@ -931,9 +932,14 @@ fn test_switching_between_composable_functions() {
     // Rapid switching
     for i in 0..5 {
         show_a.set(i % 2 == 0);
-        rule.pump_until_idle().expect(&format!("rapid switch {}", i));
+        rule.pump_until_idle()
+            .expect(&format!("rapid switch {}", i));
         let count = rule.applier_mut().len();
         let expected = if i % 2 == 0 { 6 } else { 7 };
-        assert_eq!(count, expected, "Rapid switch {} should have correct count", i);
+        assert_eq!(
+            count, expected,
+            "Rapid switch {} should have correct count",
+            i
+        );
     }
 }

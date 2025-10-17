@@ -1,5 +1,5 @@
 use compose_core::{location_key, Composition, MemoryApplier};
-use compose_ui::{composable, Column, ColumnSpec, Modifier, Spacer, Size, Text};
+use compose_ui::{composable, Column, ColumnSpec, Modifier, Text};
 
 #[composable]
 fn inner_content() {
@@ -23,7 +23,9 @@ fn main() {
     let mut composition = Composition::new(MemoryApplier::new());
 
     // Initial render
-    composition.render(location_key(file!(), line!(), column!()), outer_content).unwrap();
+    composition
+        .render(location_key(file!(), line!(), column!()), outer_content)
+        .unwrap();
 
     if let Some(root) = composition.root() {
         let applier = composition.applier_mut();
@@ -34,9 +36,11 @@ fn main() {
         }) {
             for child_id in root_node {
                 println!("  Child #{}", child_id);
-                if let Ok(child_children) = applier.with_node(child_id, |node: &mut compose_ui::LayoutNode| {
-                    node.children.clone()
-                }) {
+                if let Ok(child_children) = applier
+                    .with_node(child_id, |node: &mut compose_ui::LayoutNode| {
+                        node.children.clone()
+                    })
+                {
                     for grandchild in child_children {
                         println!("    Grandchild #{}", grandchild);
                     }
