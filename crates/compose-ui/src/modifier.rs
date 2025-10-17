@@ -6,10 +6,13 @@
 #![allow(non_snake_case)]
 
 use std::fmt;
-use std::ops::AddAssign;
 use std::rc::Rc;
 
 use crate::layout::core::{Alignment, HorizontalAlignment, VerticalAlignment};
+
+pub use compose_ui_graphics::{
+    Brush, Color, CornerRadii, EdgeInsets, Point, Rect, RoundedCornerShape, Size,
+};
 
 /// Specifies how to size a component based on its intrinsic measurements.
 /// Mirrors Jetpack Compose's IntrinsicSize API.
@@ -36,199 +39,6 @@ pub struct PointerEvent {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Color(pub f32, pub f32, pub f32, pub f32);
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Point {
-    pub x: f32,
-    pub y: f32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Default)]
-pub struct Size {
-    pub width: f32,
-    pub height: f32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Rect {
-    pub x: f32,
-    pub y: f32,
-    pub width: f32,
-    pub height: f32,
-}
-
-/// Padding values for each edge of a rectangle.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct EdgeInsets {
-    pub left: f32,
-    pub top: f32,
-    pub right: f32,
-    pub bottom: f32,
-}
-
-impl EdgeInsets {
-    pub fn uniform(all: f32) -> Self {
-        Self {
-            left: all,
-            top: all,
-            right: all,
-            bottom: all,
-        }
-    }
-
-    pub fn horizontal(horizontal: f32) -> Self {
-        Self {
-            left: horizontal,
-            right: horizontal,
-            ..Self::default()
-        }
-    }
-
-    pub fn vertical(vertical: f32) -> Self {
-        Self {
-            top: vertical,
-            bottom: vertical,
-            ..Self::default()
-        }
-    }
-
-    pub fn symmetric(horizontal: f32, vertical: f32) -> Self {
-        Self {
-            left: horizontal,
-            right: horizontal,
-            top: vertical,
-            bottom: vertical,
-        }
-    }
-
-    pub fn from_components(left: f32, top: f32, right: f32, bottom: f32) -> Self {
-        Self {
-            left,
-            top,
-            right,
-            bottom,
-        }
-    }
-
-    pub fn is_zero(&self) -> bool {
-        self.left == 0.0 && self.top == 0.0 && self.right == 0.0 && self.bottom == 0.0
-    }
-
-    pub fn horizontal_sum(&self) -> f32 {
-        self.left + self.right
-    }
-
-    pub fn vertical_sum(&self) -> f32 {
-        self.top + self.bottom
-    }
-}
-
-impl AddAssign for EdgeInsets {
-    fn add_assign(&mut self, rhs: Self) {
-        self.left += rhs.left;
-        self.top += rhs.top;
-        self.right += rhs.right;
-        self.bottom += rhs.bottom;
-    }
-}
-
-impl Rect {
-    pub fn from_origin_size(origin: Point, size: Size) -> Self {
-        Self {
-            x: origin.x,
-            y: origin.y,
-            width: size.width,
-            height: size.height,
-        }
-    }
-
-    pub fn from_size(size: Size) -> Self {
-        Self {
-            x: 0.0,
-            y: 0.0,
-            width: size.width,
-            height: size.height,
-        }
-    }
-
-    pub fn translate(&self, dx: f32, dy: f32) -> Self {
-        Self {
-            x: self.x + dx,
-            y: self.y + dy,
-            width: self.width,
-            height: self.height,
-        }
-    }
-
-    pub fn contains(&self, x: f32, y: f32) -> bool {
-        x >= self.x && y >= self.y && x <= self.x + self.width && y <= self.y + self.height
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct CornerRadii {
-    pub top_left: f32,
-    pub top_right: f32,
-    pub bottom_right: f32,
-    pub bottom_left: f32,
-}
-
-impl CornerRadii {
-    pub fn uniform(radius: f32) -> Self {
-        Self {
-            top_left: radius,
-            top_right: radius,
-            bottom_right: radius,
-            bottom_left: radius,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct RoundedCornerShape {
-    radii: CornerRadii,
-}
-
-impl RoundedCornerShape {
-    pub fn new(top_left: f32, top_right: f32, bottom_right: f32, bottom_left: f32) -> Self {
-        Self {
-            radii: CornerRadii {
-                top_left,
-                top_right,
-                bottom_right,
-                bottom_left,
-            },
-        }
-    }
-
-    pub fn uniform(radius: f32) -> Self {
-        Self {
-            radii: CornerRadii::uniform(radius),
-        }
-    }
-
-    pub fn with_radii(radii: CornerRadii) -> Self {
-        Self { radii }
-    }
-
-    pub fn resolve(&self, width: f32, height: f32) -> CornerRadii {
-        let mut resolved = self.radii;
-        let max_width = (width / 2.0).max(0.0);
-        let max_height = (height / 2.0).max(0.0);
-        resolved.top_left = resolved.top_left.clamp(0.0, max_width).min(max_height);
-        resolved.top_right = resolved.top_right.clamp(0.0, max_width).min(max_height);
-        resolved.bottom_right = resolved.bottom_right.clamp(0.0, max_width).min(max_height);
-        resolved.bottom_left = resolved.bottom_left.clamp(0.0, max_width).min(max_height);
-        resolved
-    }
-
-    pub fn radii(&self) -> CornerRadii {
-        self.radii
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GraphicsLayer {
     pub alpha: f32,
     pub scale: f32,
@@ -243,35 +53,6 @@ impl Default for GraphicsLayer {
             scale: 1.0,
             translation_x: 0.0,
             translation_y: 0.0,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum Brush {
-    Solid(Color),
-    LinearGradient(Vec<Color>),
-    RadialGradient {
-        colors: Vec<Color>,
-        center: Point,
-        radius: f32,
-    },
-}
-
-impl Brush {
-    pub fn solid(color: Color) -> Self {
-        Brush::Solid(color)
-    }
-
-    pub fn linear_gradient(colors: Vec<Color>) -> Self {
-        Brush::LinearGradient(colors)
-    }
-
-    pub fn radial_gradient(colors: Vec<Color>, center: Point, radius: f32) -> Self {
-        Brush::RadialGradient {
-            colors,
-            center,
-            radius,
         }
     }
 }
