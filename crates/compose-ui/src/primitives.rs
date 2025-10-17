@@ -424,7 +424,7 @@ mod tests {
                 BoxWithConstraints(Modifier::empty(), {
                     let record_capture = Rc::clone(&record_capture);
                     move |scope| {
-                        let label = if scope.max_width().value() > 100.0 {
+                        let label = if scope.max_width().0 > 100.0 {
                             "wide"
                         } else {
                             "narrow"
@@ -445,10 +445,7 @@ mod tests {
             &mut slots,
             &handle,
             root,
-            Constraints::tight(Size {
-                width: 200.0,
-                height: 100.0,
-            }),
+            Constraints::tight(200.0, 100.0),
         );
 
         assert_eq!(record.borrow().as_slice(), ["wide"]);
@@ -460,10 +457,7 @@ mod tests {
             &mut slots,
             &handle,
             root,
-            Constraints::tight(Size {
-                width: 80.0,
-                height: 50.0,
-            }),
+            Constraints::tight(80.0, 50.0),
         );
 
         assert_eq!(record.borrow().as_slice(), ["wide", "narrow"]);
@@ -492,10 +486,7 @@ mod tests {
         let mut slots = SlotTable::new();
 
         for width in [120.0, 60.0] {
-            let constraints = Constraints::tight(Size {
-                width,
-                height: 40.0,
-            });
+            let constraints = Constraints::tight(width, 40.0);
             measure_subcompose_node(&mut composition, &mut slots, &handle, root, constraints);
             slots.reset();
         }

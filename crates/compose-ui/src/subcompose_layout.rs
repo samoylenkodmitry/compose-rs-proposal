@@ -1,110 +1,23 @@
 use std::rc::Rc;
 
-use compose_core::{Composer, Phase, SlotId, SubcomposeState};
+use compose_core::{Composer, NodeId, Phase, SlotId, SubcomposeState};
 
-use crate::modifier::{Point, Size};
+use crate::modifier::Size;
 
-/// Constraints passed to measure policies, mirroring Jetpack Compose semantics.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Constraints {
-    pub min_width: f32,
-    pub max_width: f32,
-    pub min_height: f32,
-    pub max_height: f32,
-}
-
-impl Constraints {
-    pub fn tight(size: Size) -> Self {
-        Self {
-            min_width: size.width,
-            max_width: size.width,
-            min_height: size.height,
-            max_height: size.height,
-        }
-    }
-
-    pub fn loose(size: Size) -> Self {
-        Self {
-            min_width: 0.0,
-            max_width: size.width,
-            min_height: 0.0,
-            max_height: size.height,
-        }
-    }
-
-    pub fn with_min(self, min_width: f32, min_height: f32) -> Self {
-        Self {
-            min_width,
-            min_height,
-            ..self
-        }
-    }
-}
-
-/// Density-independent pixels used by layout scopes.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Dp(pub f32);
-
-impl Dp {
-    /// Creates a new [`Dp`] value from raw pixels.
-    pub fn new(raw: f32) -> Self {
-        Self(raw)
-    }
-
-    /// Returns the underlying scalar representation.
-    pub fn value(self) -> f32 {
-        self.0
-    }
-
-    /// Returns whether the value is finite.
-    pub fn is_finite(self) -> bool {
-        self.0.is_finite()
-    }
-}
-
-/// Result of measuring a `SubcomposeLayoutNode`.
-#[derive(Clone, Debug, PartialEq)]
-pub struct MeasureResult {
-    pub size: Size,
-    pub placements: Vec<Placement>,
-}
-
-impl MeasureResult {
-    pub fn new(size: Size, placements: Vec<Placement>) -> Self {
-        Self { size, placements }
-    }
-}
-
-/// Placement information for a subcomposed child.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Placement {
-    pub node_id: usize,
-    pub position: Point,
-    pub z_index: i32,
-}
-
-impl Placement {
-    pub fn new(node_id: usize, position: Point, z_index: i32) -> Self {
-        Self {
-            node_id,
-            position,
-            z_index,
-        }
-    }
-}
+pub use compose_ui_layout::{Constraints, MeasureResult, Placement};
 
 /// Representation of a subcomposed child that can later be measured by the policy.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SubcomposeChild {
-    node_id: usize,
+    node_id: NodeId,
 }
 
 impl SubcomposeChild {
-    pub fn new(node_id: usize) -> Self {
+    pub fn new(node_id: NodeId) -> Self {
         Self { node_id }
     }
 
-    pub fn node_id(&self) -> usize {
+    pub fn node_id(&self) -> NodeId {
         self.node_id
     }
 }
@@ -261,7 +174,7 @@ mod tests {
         let recorded = Rc::new(RefCell::new(Vec::new()));
         let recorded_capture = Rc::clone(&recorded);
         let policy: Rc<MeasurePolicy> = Rc::new(move |scope, constraints| {
-            assert_eq!(constraints, Constraints::tight(Size::default()));
+            assert_eq!(constraints, Constraints::tight(0.0, 0.0));
             let measurables = scope.subcompose(SlotId::new(1), || {
                 compose_core::with_current_composer(|composer| {
                     composer.emit_node(|| DummyNode::default());
@@ -277,7 +190,7 @@ mod tests {
         let mut composer =
             compose_core::Composer::new(&mut slots, &mut applier, handle.clone(), None);
         composer.enter_phase(Phase::Measure);
-        let result = node.measure(&mut composer, Constraints::tight(Size::default()));
+        let result = node.measure(&mut composer, Constraints::tight(0.0, 0.0));
         assert_eq!(result.size, Size::default());
         assert!(!node.state().reusable().is_empty());
         assert_eq!(recorded.borrow().len(), 1);
@@ -308,13 +221,7 @@ mod tests {
             let mut composer =
                 compose_core::Composer::new(&mut slots, &mut applier, handle.clone(), None);
             composer.enter_phase(Phase::Measure);
-            node.measure(
-                &mut composer,
-                Constraints::loose(Size {
-                    width: 100.0,
-                    height: 100.0,
-                }),
-            );
+            node.measure(&mut composer, Constraints::loose(100.0, 100.0));
         }
 
         slots.reset();
@@ -323,13 +230,7 @@ mod tests {
             let mut composer =
                 compose_core::Composer::new(&mut slots, &mut applier, handle.clone(), None);
             composer.enter_phase(Phase::Measure);
-            node.measure(
-                &mut composer,
-                Constraints::loose(Size {
-                    width: 200.0,
-                    height: 200.0,
-                }),
-            );
+            node.measure(&mut composer, Constraints::loose(200.0, 200.0));
         }
 
         let recorded = recorded.borrow();
@@ -362,13 +263,7 @@ mod tests {
             let mut composer =
                 compose_core::Composer::new(&mut slots, &mut applier, handle.clone(), None);
             composer.enter_phase(Phase::Measure);
-            node.measure(
-                &mut composer,
-                Constraints::loose(Size {
-                    width: 50.0,
-                    height: 50.0,
-                }),
-            );
+            node.measure(&mut composer, Constraints::loose(50.0, 50.0));
         }
 
         slots.reset();
@@ -378,13 +273,7 @@ mod tests {
             let mut composer =
                 compose_core::Composer::new(&mut slots, &mut applier, handle.clone(), None);
             composer.enter_phase(Phase::Measure);
-            node.measure(
-                &mut composer,
-                Constraints::loose(Size {
-                    width: 50.0,
-                    height: 50.0,
-                }),
-            );
+            node.measure(&mut composer, Constraints::loose(50.0, 50.0));
         }
 
         assert!(!node.state().reusable().is_empty());

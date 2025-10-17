@@ -5,13 +5,14 @@
 use super::nodes::LayoutNode;
 use super::scopes::{BoxWithConstraintsScope, BoxWithConstraintsScopeImpl};
 use crate::composable;
-use crate::modifier::{Modifier, Point};
+use crate::modifier::Modifier;
 use crate::subcompose_layout::{
-    Constraints, MeasurePolicy as SubcomposeMeasurePolicy, MeasureResult, MeasureScope, Placement,
+    Constraints, MeasurePolicy as SubcomposeMeasurePolicy, MeasureResult, MeasureScope,
     SubcomposeLayoutNode, SubcomposeMeasureScope, SubcomposeMeasureScopeImpl,
 };
 use compose_core::{NodeId, SlotId};
 use compose_ui_layout::MeasurePolicy;
+use compose_ui_layout::Placement;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -72,12 +73,12 @@ where
                 content(scope_for_content.clone());
             })
         };
-        let width_dp = if scope_impl.max_width().is_finite() {
+        let width_dp = if scope_impl.max_width().0.is_finite() {
             scope_impl.max_width()
         } else {
             scope_impl.min_width()
         };
-        let height_dp = if scope_impl.max_height().is_finite() {
+        let height_dp = if scope_impl.max_height().0.is_finite() {
             scope_impl.max_height()
         } else {
             scope_impl.min_height()
@@ -86,7 +87,7 @@ where
         let height = scope_impl.to_px(height_dp);
         let placements: Vec<Placement> = measurables
             .into_iter()
-            .map(|measurable| Placement::new(measurable.node_id(), Point { x: 0.0, y: 0.0 }, 0))
+            .map(|measurable| Placement::new(measurable.node_id(), 0.0, 0.0, 0))
             .collect();
         scope.layout(width, height, placements)
     })
