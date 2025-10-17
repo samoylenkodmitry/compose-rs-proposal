@@ -11,6 +11,7 @@ mod modifier_nodes;
 mod primitives;
 mod renderer;
 mod subcompose_layout;
+pub mod widgets;
 
 pub use layout::{
     core::{

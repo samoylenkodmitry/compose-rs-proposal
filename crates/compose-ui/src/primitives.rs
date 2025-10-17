@@ -1,672 +1,32 @@
+//! UI primitives - re-exported from widgets module
+//!
+//! This module maintains backward compatibility by re-exporting all
+//! widget components. New code should import from `crate::widgets` directly.
+
 #![allow(non_snake_case)]
-use std::cell::RefCell;
-use std::hash::Hash;
-use std::rc::Rc;
 
-use compose_core::{self, MutableState, Node, NodeId, State};
-use indexmap::IndexSet;
-
-use crate::composable;
-use crate::layout::core::{
-    Alignment, HorizontalAlignment, LinearArrangement, MeasurePolicy, VerticalAlignment,
-};
-use crate::layout::policies::{BoxMeasurePolicy, ColumnMeasurePolicy, RowMeasurePolicy};
-use crate::modifier::{Modifier, Size};
-use crate::subcompose_layout::MeasureScope;
-use crate::subcompose_layout::{
-    Constraints, Dp, MeasurePolicy as SubcomposeMeasurePolicy, MeasureResult, Placement,
-    SubcomposeLayoutNode, SubcomposeMeasureScope, SubcomposeMeasureScopeImpl,
-};
-use compose_core::SlotId;
-
-/// Marker trait matching Jetpack Compose's `BoxScope` API.
-#[allow(dead_code)] // Foundation for type-safe scopes, not yet fully integrated
-pub trait BoxScope {
-    /// Align content within the Box using 2D alignment.
-    fn align(&self, alignment: Alignment) -> Modifier;
-}
-
-/// Marker trait for Column scope - provides horizontal alignment.
-/// These methods match Jetpack Compose's Modifier extension functions.
-#[allow(dead_code)] // Foundation for type-safe scopes, not yet fully integrated
-pub trait ColumnScope {
-    /// Align content horizontally within the Column.
-    /// Jetpack Compose: Modifier.align(alignment: Alignment.Horizontal)
-    fn align(&self, alignment: HorizontalAlignment) -> Modifier;
-
-    /// Apply weight to distribute remaining space proportionally.
-    /// Jetpack Compose: Modifier.weight(weight: Float, fill: Boolean = true)
-    fn weight(&self, weight: f32, fill: bool) -> Modifier;
-}
-
-/// Marker trait for Row scope - provides vertical alignment.
-/// These methods match Jetpack Compose's Modifier extension functions.
-#[allow(dead_code)] // Foundation for type-safe scopes, not yet fully integrated
-pub trait RowScope {
-    /// Align content vertically within the Row.
-    /// Jetpack Compose: Modifier.align(alignment: Alignment.Vertical)
-    fn align(&self, alignment: VerticalAlignment) -> Modifier;
-
-    /// Apply weight to distribute remaining space proportionally.
-    /// Jetpack Compose: Modifier.weight(weight: Float, fill: Boolean = true)
-    fn weight(&self, weight: f32, fill: bool) -> Modifier;
-}
-
-/// Scope exposed to [`BoxWithConstraints`] content.
-pub trait BoxWithConstraintsScope: BoxScope {
-    fn constraints(&self) -> Constraints;
-    fn min_width(&self) -> Dp;
-    fn max_width(&self) -> Dp;
-    fn min_height(&self) -> Dp;
-    fn max_height(&self) -> Dp;
-}
-
-/// Concrete implementation of [`BoxWithConstraintsScope`].
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct BoxWithConstraintsScopeImpl {
-    constraints: Constraints,
-    density: f32,
-}
-
-impl BoxWithConstraintsScopeImpl {
-    pub fn new(constraints: Constraints) -> Self {
-        Self {
-            constraints,
-            density: 1.0,
-        }
-    }
-
-    pub fn with_density(constraints: Constraints, density: f32) -> Self {
-        Self {
-            constraints,
-            density,
-        }
-    }
-
-    fn to_dp(&self, raw: f32) -> Dp {
-        Dp::new(raw / self.density)
-    }
-
-    /// Converts a [`Dp`] value back to raw pixels using the stored density.
-    pub fn to_px(&self, dp: Dp) -> f32 {
-        dp.value() * self.density
-    }
-
-    pub fn density(&self) -> f32 {
-        self.density
-    }
-}
-
-impl BoxScope for BoxWithConstraintsScopeImpl {
-    fn align(&self, alignment: Alignment) -> Modifier {
-        BoxScopeImpl.align(alignment)
-    }
-}
-
-/// Concrete implementation of BoxScope.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct BoxScopeImpl;
-
-impl BoxScope for BoxScopeImpl {
-    fn align(&self, alignment: Alignment) -> Modifier {
-        Modifier::empty().alignInBox(alignment)
-    }
-}
-
-/// Concrete implementation of ColumnScope.
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[allow(dead_code)] // Foundation for type-safe scopes, not yet fully integrated
-pub struct ColumnScopeImpl;
-
-impl ColumnScope for ColumnScopeImpl {
-    fn align(&self, alignment: HorizontalAlignment) -> Modifier {
-        Modifier::empty().alignInColumn(alignment)
-    }
-
-    fn weight(&self, weight: f32, fill: bool) -> Modifier {
-        Modifier::empty().columnWeight(weight, fill)
-    }
-}
-
-/// Concrete implementation of RowScope.
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[allow(dead_code)] // Foundation for type-safe scopes, not yet fully integrated
-pub struct RowScopeImpl;
-
-impl RowScope for RowScopeImpl {
-    fn align(&self, alignment: VerticalAlignment) -> Modifier {
-        Modifier::empty().alignInRow(alignment)
-    }
-
-    fn weight(&self, weight: f32, fill: bool) -> Modifier {
-        Modifier::empty().rowWeight(weight, fill)
-    }
-}
-
-impl BoxWithConstraintsScope for BoxWithConstraintsScopeImpl {
-    fn constraints(&self) -> Constraints {
-        self.constraints
-    }
-
-    fn min_width(&self) -> Dp {
-        self.to_dp(self.constraints.min_width)
-    }
-
-    fn max_width(&self) -> Dp {
-        self.to_dp(self.constraints.max_width)
-    }
-
-    fn min_height(&self) -> Dp {
-        self.to_dp(self.constraints.min_height)
-    }
-
-    fn max_height(&self) -> Dp {
-        self.to_dp(self.constraints.max_height)
-    }
-}
-
-fn compose_node<N: Node + 'static>(init: impl FnOnce() -> N) -> NodeId {
-    compose_core::with_current_composer(|composer| composer.emit_node(init))
-}
-
-#[derive(Clone)]
-pub struct LayoutNode {
-    pub modifier: Modifier,
-    pub measure_policy: Rc<dyn MeasurePolicy>,
-    pub children: IndexSet<NodeId>,
-}
-
-impl LayoutNode {
-    pub fn new(modifier: Modifier, measure_policy: Rc<dyn MeasurePolicy>) -> Self {
-        Self {
-            modifier,
-            measure_policy,
-            children: IndexSet::new(),
-        }
-    }
-
-    pub fn set_measure_policy(&mut self, policy: Rc<dyn MeasurePolicy>) {
-        self.measure_policy = policy;
-    }
-}
-
-impl Node for LayoutNode {
-    fn insert_child(&mut self, child: NodeId) {
-        self.children.insert(child);
-    }
-
-    fn remove_child(&mut self, child: NodeId) {
-        self.children.shift_remove(&child);
-    }
-
-    fn move_child(&mut self, from: usize, to: usize) {
-        if from == to || from >= self.children.len() {
-            return;
-        }
-        let mut ordered: Vec<NodeId> = self.children.iter().copied().collect();
-        let child = ordered.remove(from);
-        let target = to.min(ordered.len());
-        ordered.insert(target, child);
-        self.children.clear();
-        for id in ordered {
-            self.children.insert(id);
-        }
-    }
-
-    fn update_children(&mut self, children: &[NodeId]) {
-        self.children.clear();
-        for &child in children {
-            self.children.insert(child);
-        }
-    }
-
-    fn children(&self) -> Vec<NodeId> {
-        self.children.iter().copied().collect()
-    }
-}
-
-#[derive(Clone, Default)]
-pub struct TextNode {
-    pub modifier: Modifier,
-    pub text: String,
-}
-
-impl Node for TextNode {}
-
-#[derive(Clone, Default)]
-pub struct SpacerNode {
-    pub size: Size,
-}
-
-impl Node for SpacerNode {}
-
-#[derive(Clone)]
-pub struct ButtonNode {
-    pub modifier: Modifier,
-    pub on_click: Rc<RefCell<dyn FnMut()>>,
-    pub children: IndexSet<NodeId>,
-}
-
-impl Default for ButtonNode {
-    fn default() -> Self {
-        Self {
-            modifier: Modifier::empty(),
-            on_click: Rc::new(RefCell::new(|| {})),
-            children: IndexSet::new(),
-        }
-    }
-}
-
-impl ButtonNode {
-    pub fn trigger(&self) {
-        (self.on_click.borrow_mut())();
-    }
-}
-
-impl Node for ButtonNode {
-    fn insert_child(&mut self, child: NodeId) {
-        self.children.insert(child);
-    }
-
-    fn remove_child(&mut self, child: NodeId) {
-        self.children.shift_remove(&child);
-    }
-
-    fn move_child(&mut self, from: usize, to: usize) {
-        if from == to || from >= self.children.len() {
-            return;
-        }
-        let mut ordered: Vec<NodeId> = self.children.iter().copied().collect();
-        let child = ordered.remove(from);
-        let target = to.min(ordered.len());
-        ordered.insert(target, child);
-        self.children.clear();
-        for id in ordered {
-            self.children.insert(id);
-        }
-    }
-
-    fn update_children(&mut self, children: &[NodeId]) {
-        self.children.clear();
-        for &child in children {
-            self.children.insert(child);
-        }
-    }
-
-    fn children(&self) -> Vec<NodeId> {
-        self.children.iter().copied().collect()
-    }
-}
-
-/// Specification for Box layout behavior.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct BoxSpec {
-    pub content_alignment: Alignment,
-    pub propagate_min_constraints: bool,
-}
-
-impl BoxSpec {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn content_alignment(mut self, alignment: Alignment) -> Self {
-        self.content_alignment = alignment;
-        self
-    }
-
-    pub fn propagate_min_constraints(mut self, propagate: bool) -> Self {
-        self.propagate_min_constraints = propagate;
-        self
-    }
-}
-
-impl Default for BoxSpec {
-    fn default() -> Self {
-        Self {
-            content_alignment: Alignment::TOP_START,
-            propagate_min_constraints: false,
-        }
-    }
-}
-
-/// Specification for Column layout behavior.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ColumnSpec {
-    pub vertical_arrangement: LinearArrangement,
-    pub horizontal_alignment: HorizontalAlignment,
-}
-
-impl ColumnSpec {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn vertical_arrangement(mut self, arrangement: LinearArrangement) -> Self {
-        self.vertical_arrangement = arrangement;
-        self
-    }
-
-    pub fn horizontal_alignment(mut self, alignment: HorizontalAlignment) -> Self {
-        self.horizontal_alignment = alignment;
-        self
-    }
-}
-
-impl Default for ColumnSpec {
-    fn default() -> Self {
-        Self {
-            vertical_arrangement: LinearArrangement::Start,
-            horizontal_alignment: HorizontalAlignment::Start,
-        }
-    }
-}
-
-/// Specification for Row layout behavior.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct RowSpec {
-    pub horizontal_arrangement: LinearArrangement,
-    pub vertical_alignment: VerticalAlignment,
-}
-
-impl RowSpec {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn horizontal_arrangement(mut self, arrangement: LinearArrangement) -> Self {
-        self.horizontal_arrangement = arrangement;
-        self
-    }
-
-    pub fn vertical_alignment(mut self, alignment: VerticalAlignment) -> Self {
-        self.vertical_alignment = alignment;
-        self
-    }
-}
-
-impl Default for RowSpec {
-    fn default() -> Self {
-        Self {
-            horizontal_arrangement: LinearArrangement::Start,
-            vertical_alignment: VerticalAlignment::CenterVertically,
-        }
-    }
-}
-
-#[composable]
-pub fn Box<F>(modifier: Modifier, spec: BoxSpec, content: F) -> NodeId
-where
-    F: FnMut() + 'static,
-{
-    let policy = BoxMeasurePolicy::new(spec.content_alignment, spec.propagate_min_constraints);
-    Layout(modifier, policy, content)
-}
-
-#[composable]
-pub fn Column<F>(modifier: Modifier, spec: ColumnSpec, content: F) -> NodeId
-where
-    F: FnMut() + 'static,
-{
-    let policy = ColumnMeasurePolicy::new(spec.vertical_arrangement, spec.horizontal_alignment);
-    Layout(modifier, policy, content)
-}
-
-#[composable]
-pub fn Row<F>(modifier: Modifier, spec: RowSpec, content: F) -> NodeId
-where
-    F: FnMut() + 'static,
-{
-    let policy = RowMeasurePolicy::new(spec.horizontal_arrangement, spec.vertical_alignment);
-    Layout(modifier, policy, content)
-}
-
-#[composable]
-pub fn Layout<F, P>(modifier: Modifier, measure_policy: P, content: F) -> NodeId
-where
-    F: FnMut() + 'static,
-    P: MeasurePolicy + Clone + PartialEq + 'static,
-{
-    let policy: Rc<dyn MeasurePolicy> = Rc::new(measure_policy);
-    let id = compose_node(|| LayoutNode::new(modifier.clone(), Rc::clone(&policy)));
-    if let Err(err) = compose_core::with_node_mut(id, |node: &mut LayoutNode| {
-        node.modifier = modifier.clone();
-        node.set_measure_policy(Rc::clone(&policy));
-    }) {
-        debug_assert!(false, "failed to update Layout node: {err}");
-    }
-    compose_core::push_parent(id);
-    content();
-    compose_core::pop_parent();
-    id
-}
-
-#[composable]
-pub fn SubcomposeLayout(
-    modifier: Modifier,
-    measure_policy: impl for<'scope> Fn(&mut SubcomposeMeasureScopeImpl<'scope>, Constraints) -> MeasureResult
-        + 'static,
-) -> NodeId {
-    let policy: Rc<SubcomposeMeasurePolicy> = Rc::new(measure_policy);
-    let id = compose_node(|| SubcomposeLayoutNode::new(modifier.clone(), Rc::clone(&policy)));
-    if let Err(err) = compose_core::with_node_mut(id, |node: &mut SubcomposeLayoutNode| {
-        node.modifier = modifier.clone();
-        node.set_measure_policy(Rc::clone(&policy));
-    }) {
-        debug_assert!(false, "failed to update SubcomposeLayout node: {err}");
-    }
-    id
-}
-
-#[composable(no_skip)]
-pub fn BoxWithConstraints<F>(modifier: Modifier, content: F) -> NodeId
-where
-    F: FnMut(BoxWithConstraintsScopeImpl) + 'static,
-{
-    let content_ref: Rc<RefCell<F>> = Rc::new(RefCell::new(content));
-    SubcomposeLayout(modifier, move |scope, constraints| {
-        let scope_impl = BoxWithConstraintsScopeImpl::new(constraints);
-        let scope_for_content = scope_impl.clone();
-        let measurables = {
-            let content_ref = Rc::clone(&content_ref);
-            scope.subcompose(SlotId::new(0), move || {
-                let mut content = content_ref.borrow_mut();
-                content(scope_for_content.clone());
-            })
-        };
-        let width_dp = if scope_impl.max_width().is_finite() {
-            scope_impl.max_width()
-        } else {
-            scope_impl.min_width()
-        };
-        let height_dp = if scope_impl.max_height().is_finite() {
-            scope_impl.max_height()
-        } else {
-            scope_impl.min_height()
-        };
-        let width = scope_impl.to_px(width_dp);
-        let height = scope_impl.to_px(height_dp);
-        let placements: Vec<Placement> = measurables
-            .into_iter()
-            .map(|measurable| {
-                Placement::new(
-                    measurable.node_id(),
-                    crate::modifier::Point { x: 0.0, y: 0.0 },
-                    0,
-                )
-            })
-            .collect();
-        scope.layout(width, height, placements)
-    })
-}
-
-#[derive(Clone)]
-struct DynamicTextSource(Rc<dyn Fn() -> String>);
-
-impl DynamicTextSource {
-    fn new<F>(resolver: F) -> Self
-    where
-        F: Fn() -> String + 'static,
-    {
-        Self(Rc::new(resolver))
-    }
-
-    fn resolve(&self) -> String {
-        (self.0)()
-    }
-}
-
-impl PartialEq for DynamicTextSource {
-    fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
-    }
-}
-
-impl Eq for DynamicTextSource {}
-
-#[derive(Clone, PartialEq, Eq)]
-enum TextSource {
-    Static(String),
-    Dynamic(DynamicTextSource),
-}
-
-impl TextSource {
-    fn resolve(&self) -> String {
-        match self {
-            TextSource::Static(text) => text.clone(),
-            TextSource::Dynamic(dynamic) => dynamic.resolve(),
-        }
-    }
-}
-
-trait IntoTextSource {
-    fn into_text_source(self) -> TextSource;
-}
-
-impl IntoTextSource for String {
-    fn into_text_source(self) -> TextSource {
-        TextSource::Static(self)
-    }
-}
-
-impl<'a> IntoTextSource for &'a str {
-    fn into_text_source(self) -> TextSource {
-        TextSource::Static(self.to_string())
-    }
-}
-
-impl<T> IntoTextSource for State<T>
-where
-    T: ToString + Clone + 'static,
-{
-    fn into_text_source(self) -> TextSource {
-        let state = self.clone();
-        TextSource::Dynamic(DynamicTextSource::new(move || state.value().to_string()))
-    }
-}
-
-impl<T> IntoTextSource for MutableState<T>
-where
-    T: ToString + Clone + 'static,
-{
-    fn into_text_source(self) -> TextSource {
-        let state = self.clone();
-        TextSource::Dynamic(DynamicTextSource::new(move || state.value().to_string()))
-    }
-}
-
-impl<F> IntoTextSource for F
-where
-    F: Fn() -> String + 'static,
-{
-    fn into_text_source(self) -> TextSource {
-        TextSource::Dynamic(DynamicTextSource::new(self))
-    }
-}
-
-impl IntoTextSource for DynamicTextSource {
-    fn into_text_source(self) -> TextSource {
-        TextSource::Dynamic(self)
-    }
-}
-
-#[composable]
-pub fn Text<S>(value: S, modifier: Modifier) -> NodeId
-where
-    S: IntoTextSource + Clone + PartialEq + 'static,
-{
-    let current = value.into_text_source().resolve();
-    let id = compose_node(|| TextNode {
-        modifier: modifier.clone(),
-        text: current.clone(),
-    });
-    if let Err(err) = compose_core::with_node_mut(id, |node: &mut TextNode| {
-        if node.text != current {
-            node.text = current.clone();
-        }
-        node.modifier = modifier.clone();
-    }) {
-        debug_assert!(false, "failed to update Text node: {err}");
-    }
-    id
-}
-
-#[composable]
-pub fn Spacer(size: Size) -> NodeId {
-    let id = compose_node(|| SpacerNode { size });
-    if let Err(err) = compose_core::with_node_mut(id, |node: &mut SpacerNode| {
-        node.size = size;
-    }) {
-        debug_assert!(false, "failed to update Spacer node: {err}");
-    }
-    id
-}
-
-#[composable]
-pub fn Button<F, G>(modifier: Modifier, on_click: F, mut content: G) -> NodeId
-where
-    F: FnMut() + 'static,
-    G: FnMut() + 'static,
-{
-    let on_click_rc: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(on_click));
-    let id = compose_node(|| ButtonNode {
-        modifier: modifier.clone(),
-        on_click: on_click_rc.clone(),
-        children: IndexSet::new(),
-    });
-    if let Err(err) = compose_core::with_node_mut(id, |node: &mut ButtonNode| {
-        node.modifier = modifier;
-        node.on_click = on_click_rc.clone();
-    }) {
-        debug_assert!(false, "failed to update Button node: {err}");
-    }
-    compose_core::push_parent(id);
-    content();
-    compose_core::pop_parent();
-    id
-}
-
-#[composable(no_skip)]
-pub fn ForEach<T, F>(items: &[T], mut row: F)
-where
-    T: Hash,
-    F: FnMut(&T) + 'static,
-{
-    for item in items {
-        compose_core::with_key(item, || row(item));
-    }
-}
+// Re-export everything from widgets
+pub use crate::widgets::*;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::subcompose_layout::Constraints;
+    use crate::composable;
+    use crate::layout::core::{HorizontalAlignment, LinearArrangement, VerticalAlignment};
+    use crate::modifier::{Modifier, Size};
+    use crate::subcompose_layout::{Constraints, SubcomposeLayoutNode};
+    use crate::widgets::nodes::{ButtonNode, LayoutNode, TextNode};
+    use crate::widgets::{
+        BoxWithConstraints, Button, Column, ColumnSpec, DynamicTextSource, ForEach, Row, RowSpec,
+        Spacer, Text,
+    };
     use crate::{run_test_composition, LayoutEngine, SnapshotState, TestComposition};
     use compose_core::{
-        self, location_key, Composer, Composition, MemoryApplier, MutableState, Phase, SlotTable,
-        State,
+        self, location_key, Composer, Composition, MemoryApplier, MutableState, NodeId, Phase,
+        SlotTable, State,
     };
     use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
 
     thread_local! {
         static COUNTER_ROW_INVOCATIONS: Cell<usize> = Cell::new(0);
@@ -675,7 +35,6 @@ mod tests {
 
     #[test]
     fn row_with_alignment_updates_node_fields() {
-        // Row now uses LayoutNode with RowMeasurePolicy - verify it exists
         let mut composition = run_test_composition(|| {
             Row(
                 Modifier::empty(),
@@ -689,8 +48,6 @@ mod tests {
         composition
             .applier_mut()
             .with_node::<LayoutNode, _>(root, |node| {
-                // LayoutNode exists with a measure policy - we can't inspect the policy directly
-                // but we can verify it's a LayoutNode
                 assert!(!node.children.is_empty() || node.children.is_empty());
             })
             .expect("layout node available");
@@ -698,7 +55,6 @@ mod tests {
 
     #[test]
     fn column_with_alignment_updates_node_fields() {
-        // Column now uses LayoutNode with ColumnMeasurePolicy - verify it exists
         let mut composition = run_test_composition(|| {
             Column(
                 Modifier::empty(),
@@ -712,7 +68,6 @@ mod tests {
         composition
             .applier_mut()
             .with_node::<LayoutNode, _>(root, |node| {
-                // LayoutNode exists with a measure policy
                 assert!(!node.children.is_empty() || node.children.is_empty());
             })
             .expect("layout node available");
@@ -727,9 +82,6 @@ mod tests {
     ) {
         let applier = composition.applier_mut();
         let applier_ptr: *mut MemoryApplier = applier;
-        // SAFETY: `applier_ptr` references the same `MemoryApplier` currently borrowed via
-        // `applier`. `with_node` executes synchronously and guarantees exclusive access to the
-        // node for the duration of the closure, so reborrowing through the raw pointer is safe.
         unsafe {
             applier
                 .with_node(root, |node: &mut SubcomposeLayoutNode| {
@@ -924,7 +276,6 @@ mod tests {
         composition: &mut TestComposition,
     ) -> Result<Vec<String>, compose_core::NodeError> {
         let root = composition.root().expect("column root");
-        // Column now uses LayoutNode instead of ColumnNode
         let children: Vec<NodeId> = composition
             .applier_mut()
             .with_node(root, |layout: &mut LayoutNode| {
