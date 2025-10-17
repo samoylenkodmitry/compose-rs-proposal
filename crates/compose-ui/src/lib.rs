@@ -13,6 +13,7 @@ mod renderer;
 mod subcompose_layout;
 pub mod widgets;
 
+pub use compose_ui_graphics::Dp;
 pub use layout::{
     core::{
         Alignment, Arrangement, HorizontalAlignment, LinearArrangement, Measurable, MeasurePolicy,
@@ -35,7 +36,7 @@ pub use primitives::{
 };
 pub use renderer::{HeadlessRenderer, PaintLayer, RenderOp, RenderScene};
 pub use subcompose_layout::{
-    Constraints, Dp, MeasureResult, Placement, SubcomposeLayoutNode, SubcomposeMeasureScope,
+    Constraints, MeasureResult, Placement, SubcomposeLayoutNode, SubcomposeMeasureScope,
     SubcomposeMeasureScopeImpl,
 };
 

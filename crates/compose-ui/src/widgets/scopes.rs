@@ -1,26 +1,8 @@
 //! Scope traits and implementations for Box, Column, and Row
 
 use crate::modifier::Modifier;
-use crate::subcompose_layout::Constraints;
-use compose_ui_layout::{Alignment, HorizontalAlignment, VerticalAlignment};
-
-/// Unit type for density-independent pixels
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
-pub struct Dp(f32);
-
-impl Dp {
-    pub fn new(value: f32) -> Self {
-        Dp(value)
-    }
-
-    pub fn value(&self) -> f32 {
-        self.0
-    }
-
-    pub fn is_finite(&self) -> bool {
-        self.0.is_finite()
-    }
-}
+use compose_ui_graphics::Dp;
+use compose_ui_layout::{Alignment, Constraints, HorizontalAlignment, VerticalAlignment};
 
 /// Marker trait matching Jetpack Compose's `BoxScope` API.
 #[allow(dead_code)]
@@ -79,11 +61,11 @@ impl BoxWithConstraintsScopeImpl {
     }
 
     fn to_dp(&self, raw: f32) -> Dp {
-        Dp::new(raw / self.density)
+        Dp::from_px(raw, self.density)
     }
 
     pub fn to_px(&self, dp: Dp) -> f32 {
-        dp.value() * self.density
+        dp.to_px(self.density)
     }
 
     pub fn density(&self) -> f32 {
