@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-compose-core = { path = "../compose-core" }
-compose-runtime-std = { path = "../compose-runtime-std" }
-compose-ui = { path = "../compose-ui" }
+compose-core = { path = "../../crates/compose-core" }
+compose-runtime-std = { path = "../../crates/compose-runtime-std" }
+compose-ui = { path = "../../crates/compose-ui" }
 pixels = "0.13"
 winit = "0.28"
 once_cell = "1.18"

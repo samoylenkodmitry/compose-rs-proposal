@@ -47,12 +47,12 @@
 //! implementation path that will eventually replace value-based modifiers once
 //! the migration is complete.
 
-use compose_core::modifier::{
-    DrawModifierNode, LayoutModifierNode, Measurable, MeasureResult,
-    ModifierElement, ModifierNode, ModifierNodeContext, NodeCapabilities, PointerInputNode,
-};
 #[cfg(test)]
 use compose_core::modifier::BasicModifierNodeContext;
+use compose_core::modifier::{
+    DrawModifierNode, LayoutModifierNode, Measurable, MeasureResult, ModifierElement, ModifierNode,
+    ModifierNodeContext, NodeCapabilities, PointerInputNode,
+};
 use std::rc::Rc;
 
 use crate::modifier::{Color, EdgeInsets, Point};
@@ -574,9 +574,7 @@ mod tests {
         chain.update_from_slice(&elements, &mut context);
 
         assert_eq!(chain.len(), 1);
-        assert!(chain.has_nodes_for_invalidation(
-            compose_core::modifier::InvalidationKind::Layout
-        ));
+        assert!(chain.has_nodes_for_invalidation(compose_core::modifier::InvalidationKind::Layout));
 
         // Test that padding node correctly implements layout
         let node = chain.node_mut::<PaddingNode>(0).unwrap();
@@ -625,12 +623,8 @@ mod tests {
         chain.update_from_slice(&elements, &mut context);
 
         assert_eq!(chain.len(), 1);
-        assert!(chain.has_nodes_for_invalidation(
-            compose_core::modifier::InvalidationKind::Draw
-        ));
-        assert!(!chain.has_nodes_for_invalidation(
-            compose_core::modifier::InvalidationKind::Layout
-        ));
+        assert!(chain.has_nodes_for_invalidation(compose_core::modifier::InvalidationKind::Draw));
+        assert!(!chain.has_nodes_for_invalidation(compose_core::modifier::InvalidationKind::Layout));
     }
 
     #[test]
@@ -697,9 +691,8 @@ mod tests {
         }))];
         chain.update_from_slice(&elements, &mut context);
 
-        assert!(chain.has_nodes_for_invalidation(
-            compose_core::modifier::InvalidationKind::PointerInput
-        ));
+        assert!(chain
+            .has_nodes_for_invalidation(compose_core::modifier::InvalidationKind::PointerInput));
 
         // Simulate a pointer event
         let node = chain.node_mut::<ClickableNode>(0).unwrap();
@@ -744,12 +737,8 @@ mod tests {
         let elements = vec![modifier_element(AlphaElement::new(0.5))];
         chain.update_from_slice(&elements, &mut context);
 
-        assert!(chain.has_nodes_for_invalidation(
-            compose_core::modifier::InvalidationKind::Draw
-        ));
-        assert!(!chain.has_nodes_for_invalidation(
-            compose_core::modifier::InvalidationKind::Layout
-        ));
+        assert!(chain.has_nodes_for_invalidation(compose_core::modifier::InvalidationKind::Draw));
+        assert!(!chain.has_nodes_for_invalidation(compose_core::modifier::InvalidationKind::Layout));
     }
 
     #[test]
@@ -772,15 +761,10 @@ mod tests {
         chain.update_from_slice(&elements, &mut context);
 
         assert_eq!(chain.len(), 4);
-        assert!(chain.has_nodes_for_invalidation(
-            compose_core::modifier::InvalidationKind::Layout
-        ));
-        assert!(chain.has_nodes_for_invalidation(
-            compose_core::modifier::InvalidationKind::Draw
-        ));
-        assert!(chain.has_nodes_for_invalidation(
-            compose_core::modifier::InvalidationKind::PointerInput
-        ));
+        assert!(chain.has_nodes_for_invalidation(compose_core::modifier::InvalidationKind::Layout));
+        assert!(chain.has_nodes_for_invalidation(compose_core::modifier::InvalidationKind::Draw));
+        assert!(chain
+            .has_nodes_for_invalidation(compose_core::modifier::InvalidationKind::PointerInput));
 
         // Verify correct node counts by type
         assert_eq!(chain.layout_nodes().count(), 1); // padding
@@ -847,7 +831,13 @@ mod tests {
         let new_background_ptr = chain.node::<BackgroundNode>(0).unwrap() as *const _;
         let new_padding_ptr = chain.node::<PaddingNode>(1).unwrap() as *const _;
 
-        assert_eq!(background_ptr, new_background_ptr, "Background node should be reused");
-        assert_eq!(padding_ptr, new_padding_ptr, "Padding node should be reused");
+        assert_eq!(
+            background_ptr, new_background_ptr,
+            "Background node should be reused"
+        );
+        assert_eq!(
+            padding_ptr, new_padding_ptr,
+            "Padding node should be reused"
+        );
     }
 }

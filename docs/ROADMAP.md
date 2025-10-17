@@ -86,7 +86,7 @@ fn compute_row_intrinsic_width(applier, children, intrinsic, height, spacing) ->
 ```
 
 ```rust
-// API surface (implemented in compose-ui/src/modifier.rs)
+// API surface (implemented in crates/compose-ui/src/modifier.rs)
 pub enum IntrinsicSize { Min, Max }
 impl Modifier {
     pub fn width_intrinsic(intrinsic: IntrinsicSize) -> Self { /* ... */ }

@@ -21,8 +21,7 @@ pub use layout::{
 };
 pub use modifier::{
     Brush, Color, CornerRadii, DrawCommand, DrawPrimitive, EdgeInsets, GraphicsLayer,
-    IntrinsicSize, Modifier, Point, PointerEvent, PointerEventKind, Rect, RoundedCornerShape,
-    Size,
+    IntrinsicSize, Modifier, Point, PointerEvent, PointerEventKind, Rect, RoundedCornerShape, Size,
 };
 pub use modifier_nodes::{
     AlphaElement, AlphaNode, BackgroundElement, BackgroundNode, ClickableElement, ClickableNode,
@@ -41,8 +40,7 @@ pub use subcompose_layout::{
 
 // Debug utilities
 pub use debug::{
-    format_layout_tree, format_render_scene, log_layout_tree, log_render_scene,
-    log_screen_summary,
+    format_layout_tree, format_render_scene, log_layout_tree, log_render_scene, log_screen_summary,
 };
 
 /// Convenience alias used in examples and tests.

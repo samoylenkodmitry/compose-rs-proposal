@@ -3,8 +3,9 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use compose_core::{
-    self, compositionLocalOf, location_key, CompositionLocal, CompositionLocalProvider,
-    Composition, DisposableEffect, Key, LaunchedEffect, MemoryApplier, Node, NodeError, NodeId,
+    self, compositionLocalOf, location_key, Composition, CompositionLocal,
+    CompositionLocalProvider, DisposableEffect, Key, LaunchedEffect, MemoryApplier, Node,
+    NodeError, NodeId,
 };
 use compose_runtime_std::StdRuntime;
 use compose_ui::{
@@ -18,7 +19,7 @@ use once_cell::sync::Lazy;
 use pixels::{Pixels, SurfaceTexture};
 use rusttype::{point, Font, Scale};
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, Event, MouseButton, WindowEvent, VirtualKeyCode};
+use winit::event::{ElementState, Event, MouseButton, VirtualKeyCode, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoopBuilder};
 use winit::window::WindowBuilder;
 
@@ -117,7 +118,8 @@ fn main() {
                     },
                     WindowEvent::KeyboardInput { input, .. } => {
                         if let Some(keycode) = input.virtual_keycode {
-                            if input.state == ElementState::Pressed && keycode == VirtualKeyCode::D {
+                            if input.state == ElementState::Pressed && keycode == VirtualKeyCode::D
+                            {
                                 app.log_debug_info();
                             }
                         }
@@ -342,296 +344,305 @@ fn counter_app() {
             let pointer_down_main = pointer_down.clone();
             let wave_main = wave;
             move || {
-            let counter = counter_main.clone();
-            let pointer_position = pointer_position_main.clone();
-            let pointer_down = pointer_down_main.clone();
-            let wave = wave_main;
-            Text(
-                "Compose-RS Playground",
-                Modifier::padding(12.0)
-                    .then(Modifier::rounded_corner_shape(RoundedCornerShape::new(
-                        16.0, 24.0, 16.0, 24.0,
-                    )))
-                    .then(Modifier::draw_with_content(|scope| {
-                        scope.draw_round_rect(
-                            Brush::solid(Color(1.0, 1.0, 1.0, 0.1)),
-                            CornerRadii::uniform(20.0),
-                        );
-                    })),
-            );
+                let counter = counter_main.clone();
+                let pointer_position = pointer_position_main.clone();
+                let pointer_down = pointer_down_main.clone();
+                let wave = wave_main;
+                Text(
+                    "Compose-RS Playground",
+                    Modifier::padding(12.0)
+                        .then(Modifier::rounded_corner_shape(RoundedCornerShape::new(
+                            16.0, 24.0, 16.0, 24.0,
+                        )))
+                        .then(Modifier::draw_with_content(|scope| {
+                            scope.draw_round_rect(
+                                Brush::solid(Color(1.0, 1.0, 1.0, 0.1)),
+                                CornerRadii::uniform(20.0),
+                            );
+                        })),
+                );
 
-            Spacer(Size {
-                width: 0.0,
-                height: 12.0,
-            });
+                Spacer(Size {
+                    width: 0.0,
+                    height: 12.0,
+                });
 
-            Row(
-                Modifier::padding(8.0),
-                RowSpec::new()
-                    .horizontal_arrangement(LinearArrangement::SpacedBy(12.0))
-                    .vertical_alignment(VerticalAlignment::CenterVertically),
-                {
-                    let counter_display = counter.clone();
-                    let wave_value = wave;
-                    move || {
-                        Text(
-                            format!("Counter: {}", counter_display.get()),
-                            Modifier::padding(8.0)
-                                .then(Modifier::background(Color(0.0, 0.0, 0.0, 0.35)))
-                                .then(Modifier::rounded_corners(12.0)),
-                        );
-                        Text(
-                            format!("Wave {:.2}", wave_value),
-                            Modifier::padding(8.0)
-                                .then(Modifier::background(Color(0.35, 0.55, 0.9, 0.5)))
-                                .then(Modifier::rounded_corners(12.0))
-                                .then(Modifier::graphics_layer(GraphicsLayer {
-                                    alpha: 0.7 + wave_value * 0.3,
-                                    scale: 0.85 + wave_value * 0.3,
-                                    translation_x: 0.0,
-                                    translation_y: (wave_value - 0.5) * 12.0,
-                                })),
-                        );
-                    }
-                },
-            );
-
-            Spacer(Size {
-                width: 0.0,
-                height: 16.0,
-            });
-
-            Column(
-                Modifier::size(Size {
-                    width: 360.0,
-                    height: 180.0,
-                })
-                .then(Modifier::rounded_corners(20.0))
-                .then(Modifier::draw_with_cache(|cache| {
-                    cache.on_draw_behind(|scope| {
-                        scope.draw_round_rect(
-                            Brush::solid(Color(0.16, 0.18, 0.26, 0.95)),
-                            CornerRadii::uniform(20.0),
-                        );
-                    });
-                }))
-                .then(Modifier::draw_with_content({
-                    let position = pointer_position.get();
-                    let pressed = pointer_down.get();
-                    move |scope| {
-                        let intensity = if pressed { 0.45 } else { 0.25 };
-                        scope.draw_round_rect(
-                            Brush::radial_gradient(
-                                vec![Color(0.4, 0.6, 1.0, intensity), Color(0.2, 0.3, 0.6, 0.0)],
-                                position,
-                                120.0,
-                            ),
-                            CornerRadii::uniform(20.0),
-                        );
-                    }
-                }))
-                .then(Modifier::pointer_input({
-                    let pointer_position = pointer_position.clone();
-                    let pointer_down = pointer_down.clone();
-                    move |event: PointerEvent| {
-                        pointer_position.set(event.position);
-                        match event.kind {
-                            PointerEventKind::Down => pointer_down.set(true),
-                            PointerEventKind::Up => pointer_down.set(false),
-                            _ => {}
+                Row(
+                    Modifier::padding(8.0),
+                    RowSpec::new()
+                        .horizontal_arrangement(LinearArrangement::SpacedBy(12.0))
+                        .vertical_alignment(VerticalAlignment::CenterVertically),
+                    {
+                        let counter_display = counter.clone();
+                        let wave_value = wave;
+                        move || {
+                            Text(
+                                format!("Counter: {}", counter_display.get()),
+                                Modifier::padding(8.0)
+                                    .then(Modifier::background(Color(0.0, 0.0, 0.0, 0.35)))
+                                    .then(Modifier::rounded_corners(12.0)),
+                            );
+                            Text(
+                                format!("Wave {:.2}", wave_value),
+                                Modifier::padding(8.0)
+                                    .then(Modifier::background(Color(0.35, 0.55, 0.9, 0.5)))
+                                    .then(Modifier::rounded_corners(12.0))
+                                    .then(Modifier::graphics_layer(GraphicsLayer {
+                                        alpha: 0.7 + wave_value * 0.3,
+                                        scale: 0.85 + wave_value * 0.3,
+                                        translation_x: 0.0,
+                                        translation_y: (wave_value - 0.5) * 12.0,
+                                    })),
+                            );
                         }
-                    }
-                }))
-                .then(Modifier::clickable({
-                    let pointer_down = pointer_down.clone();
-                    move |_| pointer_down.set(!pointer_down.get())
-                }))
-                .then(Modifier::padding(12.0)),
-                ColumnSpec::default(),
-                {
-                    let counter_check = counter.clone();
-                    let pointer_position_display = pointer_position.clone();
-                    let pointer_down_display = pointer_down.clone();
-                    move || {
-                        if counter_check.get() % 2 == 0 {
-                        LaunchedEffect!("", |_| { println!("launch playground") });
-                        DisposableEffect!("", |x| {
-                            println!("dispose effect playground");
-                            x.on_dispose(|| println!("dispose playground"))
+                    },
+                );
+
+                Spacer(Size {
+                    width: 0.0,
+                    height: 16.0,
+                });
+
+                Column(
+                    Modifier::size(Size {
+                        width: 360.0,
+                        height: 180.0,
+                    })
+                    .then(Modifier::rounded_corners(20.0))
+                    .then(Modifier::draw_with_cache(|cache| {
+                        cache.on_draw_behind(|scope| {
+                            scope.draw_round_rect(
+                                Brush::solid(Color(0.16, 0.18, 0.26, 0.95)),
+                                CornerRadii::uniform(20.0),
+                            );
                         });
-                        Text(
-                            "Pointer playground",
-                            Modifier::padding(6.0)
-                                .then(Modifier::background(Color(0.0, 0.0, 0.0, 0.25)))
-                                .then(Modifier::rounded_corners(12.0)),
+                    }))
+                    .then(Modifier::draw_with_content({
+                        let position = pointer_position.get();
+                        let pressed = pointer_down.get();
+                        move |scope| {
+                            let intensity = if pressed { 0.45 } else { 0.25 };
+                            scope.draw_round_rect(
+                                Brush::radial_gradient(
+                                    vec![
+                                        Color(0.4, 0.6, 1.0, intensity),
+                                        Color(0.2, 0.3, 0.6, 0.0),
+                                    ],
+                                    position,
+                                    120.0,
+                                ),
+                                CornerRadii::uniform(20.0),
+                            );
+                        }
+                    }))
+                    .then(Modifier::pointer_input({
+                        let pointer_position = pointer_position.clone();
+                        let pointer_down = pointer_down.clone();
+                        move |event: PointerEvent| {
+                            pointer_position.set(event.position);
+                            match event.kind {
+                                PointerEventKind::Down => pointer_down.set(true),
+                                PointerEventKind::Up => pointer_down.set(false),
+                                _ => {}
+                            }
+                        }
+                    }))
+                    .then(Modifier::clickable({
+                        let pointer_down = pointer_down.clone();
+                        move |_| pointer_down.set(!pointer_down.get())
+                    }))
+                    .then(Modifier::padding(12.0)),
+                    ColumnSpec::default(),
+                    {
+                        let counter_check = counter.clone();
+                        let pointer_position_display = pointer_position.clone();
+                        let pointer_down_display = pointer_down.clone();
+                        move || {
+                            if counter_check.get() % 2 == 0 {
+                                LaunchedEffect!("", |_| { println!("launch playground") });
+                                DisposableEffect!("", |x| {
+                                    println!("dispose effect playground");
+                                    x.on_dispose(|| println!("dispose playground"))
+                                });
+                                Text(
+                                    "Pointer playground",
+                                    Modifier::padding(6.0)
+                                        .then(Modifier::background(Color(0.0, 0.0, 0.0, 0.25)))
+                                        .then(Modifier::rounded_corners(12.0)),
+                                );
+                            } else {
+                                LaunchedEffect!("", |_| { println!("launch no-ground") });
+                                DisposableEffect!("", |x| {
+                                    println!("dispose effect no-ground");
+                                    x.on_dispose(|| println!("dispose no-ground"))
+                                });
+                                Text(
+                                    "Pointer no-ground",
+                                    Modifier::padding(6.0)
+                                        .then(Modifier::background(Color(0.8, 0.2, 0.0, 0.25)))
+                                        .then(Modifier::rounded_corners(22.0)),
+                                );
+                            }
+                            Spacer(Size {
+                                width: 0.0,
+                                height: 8.0,
+                            });
+                            Text(
+                                format!(
+                                    "Local pointer: ({:.0}, {:.0})",
+                                    pointer_position_display.get().x,
+                                    pointer_position_display.get().y
+                                ),
+                                Modifier::padding(6.0),
+                            );
+                            Text(
+                                format!("Pressed: {}", pointer_down_display.get()),
+                                Modifier::padding(6.0),
+                            );
+                        }
+                    },
+                );
+
+                Spacer(Size {
+                    width: 0.0,
+                    height: 16.0,
+                });
+
+                // Intrinsics demonstration: Equal-width buttons
+                Text(
+                    "Intrinsic Sizing Demo (Equal Width):",
+                    Modifier::padding(8.0)
+                        .then(Modifier::background(Color(0.2, 0.2, 0.2, 0.5)))
+                        .then(Modifier::rounded_corners(8.0)),
+                );
+
+                Spacer(Size {
+                    width: 0.0,
+                    height: 8.0,
+                });
+
+                Row(
+                    Modifier::padding(8.0)
+                        .then(Modifier::rounded_corners(12.0))
+                        .then(Modifier::background(Color(0.1, 0.1, 0.15, 0.6)))
+                        .then(Modifier::padding(8.0)),
+                    RowSpec::default(),
+                    || {
+                        // All buttons will have the same width as the widest one ("Long Button Text")
+                        Button(
+                            Modifier::width_intrinsic(compose_ui::IntrinsicSize::Max)
+                                .then(Modifier::rounded_corners(12.0))
+                                .then(Modifier::draw_behind(|scope| {
+                                    scope.draw_round_rect(
+                                        Brush::solid(Color(0.3, 0.5, 0.2, 1.0)),
+                                        CornerRadii::uniform(12.0),
+                                    );
+                                }))
+                                .then(Modifier::padding(10.0)),
+                            || {},
+                            || {
+                                Text(
+                                    "OK",
+                                    Modifier::padding(4.0).then(Modifier::size(Size {
+                                        width: 50.0,
+                                        height: 50.0,
+                                    })),
+                                );
+                            },
                         );
-                    } else {
-                        LaunchedEffect!("", |_| { println!("launch no-ground") });
-                        DisposableEffect!("", |x| {
-                            println!("dispose effect no-ground");
-                            x.on_dispose(|| println!("dispose no-ground"))
+                        Spacer(Size {
+                            width: 8.0,
+                            height: 0.0,
                         });
-                        Text(
-                            "Pointer no-ground",
-                            Modifier::padding(6.0)
-                                .then(Modifier::background(Color(0.8, 0.2, 0.0, 0.25)))
-                                .then(Modifier::rounded_corners(22.0)),
+                        Button(
+                            Modifier::width_intrinsic(compose_ui::IntrinsicSize::Max)
+                                .then(Modifier::rounded_corners(12.0))
+                                .then(Modifier::draw_behind(|scope| {
+                                    scope.draw_round_rect(
+                                        Brush::solid(Color(0.5, 0.3, 0.2, 1.0)),
+                                        CornerRadii::uniform(12.0),
+                                    );
+                                }))
+                                .then(Modifier::padding(10.0)),
+                            || {},
+                            || {
+                                Text("Cancel", Modifier::padding(4.0));
+                            },
                         );
-                    }
-                    Spacer(Size {
-                        width: 0.0,
-                        height: 8.0,
-                    });
-                    Text(
-                        format!(
-                            "Local pointer: ({:.0}, {:.0})",
-                            pointer_position_display.get().x,
-                            pointer_position_display.get().y
-                        ),
-                        Modifier::padding(6.0),
-                    );
-                    Text(
-                        format!("Pressed: {}", pointer_down_display.get()),
-                        Modifier::padding(6.0),
-                    );
-                    }
-                },
-            );
+                        Spacer(Size {
+                            width: 8.0,
+                            height: 0.0,
+                        });
+                        Button(
+                            Modifier::width_intrinsic(compose_ui::IntrinsicSize::Max)
+                                .then(Modifier::rounded_corners(12.0))
+                                .then(Modifier::draw_behind(|scope| {
+                                    scope.draw_round_rect(
+                                        Brush::solid(Color(0.2, 0.3, 0.5, 1.0)),
+                                        CornerRadii::uniform(12.0),
+                                    );
+                                }))
+                                .then(Modifier::padding(10.0)),
+                            || {},
+                            || {
+                                Text("Long Button Text", Modifier::padding(4.0));
+                            },
+                        );
+                    },
+                );
 
-            Spacer(Size {
-                width: 0.0,
-                height: 16.0,
-            });
-
-            // Intrinsics demonstration: Equal-width buttons
-            Text(
-                "Intrinsic Sizing Demo (Equal Width):",
-                Modifier::padding(8.0)
-                    .then(Modifier::background(Color(0.2, 0.2, 0.2, 0.5)))
-                    .then(Modifier::rounded_corners(8.0)),
-            );
-
-            Spacer(Size {
-                width: 0.0,
-                height: 8.0,
-            });
-
-            Row(
-                Modifier::padding(8.0)
-                    .then(Modifier::rounded_corners(12.0))
-                    .then(Modifier::background(Color(0.1, 0.1, 0.15, 0.6)))
-                    .then(Modifier::padding(8.0)),
-                RowSpec::default(),
-                || {
-                    // All buttons will have the same width as the widest one ("Long Button Text")
-                    Button(
-                        Modifier::width_intrinsic(compose_ui::IntrinsicSize::Max)
-                            .then(Modifier::rounded_corners(12.0))
-                            .then(Modifier::draw_behind(|scope| {
-                                scope.draw_round_rect(
-                                    Brush::solid(Color(0.3, 0.5, 0.2, 1.0)),
-                                    CornerRadii::uniform(12.0),
-                                );
-                            }))
-                            .then(Modifier::padding(10.0)),
-                        || {},
-                        || {
-                            Text("OK", Modifier::padding(4.0).then(Modifier::size(Size { width: 50.0, height:50.0})));
-                        },
-                    );
-                    Spacer(Size {
-                        width: 8.0,
-                        height: 0.0,
-                    });
-                    Button(
-                        Modifier::width_intrinsic(compose_ui::IntrinsicSize::Max)
-                            .then(Modifier::rounded_corners(12.0))
-                            .then(Modifier::draw_behind(|scope| {
-                                scope.draw_round_rect(
-                                    Brush::solid(Color(0.5, 0.3, 0.2, 1.0)),
-                                    CornerRadii::uniform(12.0),
-                                );
-                            }))
-                            .then(Modifier::padding(10.0)),
-                        || {},
-                        || {
-                            Text("Cancel", Modifier::padding(4.0));
-                        },
-                    );
-                    Spacer(Size {
-                        width: 8.0,
-                        height: 0.0,
-                    });
-                    Button(
-                        Modifier::width_intrinsic(compose_ui::IntrinsicSize::Max)
-                            .then(Modifier::rounded_corners(12.0))
-                            .then(Modifier::draw_behind(|scope| {
-                                scope.draw_round_rect(
-                                    Brush::solid(Color(0.2, 0.3, 0.5, 1.0)),
-                                    CornerRadii::uniform(12.0),
-                                );
-                            }))
-                            .then(Modifier::padding(10.0)),
-                        || {},
-                        || {
-                            Text("Long Button Text", Modifier::padding(4.0));
-                        },
-                    );
-                },
-            );
-
-            Spacer(Size {
-                width: 0.0,
-                height: 16.0,
-            });
+                Spacer(Size {
+                    width: 0.0,
+                    height: 16.0,
+                });
 
                 let counter_inc = counter.clone();
-            Row(Modifier::padding(8.0), RowSpec::default(), move || {
-                Button(
-                    Modifier::rounded_corners(16.0)
-                        .then(Modifier::draw_with_cache(|cache| {
-                            cache.on_draw_behind(|scope| {
+                Row(Modifier::padding(8.0), RowSpec::default(), move || {
+                    Button(
+                        Modifier::rounded_corners(16.0)
+                            .then(Modifier::draw_with_cache(|cache| {
+                                cache.on_draw_behind(|scope| {
+                                    scope.draw_round_rect(
+                                        Brush::linear_gradient(vec![
+                                            Color(0.2, 0.45, 0.9, 1.0),
+                                            Color(0.15, 0.3, 0.65, 1.0),
+                                        ]),
+                                        CornerRadii::uniform(16.0),
+                                    );
+                                });
+                            }))
+                            .then(Modifier::padding(12.0)),
+                        {
+                            let counter = counter_inc.clone();
+                            move || counter.set(counter.get() + 1)
+                        },
+                        || {
+                            Text("Increment", Modifier::padding(6.0));
+                        },
+                    );
+                    Spacer(Size {
+                        width: 12.0,
+                        height: 0.0,
+                    });
+                    Button(
+                        Modifier::rounded_corners(16.0)
+                            .then(Modifier::draw_behind(|scope| {
                                 scope.draw_round_rect(
-                                    Brush::linear_gradient(vec![
-                                        Color(0.2, 0.45, 0.9, 1.0),
-                                        Color(0.15, 0.3, 0.65, 1.0),
-                                    ]),
+                                    Brush::solid(Color(0.4, 0.18, 0.3, 1.0)),
                                     CornerRadii::uniform(16.0),
                                 );
-                            });
-                        }))
-                        .then(Modifier::padding(12.0)),
-                    {
-                        let counter = counter_inc.clone();
-                        move || counter.set(counter.get() + 1)
-                    },
-                    || {
-                        Text("Increment", Modifier::padding(6.0));
-                    },
-                );
-                Spacer(Size {
-                    width: 12.0,
-                    height: 0.0,
+                            }))
+                            .then(Modifier::padding(12.0)),
+                        {
+                            let counter = counter.clone();
+                            move || counter.set(counter.get() - 1)
+                        },
+                        || {
+                            Text("Decrement", Modifier::padding(6.0));
+                        },
+                    );
                 });
-                Button(
-                    Modifier::rounded_corners(16.0)
-                        .then(Modifier::draw_behind(|scope| {
-                            scope.draw_round_rect(
-                                Brush::solid(Color(0.4, 0.18, 0.3, 1.0)),
-                                CornerRadii::uniform(16.0),
-                            );
-                        }))
-                        .then(Modifier::padding(12.0)),
-                    {
-                        let counter = counter.clone();
-                        move || counter.set(counter.get() - 1)
-                    },
-                    || {
-                        Text("Decrement", Modifier::padding(6.0));
-                    },
-                );
-            });
-        }
+            }
         },
     );
 }
@@ -670,85 +681,83 @@ fn random() -> i32 {
 fn combined_app() {
     let show_counter = compose_core::useState(|| false);
 
-    Column(
-        Modifier::padding(20.0),
-        ColumnSpec::default(),
-        move || {
-            let show_counter_for_row = show_counter.clone();
-            let show_counter_for_condition = show_counter.clone();
-            Row(
-                Modifier::padding(8.0),
-                RowSpec::default(),
-                move || {
-                    let is_counter = show_counter_for_row.get();
-                    Button(
-                        Modifier::rounded_corners(12.0)
-                            .then(Modifier::draw_behind(move |scope| {
-                                scope.draw_round_rect(
-                                    Brush::solid(if is_counter {
-                                        Color(0.2, 0.45, 0.9, 1.0)
-                                    } else {
-                                        Color(0.3, 0.3, 0.3, 0.5)
-                                    }),
-                                    CornerRadii::uniform(12.0),
-                                );
-                            }))
-                            .then(Modifier::padding(10.0)),
-                        {
-                            let show_counter = show_counter_for_row.clone();
-                            move || {
-                                println!("Counter App button clicked");
-                                if !show_counter.get() {
-                                    show_counter.set(true);
-                                }
-                            }
-                        },
-                        || {
-                            Text("Counter App", Modifier::padding(4.0));
-                        },
-                    );
-                    Spacer(Size { width: 8.0, height: 0.0 });
-                    Button(
-                        Modifier::rounded_corners(12.0)
-                            .then(Modifier::draw_behind(move |scope| {
-                                scope.draw_round_rect(
-                                    Brush::solid(if !is_counter {
-                                        Color(0.2, 0.45, 0.9, 1.0)
-                                    } else {
-                                        Color(0.3, 0.3, 0.3, 0.5)
-                                    }),
-                                    CornerRadii::uniform(12.0),
-                                );
-                            }))
-                            .then(Modifier::padding(10.0)),
-                        {
-                            let show_counter = show_counter_for_row.clone();
-                            move || {
-                                println!("Composition Local button clicked");
-                                if show_counter.get() {
-                                    show_counter.set(false);
-                                }
-                            }
-                        },
-                        || {
-                            Text("CompositionLocal Test", Modifier::padding(4.0));
-                        },
-                    );
+    Column(Modifier::padding(20.0), ColumnSpec::default(), move || {
+        let show_counter_for_row = show_counter.clone();
+        let show_counter_for_condition = show_counter.clone();
+        Row(Modifier::padding(8.0), RowSpec::default(), move || {
+            let is_counter = show_counter_for_row.get();
+            Button(
+                Modifier::rounded_corners(12.0)
+                    .then(Modifier::draw_behind(move |scope| {
+                        scope.draw_round_rect(
+                            Brush::solid(if is_counter {
+                                Color(0.2, 0.45, 0.9, 1.0)
+                            } else {
+                                Color(0.3, 0.3, 0.3, 0.5)
+                            }),
+                            CornerRadii::uniform(12.0),
+                        );
+                    }))
+                    .then(Modifier::padding(10.0)),
+                {
+                    let show_counter = show_counter_for_row.clone();
+                    move || {
+                        println!("Counter App button clicked");
+                        if !show_counter.get() {
+                            show_counter.set(true);
+                        }
+                    }
+                },
+                || {
+                    Text("Counter App", Modifier::padding(4.0));
                 },
             );
+            Spacer(Size {
+                width: 8.0,
+                height: 0.0,
+            });
+            Button(
+                Modifier::rounded_corners(12.0)
+                    .then(Modifier::draw_behind(move |scope| {
+                        scope.draw_round_rect(
+                            Brush::solid(if !is_counter {
+                                Color(0.2, 0.45, 0.9, 1.0)
+                            } else {
+                                Color(0.3, 0.3, 0.3, 0.5)
+                            }),
+                            CornerRadii::uniform(12.0),
+                        );
+                    }))
+                    .then(Modifier::padding(10.0)),
+                {
+                    let show_counter = show_counter_for_row.clone();
+                    move || {
+                        println!("Composition Local button clicked");
+                        if show_counter.get() {
+                            show_counter.set(false);
+                        }
+                    }
+                },
+                || {
+                    Text("CompositionLocal Test", Modifier::padding(4.0));
+                },
+            );
+        });
 
-            Spacer(Size { width: 0.0, height: 12.0 });
+        Spacer(Size {
+            width: 0.0,
+            height: 12.0,
+        });
 
-            println!("if recomposed");
-            if show_counter_for_condition.get() {
-                println!("if show counter");
-                counter_app();
-            } else {
-                println!("if not show counter");
-                composition_local_example();
-            }
-        },
-    );
+        println!("if recomposed");
+        if show_counter_for_condition.get() {
+            println!("if show counter");
+            counter_app();
+        } else {
+            println!("if not show counter");
+            composition_local_example();
+        }
+    });
 }
 
 #[composable]
@@ -769,7 +778,10 @@ fn composition_local_example() {
                     .then(Modifier::rounded_corners(16.0)),
             );
 
-            Spacer(Size { width: 0.0, height: 16.0 });
+            Spacer(Size {
+                width: 0.0,
+                height: 16.0,
+            });
 
             Text(
                 format!("Counter: {}", counter.get()),
@@ -778,7 +790,10 @@ fn composition_local_example() {
                     .then(Modifier::rounded_corners(12.0)),
             );
 
-            Spacer(Size { width: 0.0, height: 12.0 });
+            Spacer(Size {
+                width: 0.0,
+                height: 12.0,
+            });
 
             Button(
                 Modifier::rounded_corners(16.0)
@@ -802,7 +817,10 @@ fn composition_local_example() {
                 },
             );
 
-            Spacer(Size { width: 0.0, height: 16.0 });
+            Spacer(Size {
+                width: 0.0,
+                height: 16.0,
+            });
 
             // Provide the composition local
             let local = local_holder();
@@ -825,7 +843,10 @@ fn composition_local_content() {
             .then(Modifier::rounded_corners(12.0)),
     );
 
-    Spacer(Size { width: 0.0, height: 8.0 });
+    Spacer(Size {
+        width: 0.0,
+        height: 8.0,
+    });
 
     let local = local_holder();
     let holder = local.current(); // This establishes subscription
@@ -837,7 +858,10 @@ fn composition_local_content() {
             .then(Modifier::rounded_corners(12.0)),
     );
 
-    Spacer(Size { width: 0.0, height: 8.0 });
+    Spacer(Size {
+        width: 0.0,
+        height: 8.0,
+    });
 
     let r3 = random();
     Text(
