@@ -337,6 +337,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "compose-app-shell"
+version = "0.1.0"
+
+[[package]]
+name = "compose-assets"
+version = "0.1.0"
+
+[[package]]
 name = "compose-core"
 version = "0.1.0"
 dependencies = [
@@ -365,6 +373,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "compose-platform-desktop-winit"
+version = "0.1.0"
+
+[[package]]
+name = "compose-render-common"
+version = "0.1.0"
+
+[[package]]
+name = "compose-render-pixels"
+version = "0.1.0"
+dependencies = [
+ "compose-render-common",
+]
+
+[[package]]
+name = "compose-render-wgpu"
+version = "0.1.0"
+dependencies = [
+ "compose-render-common",
+]
+
+[[package]]
 name = "compose-runtime-std"
 version = "0.1.0"
 dependencies = [
@@ -389,6 +419,7 @@ dependencies = [
  "compose-macros",
  "compose-runtime-std",
  "compose-testing",
+ "compose-ui-layout",
  "criterion",
  "indexmap 2.11.4",
 ]

@@ -2,16 +2,23 @@
 
 extern crate self as compose_core;
 
+pub mod frame_clock;
 pub mod owned;
 pub mod platform;
+pub mod runtime;
 pub mod subcompose;
 
+pub use frame_clock::{FrameCallbackRegistration, FrameClock};
 pub use owned::Owned;
 pub use platform::{Clock, RuntimeScheduler};
+pub use runtime::{schedule_frame, schedule_node_update, DefaultScheduler, Runtime, RuntimeHandle};
+
+#[cfg(test)]
+pub use runtime::{TestRuntime, TestScheduler};
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque}; // FUTURE(no_std): replace HashMap/HashSet with arena-backed maps.
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet}; // FUTURE(no_std): replace HashMap/HashSet with arena-backed maps.
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::mem;
@@ -23,9 +30,9 @@ use std::thread_local;
 pub type Key = u64;
 pub type NodeId = usize;
 
-type ScopeId = usize;
+pub(crate) type ScopeId = usize;
 type LocalKey = usize;
-type FrameCallbackId = u64;
+pub(crate) type FrameCallbackId = u64;
 
 static NEXT_SCOPE_ID: AtomicUsize = AtomicUsize::new(1);
 static NEXT_LOCAL_KEY: AtomicUsize = AtomicUsize::new(1);
@@ -38,7 +45,7 @@ fn next_local_key() -> LocalKey {
     NEXT_LOCAL_KEY.fetch_add(1, Ordering::Relaxed)
 }
 
-struct RecomposeScopeInner {
+pub(crate) struct RecomposeScopeInner {
     id: ScopeId,
     runtime: RuntimeHandle,
     invalid: Cell<bool>,
@@ -49,11 +56,6 @@ struct RecomposeScopeInner {
     force_recompose: Cell<bool>,
     group_index: Cell<Option<usize>>,
     recompose: RefCell<Option<RecomposeCallback>>,
-}
-
-struct FrameCallbackEntry {
-    id: FrameCallbackId,
-    callback: Option<Box<dyn FnOnce(u64) + 'static>>,
 }
 
 impl RecomposeScopeInner {
@@ -951,7 +953,7 @@ pub trait Applier {
     fn remove(&mut self, id: NodeId) -> Result<(), NodeError>;
 }
 
-type Command = Box<dyn FnMut(&mut dyn Applier) -> Result<(), NodeError> + 'static>;
+pub(crate) type Command = Box<dyn FnMut(&mut dyn Applier) -> Result<(), NodeError> + 'static>;
 
 #[derive(Default)]
 pub struct MemoryApplier {
@@ -1055,408 +1057,6 @@ impl Applier for MemoryApplier {
     }
 }
 
-struct RuntimeInner {
-    scheduler: Arc<dyn RuntimeScheduler>,
-    needs_frame: RefCell<bool>,
-    node_updates: RefCell<Vec<Command>>, // FUTURE(no_std): replace Vec with ring buffer.
-    invalid_scopes: RefCell<HashSet<ScopeId>>, // FUTURE(no_std): replace HashSet with sparse bitset.
-    scope_queue: RefCell<Vec<(ScopeId, Weak<RecomposeScopeInner>)>>, // FUTURE(no_std): use smallvec-backed queue.
-    frame_callbacks: RefCell<VecDeque<FrameCallbackEntry>>, // FUTURE(no_std): migrate to ring buffer.
-    next_frame_callback_id: Cell<u64>,
-}
-
-impl RuntimeInner {
-    fn new(scheduler: Arc<dyn RuntimeScheduler>) -> Self {
-        Self {
-            scheduler,
-            needs_frame: RefCell::new(false),
-            node_updates: RefCell::new(Vec::new()),
-            invalid_scopes: RefCell::new(HashSet::new()),
-            scope_queue: RefCell::new(Vec::new()),
-            frame_callbacks: RefCell::new(VecDeque::new()),
-            next_frame_callback_id: Cell::new(1),
-        }
-    }
-
-    fn schedule(&self) {
-        *self.needs_frame.borrow_mut() = true;
-        self.scheduler.schedule_frame();
-    }
-
-    fn enqueue_update(&self, command: Command) {
-        self.node_updates.borrow_mut().push(command);
-    }
-
-    fn take_updates(&self) -> Vec<Command> {
-        // FUTURE(no_std): return stack-allocated smallvec.
-        self.node_updates.borrow_mut().drain(..).collect()
-    }
-
-    fn has_updates(&self) -> bool {
-        !self.node_updates.borrow().is_empty()
-    }
-
-    fn register_invalid_scope(&self, id: ScopeId, scope: Weak<RecomposeScopeInner>) {
-        let mut invalid = self.invalid_scopes.borrow_mut();
-        if invalid.insert(id) {
-            self.scope_queue.borrow_mut().push((id, scope));
-            self.schedule();
-        }
-    }
-
-    fn mark_scope_recomposed(&self, id: ScopeId) {
-        self.invalid_scopes.borrow_mut().remove(&id);
-    }
-
-    fn take_invalidated_scopes(&self) -> Vec<(ScopeId, Weak<RecomposeScopeInner>)> {
-        // FUTURE(no_std): return iterator over small array storage.
-        self.scope_queue.borrow_mut().drain(..).collect()
-    }
-
-    fn has_invalid_scopes(&self) -> bool {
-        !self.invalid_scopes.borrow().is_empty()
-    }
-
-    fn has_frame_callbacks(&self) -> bool {
-        !self.frame_callbacks.borrow().is_empty()
-    }
-
-    fn spawn_task(&self, task: Box<dyn FnOnce() + Send + 'static>) {
-        self.scheduler.spawn_task(task);
-    }
-
-    fn register_frame_callback(&self, callback: Box<dyn FnOnce(u64) + 'static>) -> FrameCallbackId {
-        let id = self.next_frame_callback_id.get();
-        self.next_frame_callback_id.set(id + 1);
-        self.frame_callbacks
-            .borrow_mut()
-            .push_back(FrameCallbackEntry {
-                id,
-                callback: Some(callback),
-            });
-        self.schedule();
-        id
-    }
-
-    fn cancel_frame_callback(&self, id: FrameCallbackId) {
-        let mut callbacks = self.frame_callbacks.borrow_mut();
-        if let Some(index) = callbacks.iter().position(|entry| entry.id == id) {
-            callbacks.remove(index);
-        }
-        if !self.has_invalid_scopes() && !self.has_updates() && callbacks.is_empty() {
-            *self.needs_frame.borrow_mut() = false;
-        }
-    }
-
-    fn drain_frame_callbacks(&self, frame_time_nanos: u64) {
-        let mut callbacks = self.frame_callbacks.borrow_mut();
-        let mut pending: Vec<Box<dyn FnOnce(u64) + 'static>> = Vec::with_capacity(callbacks.len());
-        while let Some(mut entry) = callbacks.pop_front() {
-            if let Some(callback) = entry.callback.take() {
-                pending.push(callback);
-            }
-        }
-        drop(callbacks);
-        for callback in pending {
-            callback(frame_time_nanos);
-        }
-        if !self.has_invalid_scopes() && !self.has_updates() && !self.has_frame_callbacks() {
-            *self.needs_frame.borrow_mut() = false;
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct Runtime {
-    inner: Rc<RuntimeInner>, // FUTURE(no_std): replace Rc with arena-managed runtime storage.
-}
-
-impl Runtime {
-    pub fn new(scheduler: Arc<dyn RuntimeScheduler>) -> Self {
-        Self {
-            inner: Rc::new(RuntimeInner::new(scheduler)),
-        }
-    }
-
-    pub fn handle(&self) -> RuntimeHandle {
-        RuntimeHandle(Rc::downgrade(&self.inner))
-    }
-
-    pub fn has_updates(&self) -> bool {
-        self.inner.has_updates()
-    }
-
-    pub fn needs_frame(&self) -> bool {
-        *self.inner.needs_frame.borrow()
-    }
-
-    pub fn set_needs_frame(&self, value: bool) {
-        *self.inner.needs_frame.borrow_mut() = value;
-    }
-
-    pub fn frame_clock(&self) -> FrameClock {
-        FrameClock::new(self.handle())
-    }
-}
-
-#[derive(Default)]
-struct DefaultScheduler;
-
-impl RuntimeScheduler for DefaultScheduler {
-    fn schedule_frame(&self) {}
-
-    fn spawn_task(&self, task: Box<dyn FnOnce() + Send + 'static>) {
-        std::thread::spawn(move || task());
-    }
-}
-
-#[cfg(test)]
-#[derive(Default)]
-struct TestScheduler;
-
-#[cfg(test)]
-impl RuntimeScheduler for TestScheduler {
-    fn schedule_frame(&self) {}
-
-    fn spawn_task(&self, task: Box<dyn FnOnce() + Send + 'static>) {
-        std::thread::spawn(move || task());
-    }
-}
-
-#[cfg(test)]
-pub struct TestRuntime {
-    runtime: Runtime,
-}
-
-#[cfg(test)]
-impl TestRuntime {
-    pub fn new() -> Self {
-        Self {
-            runtime: Runtime::new(Arc::new(TestScheduler::default())),
-        }
-    }
-
-    pub fn handle(&self) -> RuntimeHandle {
-        self.runtime.handle()
-    }
-}
-
-#[derive(Clone)]
-pub struct RuntimeHandle(Weak<RuntimeInner>);
-
-impl RuntimeHandle {
-    pub fn schedule(&self) {
-        if let Some(inner) = self.0.upgrade() {
-            inner.schedule();
-        }
-    }
-
-    pub fn enqueue_node_update(&self, command: Command) {
-        if let Some(inner) = self.0.upgrade() {
-            inner.enqueue_update(command);
-        }
-    }
-
-    pub fn spawn_task(&self, task: Box<dyn FnOnce() + Send + 'static>) {
-        if let Some(inner) = self.0.upgrade() {
-            inner.spawn_task(task);
-        } else {
-            task();
-        }
-    }
-
-    pub fn register_frame_callback(
-        &self,
-        callback: impl FnOnce(u64) + 'static,
-    ) -> Option<FrameCallbackId> {
-        self.0
-            .upgrade()
-            .map(|inner| inner.register_frame_callback(Box::new(callback)))
-    }
-
-    pub fn cancel_frame_callback(&self, id: FrameCallbackId) {
-        if let Some(inner) = self.0.upgrade() {
-            inner.cancel_frame_callback(id);
-        }
-    }
-
-    pub fn drain_frame_callbacks(&self, frame_time_nanos: u64) {
-        if let Some(inner) = self.0.upgrade() {
-            inner.drain_frame_callbacks(frame_time_nanos);
-        }
-    }
-
-    pub fn frame_clock(&self) -> FrameClock {
-        FrameClock::new(self.clone())
-    }
-
-    pub fn set_needs_frame(&self, value: bool) {
-        if let Some(inner) = self.0.upgrade() {
-            *inner.needs_frame.borrow_mut() = value;
-        }
-    }
-
-    fn take_updates(&self) -> Vec<Command> {
-        // FUTURE(no_std): return iterator over static buffer.
-        self.0
-            .upgrade()
-            .map(|inner| inner.take_updates())
-            .unwrap_or_default()
-    }
-
-    pub fn has_updates(&self) -> bool {
-        self.0
-            .upgrade()
-            .map(|inner| inner.has_updates())
-            .unwrap_or(false)
-    }
-
-    fn register_invalid_scope(&self, id: ScopeId, scope: Weak<RecomposeScopeInner>) {
-        if let Some(inner) = self.0.upgrade() {
-            inner.register_invalid_scope(id, scope);
-        }
-    }
-
-    fn mark_scope_recomposed(&self, id: ScopeId) {
-        if let Some(inner) = self.0.upgrade() {
-            inner.mark_scope_recomposed(id);
-        }
-    }
-
-    pub(crate) fn take_invalidated_scopes(&self) -> Vec<(ScopeId, Weak<RecomposeScopeInner>)> {
-        // FUTURE(no_std): expose draining iterator without Vec allocation.
-        self.0
-            .upgrade()
-            .map(|inner| inner.take_invalidated_scopes())
-            .unwrap_or_default()
-    }
-
-    pub fn has_invalid_scopes(&self) -> bool {
-        self.0
-            .upgrade()
-            .map(|inner| inner.has_invalid_scopes())
-            .unwrap_or(false)
-    }
-
-    pub fn has_frame_callbacks(&self) -> bool {
-        self.0
-            .upgrade()
-            .map(|inner| inner.has_frame_callbacks())
-            .unwrap_or(false)
-    }
-}
-
-#[derive(Clone)]
-pub struct FrameClock {
-    runtime: RuntimeHandle,
-}
-
-impl FrameClock {
-    pub fn new(runtime: RuntimeHandle) -> Self {
-        Self { runtime }
-    }
-
-    pub fn runtime_handle(&self) -> RuntimeHandle {
-        self.runtime.clone()
-    }
-
-    pub fn with_frame_nanos(
-        &self,
-        callback: impl FnOnce(u64) + 'static,
-    ) -> FrameCallbackRegistration {
-        let mut callback_opt = Some(callback);
-        let runtime = self.runtime.clone();
-        match runtime.register_frame_callback(move |time| {
-            if let Some(callback) = callback_opt.take() {
-                callback(time);
-            }
-        }) {
-            Some(id) => FrameCallbackRegistration::new(runtime, id),
-            None => FrameCallbackRegistration::inactive(runtime),
-        }
-    }
-
-    pub fn with_frame_millis(
-        &self,
-        callback: impl FnOnce(u64) + 'static,
-    ) -> FrameCallbackRegistration {
-        self.with_frame_nanos(move |nanos| {
-            let millis = nanos / 1_000_000;
-            callback(millis);
-        })
-    }
-}
-
-pub struct FrameCallbackRegistration {
-    runtime: RuntimeHandle,
-    id: Option<FrameCallbackId>,
-}
-
-impl FrameCallbackRegistration {
-    fn new(runtime: RuntimeHandle, id: FrameCallbackId) -> Self {
-        Self {
-            runtime,
-            id: Some(id),
-        }
-    }
-
-    fn inactive(runtime: RuntimeHandle) -> Self {
-        Self { runtime, id: None }
-    }
-
-    pub fn cancel(mut self) {
-        if let Some(id) = self.id.take() {
-            self.runtime.cancel_frame_callback(id);
-        }
-    }
-}
-
-impl Drop for FrameCallbackRegistration {
-    fn drop(&mut self) {
-        if let Some(id) = self.id.take() {
-            self.runtime.cancel_frame_callback(id);
-        }
-    }
-}
-
-thread_local! {
-    static ACTIVE_RUNTIMES: RefCell<Vec<RuntimeHandle>> = RefCell::new(Vec::new()); // FUTURE(no_std): move to bounded stack storage.
-    static LAST_RUNTIME: RefCell<Option<RuntimeHandle>> = RefCell::new(None);
-}
-
-fn current_runtime_handle() -> Option<RuntimeHandle> {
-    if let Some(handle) = ACTIVE_RUNTIMES.with(|stack| stack.borrow().last().cloned()) {
-        return Some(handle);
-    }
-    LAST_RUNTIME.with(|slot| slot.borrow().clone())
-}
-
-/// Schedule a new frame render using the most recently active runtime handle.
-///
-/// Signal writers call into this helper to enqueue another frame even after the
-/// `Composer` has returned.
-pub fn schedule_frame() {
-    if let Some(handle) = current_runtime_handle() {
-        handle.schedule();
-        return;
-    }
-    panic!("no runtime available to schedule frame");
-}
-
-/// Schedule an in-place node update using the most recently active runtime.
-pub fn schedule_node_update(
-    update: impl FnOnce(&mut dyn Applier) -> Result<(), NodeError> + 'static,
-) {
-    let handle = current_runtime_handle().expect("no runtime available to schedule node update");
-    let mut update_opt = Some(update);
-    handle.enqueue_node_update(Box::new(move |applier: &mut dyn Applier| {
-        if let Some(update) = update_opt.take() {
-            return update(applier);
-        }
-        Ok(())
-    }));
-}
-
 pub struct Composer<'a> {
     slots: &'a mut SlotTable,
     applier: &'a mut dyn Applier,
@@ -1528,17 +1128,14 @@ impl<'a> Composer<'a> {
 
     pub fn install<R>(&'a mut self, f: impl FnOnce(&mut Composer<'a>) -> R) -> R {
         CURRENT_COMPOSER.with(|stack| stack.borrow_mut().push(self as *mut _ as *mut ()));
-        ACTIVE_RUNTIMES.with(|stack| stack.borrow_mut().push(self.runtime.clone()));
-        LAST_RUNTIME.with(|slot| *slot.borrow_mut() = Some(self.runtime.clone()));
+        runtime::push_active_runtime(&self.runtime);
         struct Guard;
         impl Drop for Guard {
             fn drop(&mut self) {
                 CURRENT_COMPOSER.with(|stack| {
                     stack.borrow_mut().pop();
                 });
-                ACTIVE_RUNTIMES.with(|stack| {
-                    stack.borrow_mut().pop();
-                });
+                runtime::pop_active_runtime();
             }
         }
         let guard = Guard;

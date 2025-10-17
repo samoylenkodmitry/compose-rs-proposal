@@ -1,0 +1,8 @@
+[package]
+name = "compose-app-shell"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Application orchestration shell for Compose-RS"
+
+[dependencies]

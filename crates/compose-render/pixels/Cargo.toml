@@ -1,0 +1,9 @@
+[package]
+name = "compose-render-pixels"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Pixels renderer backend for Compose-RS"
+
+[dependencies]
+compose-render-common = { path = "../common" }
