@@ -1,6 +1,7 @@
-//! Core layout traits and types
+//! Core layout traits and types shared by Compose UI widgets.
 
 use crate::constraints::Constraints;
+use compose_core::NodeId;
 use compose_ui_graphics::Size;
 
 /// Object capable of measuring a layout child and exposing intrinsic sizes.
@@ -31,6 +32,9 @@ pub trait Placeable {
 
     /// Returns the measured height of the child.
     fn height(&self) -> f32;
+
+    /// Returns the identifier for the underlying layout node.
+    fn node_id(&self) -> NodeId;
 }
 
 /// Scope for measurement operations.
@@ -84,14 +88,14 @@ impl MeasureResult {
 /// Placement information for a measured child.
 #[derive(Clone, Copy, Debug)]
 pub struct Placement {
-    pub node_id: usize,
+    pub node_id: NodeId,
     pub x: f32,
     pub y: f32,
     pub z_index: i32,
 }
 
 impl Placement {
-    pub fn new(node_id: usize, x: f32, y: f32, z_index: i32) -> Self {
+    pub fn new(node_id: NodeId, x: f32, y: f32, z_index: i32) -> Self {
         Self {
             node_id,
             x,

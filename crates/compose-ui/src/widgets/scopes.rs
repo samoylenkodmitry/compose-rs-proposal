@@ -1,8 +1,8 @@
 //! Scope traits and implementations for Box, Column, and Row
 
-use crate::layout::core::{Alignment, HorizontalAlignment, VerticalAlignment};
 use crate::modifier::Modifier;
 use crate::subcompose_layout::Constraints;
+use compose_ui_layout::{Alignment, HorizontalAlignment, VerticalAlignment};
 
 /// Unit type for density-independent pixels
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]

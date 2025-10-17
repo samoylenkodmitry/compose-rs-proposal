@@ -6,3 +6,6 @@ license = "MIT"
 description = "Desktop winit platform adapter for Compose-RS"
 
 [dependencies]
+winit = "0.28"
+compose-foundation = { path = "../../compose-foundation" }
+compose-ui-graphics = { path = "../../compose-ui-graphics" }

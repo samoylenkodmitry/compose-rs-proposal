@@ -2,11 +2,11 @@
 
 #![allow(non_snake_case)]
 
-use std::rc::Rc;
-use compose_core::{MutableState, NodeId, State};
+use super::nodes::TextNode;
 use crate::composable;
 use crate::modifier::Modifier;
-use super::nodes::TextNode;
+use compose_core::{MutableState, NodeId, State};
+use std::rc::Rc;
 
 #[derive(Clone)]
 pub struct DynamicTextSource(Rc<dyn Fn() -> String>);

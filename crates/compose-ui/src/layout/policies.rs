@@ -2,8 +2,7 @@ use crate::layout::core::{
     Alignment, Arrangement, HorizontalAlignment, LinearArrangement, Measurable, MeasurePolicy,
     VerticalAlignment,
 };
-use crate::modifier::Point;
-use crate::subcompose_layout::{Constraints, MeasureResult, Placement};
+use compose_ui_layout::{Constraints, MeasureResult, Placement};
 
 /// MeasurePolicy for Box layout - overlays children according to alignment.
 #[derive(Clone, Debug, PartialEq)]
@@ -70,7 +69,7 @@ impl MeasurePolicy for BoxMeasurePolicy {
             };
 
             placeable.place(x, y);
-            placements.push(Placement::new(placeable.node_id(), Point { x, y }, 0));
+            placements.push(Placement::new(placeable.node_id(), x, y, 0));
         }
 
         MeasureResult::new(crate::modifier::Size { width, height }, placements)
@@ -179,7 +178,7 @@ impl MeasurePolicy for ColumnMeasurePolicy {
             };
 
             placeable.place(x, y);
-            placements.push(Placement::new(placeable.node_id(), Point { x, y }, 0));
+            placements.push(Placement::new(placeable.node_id(), x, y, 0));
         }
 
         MeasureResult::new(crate::modifier::Size { width, height }, placements)
@@ -310,7 +309,7 @@ impl MeasurePolicy for RowMeasurePolicy {
             };
 
             placeable.place(x, y);
-            placements.push(Placement::new(placeable.node_id(), Point { x, y }, 0));
+            placements.push(Placement::new(placeable.node_id(), x, y, 0));
         }
 
         MeasureResult::new(crate::modifier::Size { width, height }, placements)
@@ -477,8 +476,8 @@ mod tests {
         assert_eq!(result.size.width, 60.0);
         assert_eq!(result.size.height, 50.0);
         assert_eq!(result.placements.len(), 2);
-        assert_eq!(result.placements[0].position.y, 0.0);
-        assert_eq!(result.placements[1].position.y, 20.0);
+        assert_eq!(result.placements[0].y, 0.0);
+        assert_eq!(result.placements[1].y, 20.0);
     }
 
     #[test]
@@ -505,7 +504,7 @@ mod tests {
         assert_eq!(result.size.width, 100.0);
         assert_eq!(result.size.height, 30.0);
         assert_eq!(result.placements.len(), 2);
-        assert_eq!(result.placements[0].position.x, 0.0);
-        assert_eq!(result.placements[1].position.x, 40.0);
+        assert_eq!(result.placements[0].x, 0.0);
+        assert_eq!(result.placements[1].x, 40.0);
     }
 }

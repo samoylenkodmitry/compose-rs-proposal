@@ -12,7 +12,7 @@ use crate::modifier::{
     DimensionConstraint, EdgeInsets, Modifier, Point, Rect as GeometryRect, Size,
 };
 use crate::primitives::{ButtonNode, LayoutNode, SpacerNode, TextNode};
-use crate::subcompose_layout::Constraints;
+use compose_ui_layout::Constraints;
 
 /// Result of running layout for a Compose tree.
 #[derive(Debug, Clone)]
@@ -178,7 +178,15 @@ impl<'a> LayoutBuilder<'a> {
         let mut placement_map: HashMap<NodeId, Point> = policy_result
             .placements
             .into_iter()
-            .map(|placement| (placement.node_id, placement.position))
+            .map(|placement| {
+                (
+                    placement.node_id,
+                    Point {
+                        x: placement.x,
+                        y: placement.y,
+                    },
+                )
+            })
             .collect();
 
         let mut children = Vec::new();
@@ -740,7 +748,7 @@ mod tests {
     use std::rc::Rc;
 
     use crate::modifier::{Modifier, Size};
-    use crate::subcompose_layout::{MeasureResult, Placement};
+    use compose_ui_layout::{MeasureResult, Placement};
 
     use super::core::{Measurable, MeasurePolicy};
 
@@ -760,7 +768,7 @@ mod tests {
                 let placeable = measurable.measure(constraints);
                 width = width.max(placeable.width());
                 let height = placeable.height();
-                placements.push(Placement::new(placeable.node_id(), Point { x: 0.0, y }, 0));
+                placements.push(Placement::new(placeable.node_id(), 0.0, y, 0));
                 y += height;
             }
             let width = width.clamp(constraints.min_width, constraints.max_width);

@@ -339,6 +339,15 @@ dependencies = [
 [[package]]
 name = "compose-app-shell"
 version = "0.1.0"
+dependencies = [
+ "compose-core",
+ "compose-foundation",
+ "compose-render-common",
+ "compose-runtime-std",
+ "compose-ui",
+ "compose-ui-graphics",
+ "log",
+]
 
 [[package]]
 name = "compose-assets"
@@ -375,23 +384,40 @@ dependencies = [
 [[package]]
 name = "compose-platform-desktop-winit"
 version = "0.1.0"
+dependencies = [
+ "compose-foundation",
+ "compose-ui-graphics",
+ "winit",
+]
 
 [[package]]
 name = "compose-render-common"
 version = "0.1.0"
+dependencies = [
+ "compose-foundation",
+ "compose-ui-graphics",
+]
 
 [[package]]
 name = "compose-render-pixels"
 version = "0.1.0"
 dependencies = [
+ "compose-core",
+ "compose-foundation",
  "compose-render-common",
+ "compose-ui",
+ "compose-ui-graphics",
+ "once_cell",
+ "rusttype",
 ]
 
 [[package]]
 name = "compose-render-wgpu"
 version = "0.1.0"
 dependencies = [
+ "compose-foundation",
  "compose-render-common",
+ "compose-ui-graphics",
 ]
 
 [[package]]
@@ -417,8 +443,10 @@ dependencies = [
  "compose-core",
  "compose-foundation",
  "compose-macros",
+ "compose-render-common",
  "compose-runtime-std",
  "compose-testing",
+ "compose-ui-graphics",
  "compose-ui-layout",
  "criterion",
  "indexmap 2.11.4",
@@ -432,6 +460,7 @@ version = "0.1.0"
 name = "compose-ui-layout"
 version = "0.1.0"
 dependencies = [
+ "compose-core",
  "compose-ui-graphics",
 ]
 
@@ -566,14 +595,19 @@ dependencies = [
 name = "desktop-app"
 version = "0.1.0"
 dependencies = [
+ "compose-app-shell",
  "compose-core",
+ "compose-foundation",
+ "compose-platform-desktop-winit",
+ "compose-render-pixels",
+ "compose-render-wgpu",
  "compose-runtime-std",
  "compose-ui",
+ "compose-ui-graphics",
+ "compose-ui-layout",
  "env_logger",
  "log",
- "once_cell",
  "pixels",
- "rusttype",
  "winit",
 ]
 

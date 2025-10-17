@@ -12,7 +12,6 @@ pub use crate::widgets::*;
 mod tests {
     use super::*;
     use crate::composable;
-    use crate::layout::core::{HorizontalAlignment, LinearArrangement, VerticalAlignment};
     use crate::modifier::{Modifier, Size};
     use crate::subcompose_layout::{Constraints, SubcomposeLayoutNode};
     use crate::widgets::nodes::{ButtonNode, LayoutNode, TextNode};
@@ -25,6 +24,7 @@ mod tests {
         self, location_key, Composer, Composition, MemoryApplier, MutableState, NodeId, Phase,
         SlotTable, State,
     };
+    use compose_ui_layout::{HorizontalAlignment, LinearArrangement, VerticalAlignment};
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 

@@ -210,3 +210,22 @@ impl RoundedCornerShape {
         self.radii
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GraphicsLayer {
+    pub alpha: f32,
+    pub scale: f32,
+    pub translation_x: f32,
+    pub translation_y: f32,
+}
+
+impl Default for GraphicsLayer {
+    fn default() -> Self {
+        Self {
+            alpha: 1.0,
+            scale: 1.0,
+            translation_x: 0.0,
+            translation_y: 0.0,
+        }
+    }
+}

@@ -2,18 +2,18 @@
 
 #![allow(non_snake_case)]
 
-use std::cell::RefCell;
-use std::rc::Rc;
-use compose_core::{NodeId, SlotId};
+use super::nodes::LayoutNode;
+use super::scopes::{BoxWithConstraintsScope, BoxWithConstraintsScopeImpl};
 use crate::composable;
-use crate::layout::core::MeasurePolicy;
 use crate::modifier::{Modifier, Point};
 use crate::subcompose_layout::{
     Constraints, MeasurePolicy as SubcomposeMeasurePolicy, MeasureResult, MeasureScope, Placement,
     SubcomposeLayoutNode, SubcomposeMeasureScope, SubcomposeMeasureScopeImpl,
 };
-use super::nodes::LayoutNode;
-use super::scopes::{BoxWithConstraintsScope, BoxWithConstraintsScopeImpl};
+use compose_core::{NodeId, SlotId};
+use compose_ui_layout::MeasurePolicy;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 #[composable]
 pub fn Layout<F, P>(modifier: Modifier, measure_policy: P, content: F) -> NodeId
@@ -86,13 +86,7 @@ where
         let height = scope_impl.to_px(height_dp);
         let placements: Vec<Placement> = measurables
             .into_iter()
-            .map(|measurable| {
-                Placement::new(
-                    measurable.node_id(),
-                    Point { x: 0.0, y: 0.0 },
-                    0,
-                )
-            })
+            .map(|measurable| Placement::new(measurable.node_id(), Point { x: 0.0, y: 0.0 }, 0))
             .collect();
         scope.layout(width, height, placements)
     })

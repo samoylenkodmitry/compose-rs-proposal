@@ -2,12 +2,12 @@
 
 #![allow(non_snake_case)]
 
-use compose_core::NodeId;
+use super::layout::Layout;
 use crate::composable;
-use crate::layout::core::Alignment;
 use crate::layout::policies::BoxMeasurePolicy;
 use crate::modifier::Modifier;
-use super::layout::Layout;
+use compose_core::NodeId;
+use compose_ui_layout::Alignment;
 
 /// Specification for Box layout behavior.
 #[derive(Clone, Copy, Debug, PartialEq)]

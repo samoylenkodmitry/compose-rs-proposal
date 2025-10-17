@@ -11,6 +11,6 @@ pub use animation::*;
 
 pub mod prelude {
     pub use crate::animation::{
-        Animatable, AnimationSpec, AnimationType, Easing, Lerp, SpringSpec
+        Animatable, AnimationSpec, AnimationType, Easing, Lerp, SpringSpec,
     };
 }

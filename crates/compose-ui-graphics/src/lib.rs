@@ -5,21 +5,21 @@
 
 #![allow(non_snake_case)]
 
-mod color;
 mod brush;
+mod color;
 mod geometry;
-mod unit;
 mod typography;
+mod unit;
 
-pub use color::*;
 pub use brush::*;
+pub use color::*;
 pub use geometry::*;
-pub use unit::*;
 pub use typography::*;
+pub use unit::*;
 
 pub mod prelude {
-    pub use crate::color::Color;
     pub use crate::brush::Brush;
-    pub use crate::geometry::{Point, Size, Rect, EdgeInsets, CornerRadii, RoundedCornerShape};
+    pub use crate::color::Color;
+    pub use crate::geometry::{CornerRadii, EdgeInsets, Point, Rect, RoundedCornerShape, Size};
     pub use crate::unit::{Dp, Sp};
 }

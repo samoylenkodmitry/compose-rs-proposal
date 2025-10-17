@@ -7,6 +7,7 @@ description = "Layout contracts & policies for Compose-RS"
 
 [dependencies]
 compose-ui-graphics = { path = "../compose-ui-graphics" }
+compose-core = { path = "../compose-core" }
 
 [features]
 default = []
