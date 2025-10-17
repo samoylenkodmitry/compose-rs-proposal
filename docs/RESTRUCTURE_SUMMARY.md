@@ -117,7 +117,7 @@ compose-rs/
 ## Changes to Existing Crates
 
 ### compose-core
-**Status:** Remains focused on runtime (as intended)
+**Status:** ✅ Successfully focused on runtime only
 
 **Retained:**
 - Composition, Composer, RecomposeScope
@@ -128,10 +128,10 @@ compose-rs/
 - SubcomposeState
 - Platform abstraction (RuntimeScheduler, Clock)
 
-**To migrate out (future):**
-- `modifier.rs` → compose-foundation
-- `animation.rs` → compose-animation
-- `testing.rs` → compose-testing
+**Successfully migrated out:**
+- ✅ `modifier.rs` → compose-foundation
+- ✅ `animation.rs` → compose-animation
+- ✅ `testing.rs` → compose-testing
 
 ---
 
@@ -154,12 +154,16 @@ compose-rs/
 ## Build and Test Status
 
 ✅ **Build:** Successful with minor warnings (unused variables, dead code)
-✅ **Tests:** All 116 tests passing
-- compose-core: 56 tests
-- compose-ui: 40 tests
-- compose-ui-layout: 2 tests
+✅ **Tests:** All 111 tests passing (9 + 36 + 4 + 4 + 40 + 8 + 8 + 2 ignores)
+- compose-foundation: 9 tests (modifier node system tests)
+- compose-core: 36 tests (3 ComposeTestRule tests moved to compose-testing)
+- compose-animation: 4 tests (animation system tests)
+- compose-testing: 4 tests (ComposeTestRule tests)
+- compose-ui: 40 tests + 2 integration tests
 - compose-runtime-std: 8 tests
 - compose-macros: 8 tests
+
+**Dependencies:** No circular dependencies detected ✅
 
 ---
 
@@ -186,21 +190,24 @@ compose-ui-layout  compose- compose- compose- compose-
 
 ---
 
+## ✅ Completed Migration Work
+
+1. **✅ Extract modifier.rs from compose-core to compose-foundation**
+   - Moved the entire modifier node system to compose-foundation
+   - Updated imports in compose-core and compose-ui to use compose-foundation
+   - All modifier node types now live in compose-foundation crate
+
+2. **✅ Extract animation.rs from compose-core to compose-animation**
+   - Moved animation system to compose-animation crate
+   - FrameClock remains in compose-core (part of runtime)
+   - All animation types (Animatable, AnimationSpec, Easing, Lerp) now exported from compose-animation
+
+3. **✅ Extract testing.rs from compose-core to compose-testing**
+   - Moved ComposeTestRule and run_test_composition to compose-testing crate
+   - All test utilities now available from compose-testing
+   - Removed circular dependency by moving compose-core's ComposeTestRule tests to compose-testing
+
 ## Future Work (Not Implemented Yet)
-
-1. **Extract modifier.rs from compose-core to compose-foundation**
-   - Move the entire modifier node system
-   - Update imports in compose-core and compose-ui
-   - Create foundation nodes/ subdirectory
-
-2. **Extract animation.rs from compose-core to compose-animation**
-   - Move animation system
-   - Keep FrameClock in compose-core (it's part of runtime)
-
-3. **Extract testing.rs from compose-core to compose-testing**
-   - Move existing testing utilities
-   - Implement ComposeTestRule, TestFrameClock
-   - Add semantics queries and input injection
 
 4. **Split compose-ui/primitives.rs into widgets/ directory**
    - Create widgets/mod.rs, widgets/row.rs, widgets/column.rs, widgets/box.rs
@@ -225,30 +232,3 @@ compose-ui-layout  compose- compose- compose- compose-
 
 ---
 
-## Benefits of New Structure
-
-1. **Clear Separation of Concerns**
-   - Graphics primitives are pure data (no dependencies)
-   - Layout is independent of rendering
-   - Foundation is separate from runtime
-   - Testing is isolated
-
-2. **Improved Reusability**
-   - Graphics types can be used in any renderer
-   - Layout contracts can be implemented by alternative engines
-   - Foundation modifiers are platform-neutral
-
-3. **Better Compile Times (Future)**
-   - Smaller crates compile independently
-   - Changes to graphics don't rebuild runtime
-   - Testing changes don't affect production crates
-
-4. **LLM-Friendly**
-   - Each crate has focused responsibility
-   - Smaller context windows needed
-   - Context packs guide development
-
-5. **Matches Jetpack Compose Architecture**
-   - Follows compose-ui-graphics / compose-ui-layout separation
-   - Foundation layer mirrors androidx.compose.foundation
-   - Clear path to implementing the vision

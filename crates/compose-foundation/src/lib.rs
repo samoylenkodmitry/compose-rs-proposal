@@ -2,13 +2,13 @@
 
 #![allow(non_snake_case)]
 
-// Re-export the modifier node system from compose-core
-// Note: The modifier system is tightly integrated with the composition runtime,
-// so it remains in compose-core to avoid circular dependencies.
-pub use compose_core::modifier::*;
+pub mod modifier;
+
+// Re-export commonly used items
+pub use modifier::*;
 
 pub mod prelude {
-    pub use compose_core::modifier::{
+    pub use crate::modifier::{
         ModifierNode, ModifierElement, ModifierNodeContext, ModifierNodeChain,
         BasicModifierNodeContext, InvalidationKind,
         LayoutModifierNode, DrawModifierNode, PointerInputNode, SemanticsNode,

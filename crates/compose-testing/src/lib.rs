@@ -2,10 +2,11 @@
 
 #![allow(non_snake_case)]
 
-// Re-export testing utilities from compose-core for now
-// TODO: Move testing.rs from compose-core to here
-pub use compose_core::testing::*;
+pub mod testing;
+
+// Re-export testing utilities
+pub use testing::*;
 
 pub mod prelude {
-    pub use compose_core::testing::*;
+    pub use crate::testing::*;
 }

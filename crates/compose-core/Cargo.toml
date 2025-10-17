@@ -13,3 +13,4 @@ default = []
 
 [dev-dependencies]
 compose-macros = { path = "../compose-macros" }
+compose-testing = { path = "../compose-testing" }

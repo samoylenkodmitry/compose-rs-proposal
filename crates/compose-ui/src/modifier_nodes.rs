@@ -14,7 +14,7 @@
 //! # Example Usage
 //!
 //! ```rust,ignore
-//! use compose_core::modifier::{modifier_element, ModifierNodeChain, BasicModifierNodeContext};
+//! use compose_foundation::{modifier_element, ModifierNodeChain, BasicModifierNodeContext};
 //! use compose_ui::{PaddingElement, EdgeInsets};
 //!
 //! let mut chain = ModifierNodeChain::new();
@@ -48,8 +48,8 @@
 //! the migration is complete.
 
 #[cfg(test)]
-use compose_core::modifier::BasicModifierNodeContext;
-use compose_core::modifier::{
+use compose_foundation::BasicModifierNodeContext;
+use compose_foundation::{
     DrawModifierNode, LayoutModifierNode, Measurable, MeasureResult, ModifierElement, ModifierNode,
     ModifierNodeContext, NodeCapabilities, PointerInputNode,
 };
@@ -75,7 +75,7 @@ impl PaddingNode {
 
 impl ModifierNode for PaddingNode {
     fn on_attach(&mut self, context: &mut dyn ModifierNodeContext) {
-        context.invalidate(compose_core::modifier::InvalidationKind::Layout);
+        context.invalidate(compose_foundation::InvalidationKind::Layout);
     }
 }
 
@@ -84,14 +84,14 @@ impl LayoutModifierNode for PaddingNode {
         &mut self,
         _context: &mut dyn ModifierNodeContext,
         measurable: &dyn Measurable,
-        constraints: compose_core::modifier::Constraints,
+        constraints: compose_foundation::Constraints,
     ) -> MeasureResult {
         // Convert padding to integer values (rounding)
         let horizontal_padding = (self.padding.horizontal_sum()).round() as i32;
         let vertical_padding = (self.padding.vertical_sum()).round() as i32;
 
         // Subtract padding from available space
-        let inner_constraints = compose_core::modifier::Constraints {
+        let inner_constraints = compose_foundation::Constraints {
             min_width: (constraints.min_width - horizontal_padding).max(0),
             max_width: (constraints.max_width - horizontal_padding).max(0),
             min_height: (constraints.min_height - vertical_padding).max(0),
@@ -191,7 +191,7 @@ impl BackgroundNode {
 
 impl ModifierNode for BackgroundNode {
     fn on_attach(&mut self, context: &mut dyn ModifierNodeContext) {
-        context.invalidate(compose_core::modifier::InvalidationKind::Draw);
+        context.invalidate(compose_foundation::InvalidationKind::Draw);
     }
 }
 
@@ -199,7 +199,7 @@ impl DrawModifierNode for BackgroundNode {
     fn draw(
         &mut self,
         _context: &mut dyn ModifierNodeContext,
-        _draw_scope: &mut dyn compose_core::modifier::DrawScope,
+        _draw_scope: &mut dyn compose_foundation::DrawScope,
     ) {
         // In a full implementation, this would draw the background color
         // using the draw scope. For now, this is a placeholder.
@@ -262,7 +262,7 @@ impl SizeNode {
 
 impl ModifierNode for SizeNode {
     fn on_attach(&mut self, context: &mut dyn ModifierNodeContext) {
-        context.invalidate(compose_core::modifier::InvalidationKind::Layout);
+        context.invalidate(compose_foundation::InvalidationKind::Layout);
     }
 }
 
@@ -271,13 +271,13 @@ impl LayoutModifierNode for SizeNode {
         &mut self,
         _context: &mut dyn ModifierNodeContext,
         measurable: &dyn Measurable,
-        constraints: compose_core::modifier::Constraints,
+        constraints: compose_foundation::Constraints,
     ) -> MeasureResult {
         // Override constraints with explicit sizes if specified
         let width = self.width.unwrap_or(constraints.max_width);
         let height = self.height.unwrap_or(constraints.max_height);
 
-        let inner_constraints = compose_core::modifier::Constraints {
+        let inner_constraints = compose_foundation::Constraints {
             min_width: self.width.unwrap_or(constraints.min_width),
             max_width: width,
             min_height: self.height.unwrap_or(constraints.min_height),
@@ -374,7 +374,7 @@ impl ClickableNode {
 
 impl ModifierNode for ClickableNode {
     fn on_attach(&mut self, context: &mut dyn ModifierNodeContext) {
-        context.invalidate(compose_core::modifier::InvalidationKind::PointerInput);
+        context.invalidate(compose_foundation::InvalidationKind::PointerInput);
     }
 }
 
@@ -382,7 +382,7 @@ impl PointerInputNode for ClickableNode {
     fn on_pointer_event(
         &mut self,
         _context: &mut dyn ModifierNodeContext,
-        event: &compose_core::modifier::PointerEvent,
+        event: &compose_foundation::PointerEvent,
     ) -> bool {
         if event.pressed {
             // Convert to UI Point type
@@ -469,7 +469,7 @@ impl AlphaNode {
 
 impl ModifierNode for AlphaNode {
     fn on_attach(&mut self, context: &mut dyn ModifierNodeContext) {
-        context.invalidate(compose_core::modifier::InvalidationKind::Draw);
+        context.invalidate(compose_foundation::InvalidationKind::Draw);
     }
 }
 
@@ -477,7 +477,7 @@ impl DrawModifierNode for AlphaNode {
     fn draw(
         &mut self,
         _context: &mut dyn ModifierNodeContext,
-        _draw_scope: &mut dyn compose_core::modifier::DrawScope,
+        _draw_scope: &mut dyn compose_foundation::DrawScope,
     ) {
         // In a full implementation, this would:
         // 1. Save the current alpha/layer state
@@ -531,7 +531,7 @@ impl ModifierElement for AlphaElement {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use compose_core::modifier::{modifier_element, ModifierNodeChain};
+    use compose_foundation::{modifier_element, ModifierNodeChain};
     use std::cell::Cell;
 
     struct TestMeasurable {
@@ -540,7 +540,7 @@ mod tests {
     }
 
     impl Measurable for TestMeasurable {
-        fn measure(&self, constraints: compose_core::modifier::Constraints) -> MeasureResult {
+        fn measure(&self, constraints: compose_foundation::Constraints) -> MeasureResult {
             MeasureResult {
                 width: constraints.max_width.min(self.intrinsic_width),
                 height: constraints.max_height.min(self.intrinsic_height),
@@ -574,7 +574,7 @@ mod tests {
         chain.update_from_slice(&elements, &mut context);
 
         assert_eq!(chain.len(), 1);
-        assert!(chain.has_nodes_for_invalidation(compose_core::modifier::InvalidationKind::Layout));
+        assert!(chain.has_nodes_for_invalidation(compose_foundation::InvalidationKind::Layout));
 
         // Test that padding node correctly implements layout
         let node = chain.node_mut::<PaddingNode>(0).unwrap();
@@ -582,7 +582,7 @@ mod tests {
             intrinsic_width: 50,
             intrinsic_height: 50,
         };
-        let constraints = compose_core::modifier::Constraints {
+        let constraints = compose_foundation::Constraints {
             min_width: 0,
             max_width: 200,
             min_height: 0,
@@ -623,8 +623,8 @@ mod tests {
         chain.update_from_slice(&elements, &mut context);
 
         assert_eq!(chain.len(), 1);
-        assert!(chain.has_nodes_for_invalidation(compose_core::modifier::InvalidationKind::Draw));
-        assert!(!chain.has_nodes_for_invalidation(compose_core::modifier::InvalidationKind::Layout));
+        assert!(chain.has_nodes_for_invalidation(compose_foundation::InvalidationKind::Draw));
+        assert!(!chain.has_nodes_for_invalidation(compose_foundation::InvalidationKind::Layout));
     }
 
     #[test]
@@ -666,7 +666,7 @@ mod tests {
             intrinsic_width: 50,
             intrinsic_height: 50,
         };
-        let constraints = compose_core::modifier::Constraints {
+        let constraints = compose_foundation::Constraints {
             min_width: 0,
             max_width: 500,
             min_height: 0,
@@ -692,11 +692,11 @@ mod tests {
         chain.update_from_slice(&elements, &mut context);
 
         assert!(chain
-            .has_nodes_for_invalidation(compose_core::modifier::InvalidationKind::PointerInput));
+            .has_nodes_for_invalidation(compose_foundation::InvalidationKind::PointerInput));
 
         // Simulate a pointer event
         let node = chain.node_mut::<ClickableNode>(0).unwrap();
-        let event = compose_core::modifier::PointerEvent {
+        let event = compose_foundation::PointerEvent {
             x: 10.0,
             y: 20.0,
             pressed: true,
@@ -737,8 +737,8 @@ mod tests {
         let elements = vec![modifier_element(AlphaElement::new(0.5))];
         chain.update_from_slice(&elements, &mut context);
 
-        assert!(chain.has_nodes_for_invalidation(compose_core::modifier::InvalidationKind::Draw));
-        assert!(!chain.has_nodes_for_invalidation(compose_core::modifier::InvalidationKind::Layout));
+        assert!(chain.has_nodes_for_invalidation(compose_foundation::InvalidationKind::Draw));
+        assert!(!chain.has_nodes_for_invalidation(compose_foundation::InvalidationKind::Layout));
     }
 
     #[test]
@@ -761,10 +761,10 @@ mod tests {
         chain.update_from_slice(&elements, &mut context);
 
         assert_eq!(chain.len(), 4);
-        assert!(chain.has_nodes_for_invalidation(compose_core::modifier::InvalidationKind::Layout));
-        assert!(chain.has_nodes_for_invalidation(compose_core::modifier::InvalidationKind::Draw));
+        assert!(chain.has_nodes_for_invalidation(compose_foundation::InvalidationKind::Layout));
+        assert!(chain.has_nodes_for_invalidation(compose_foundation::InvalidationKind::Draw));
         assert!(chain
-            .has_nodes_for_invalidation(compose_core::modifier::InvalidationKind::PointerInput));
+            .has_nodes_for_invalidation(compose_foundation::InvalidationKind::PointerInput));
 
         // Verify correct node counts by type
         assert_eq!(chain.layout_nodes().count(), 1); // padding

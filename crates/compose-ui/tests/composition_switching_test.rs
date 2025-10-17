@@ -3,7 +3,8 @@
 //! This test reproduces a bug where switching between different composable views
 //! and clicking buttons causes content to be appended multiple times.
 
-use compose_core::{ComposeTestRule, MutableState};
+use compose_testing::ComposeTestRule;
+use compose_core::MutableState;
 use compose_macros::composable;
 use compose_ui::*;
 
