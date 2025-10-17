@@ -419,6 +419,7 @@ dependencies = [
  "compose-macros",
  "compose-runtime-std",
  "compose-testing",
+ "compose-ui-layout",
  "criterion",
  "indexmap 2.11.4",
 ]
