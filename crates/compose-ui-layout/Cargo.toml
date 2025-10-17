@@ -1,0 +1,12 @@
+[package]
+name = "compose-ui-layout"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Layout contracts & policies for Compose-RS"
+
+[dependencies]
+compose-ui-graphics = { path = "../compose-ui-graphics" }
+
+[features]
+default = []

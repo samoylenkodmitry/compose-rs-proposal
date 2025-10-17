@@ -1,0 +1,12 @@
+[package]
+name = "compose-animation"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Animation system for Compose-RS"
+
+[dependencies]
+compose-core = { path = "../compose-core" }
+
+[features]
+default = []

@@ -1,0 +1,11 @@
+[package]
+name = "compose-ui-graphics"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Pure math/data for drawing & units in Compose-RS"
+
+[dependencies]
+
+[features]
+default = []

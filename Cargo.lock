@@ -330,11 +330,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf43edc576402991846b093a7ca18a3477e0ef9c588cde84964b5d3e43016642"
 
 [[package]]
+name = "compose-animation"
+version = "0.1.0"
+dependencies = [
+ "compose-core",
+]
+
+[[package]]
 name = "compose-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "compose-macros",
+]
+
+[[package]]
+name = "compose-foundation"
+version = "0.1.0"
+dependencies = [
+ "compose-core",
+ "compose-ui-graphics",
+ "compose-ui-layout",
 ]
 
 [[package]]
@@ -355,6 +371,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "compose-testing"
+version = "0.1.0"
+dependencies = [
+ "compose-core",
+ "compose-foundation",
+]
+
+[[package]]
 name = "compose-ui"
 version = "0.1.0"
 dependencies = [
@@ -363,6 +387,17 @@ dependencies = [
  "compose-runtime-std",
  "criterion",
  "indexmap 2.11.4",
+]
+
+[[package]]
+name = "compose-ui-graphics"
+version = "0.1.0"
+
+[[package]]
+name = "compose-ui-layout"
+version = "0.1.0"
+dependencies = [
+ "compose-ui-graphics",
 ]
 
 [[package]]

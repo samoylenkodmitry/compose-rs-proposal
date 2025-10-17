@@ -1,0 +1,14 @@
+[package]
+name = "compose-foundation"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Modifiers, nodes, and foundation elements for Compose-RS"
+
+[dependencies]
+compose-core = { path = "../compose-core" }
+compose-ui-graphics = { path = "../compose-ui-graphics" }
+compose-ui-layout = { path = "../compose-ui-layout" }
+
+[features]
+default = []

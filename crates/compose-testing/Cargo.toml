@@ -1,0 +1,13 @@
+[package]
+name = "compose-testing"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Testing utilities and harness for Compose-RS"
+
+[dependencies]
+compose-core = { path = "../compose-core" }
+compose-foundation = { path = "../compose-foundation" }
+
+[features]
+default = []
