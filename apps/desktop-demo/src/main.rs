@@ -178,6 +178,36 @@ struct Holder {
     count: i32,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct AnimationState {
+    progress: f32,
+    direction: f32,
+}
+
+impl Default for AnimationState {
+    fn default() -> Self {
+        Self {
+            progress: 0.0,
+            direction: 1.0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct FrameStats {
+    frames: u32,
+    last_frame_ms: f32,
+}
+
+impl Default for FrameStats {
+    fn default() -> Self {
+        Self {
+            frames: 0,
+            last_frame_ms: 0.0,
+        }
+    }
+}
+
 fn local_holder() -> CompositionLocal<Holder> {
     use std::cell::RefCell;
     thread_local! {
@@ -396,69 +426,73 @@ fn composition_local_content_inner() {
 #[composable]
 fn async_runtime_example() {
     let is_running = compose_core::useState(|| true);
-    let progress = compose_core::useState(|| 0.0f32);
-    let frame_count = compose_core::useState(|| 0u32);
-    let frame_duration_ms = compose_core::useState(|| 0.0f32);
-    let progress_direction = compose_core::useState(|| 1.0f32);
+    let animation = compose_core::useState(AnimationState::default);
+    let stats = compose_core::useState(FrameStats::default);
     let reset_signal = compose_core::useState(|| 0u64);
-    let running_key = (is_running.get(), reset_signal.get());
 
     {
-        let progress_state = progress.clone();
-        let frame_count_state = frame_count.clone();
-        let frame_duration_state = frame_duration_ms.clone();
-        let direction_state = progress_direction.clone();
-        LaunchedEffectAsync!(running_key, move |scope| {
-            let progress = progress_state.clone();
-            let frame_count = frame_count_state.clone();
-            let frame_duration = frame_duration_state.clone();
-            let direction = direction_state.clone();
-            let (is_animating, _reset_tick) = running_key;
+        let animation_state = animation.clone();
+        let stats_state = stats.clone();
+        let running_state = is_running.clone();
+        let reset_state = reset_signal.clone();
+        LaunchedEffectAsync!((), move |scope| {
+            let animation = animation_state.clone();
+            let stats = stats_state.clone();
+            let running = running_state.clone();
+            let reset = reset_state.clone();
             Box::pin(async move {
-                frame_count.set(0);
-                frame_duration.set(0.0);
-
-                if !is_animating {
-                    return;
-                }
-
                 let clock = scope.runtime().frame_clock();
                 let mut last_time: Option<u64> = None;
+                let mut last_reset = reset.get();
 
-                loop {
+                animation.set(AnimationState::default());
+                stats.set(FrameStats::default());
+
+                while scope.is_active() {
                     let nanos = clock.next_frame().await;
                     if !scope.is_active() {
                         break;
                     }
 
+                    let current_reset = reset.get();
+                    if current_reset != last_reset {
+                        last_reset = current_reset;
+                        animation.set(AnimationState::default());
+                        stats.set(FrameStats::default());
+                        last_time = None;
+                        continue;
+                    }
+
+                    let running_now = running.get();
+                    if !running_now {
+                        last_time = Some(nanos);
+                        continue;
+                    }
+
                     if let Some(previous) = last_time {
-                        let dt = (nanos - previous) as f32 / 1_000_000.0;
-                        frame_duration.set(dt);
-                        let mut value = progress.get();
-                        let mut direction_value = direction.get();
-                        let old_direction = direction_value;
-
-                        value += direction_value * (dt / 600.0);
-
-                        if value >= 1.0 {
-                            value = 1.0;
-                            direction_value = -1.0;
-                        } else if value <= 0.0 {
-                            value = 0.0;
-                            direction_value = 1.0;
-                        }
-
-                        if (value - progress.get()).abs() > f32::EPSILON {
-                            progress.set(value);
-                        }
-                        if (direction_value - old_direction).abs() > f32::EPSILON {
-                            direction.set(direction_value);
+                        let delta_nanos = nanos.saturating_sub(previous);
+                        if delta_nanos > 0 {
+                            let dt_ms = delta_nanos as f32 / 1_000_000.0;
+                            stats.update(|state| {
+                                state.frames = state.frames.wrapping_add(1);
+                                state.last_frame_ms = dt_ms;
+                            });
+                            animation.update(|anim| {
+                                let next = anim.progress + anim.direction * (dt_ms / 600.0);
+                                if next >= 1.0 {
+                                    anim.progress = 1.0;
+                                    anim.direction = -1.0;
+                                } else if next <= 0.0 {
+                                    anim.progress = 0.0;
+                                    anim.direction = 1.0;
+                                } else {
+                                    anim.progress = next;
+                                }
+                            });
                         }
                     }
 
                     last_time = Some(nanos);
-
-                    frame_count.update(|count| *count += 1);
                 }
             })
         });
@@ -485,7 +519,9 @@ fn async_runtime_example() {
                     height: 16.0,
                 });
 
-                let progress_value = progress.get().clamp(0.0, 1.0);
+                let animation_snapshot = animation.get();
+                let stats_snapshot = stats.get();
+                let progress_value = animation_snapshot.progress.clamp(0.0, 1.0);
                 let fill_width = 320.0 * progress_value;
                 Column(
                     Modifier::padding(8.0)
@@ -553,12 +589,16 @@ fn async_runtime_example() {
                     height: 12.0,
                 });
 
-                let frame_count_text = frame_count.get();
-                let frame_duration = frame_duration_ms.get();
                 Text(
                     format!(
-                        "Frames advanced: {} (last frame {:.2} ms)",
-                        frame_count_text, frame_duration
+                        "Frames advanced: {} (last frame {:.2} ms, direction: {})",
+                        stats_snapshot.frames,
+                        stats_snapshot.last_frame_ms,
+                        if animation_snapshot.direction >= 0.0 {
+                            "forward"
+                        } else {
+                            "reverse"
+                        }
                     ),
                     Modifier::padding(8.0)
                         .then(Modifier::background(Color(0.18, 0.22, 0.36, 0.6)))
@@ -577,14 +617,12 @@ fn async_runtime_example() {
                         .vertical_alignment(VerticalAlignment::CenterVertically),
                     {
                         let toggle_state = is_running_state.clone();
-                        let progress_state = progress.clone();
-                        let frame_count_state = frame_count.clone();
-                        let frame_duration_state = frame_duration_ms.clone();
-                        let direction_state = progress_direction.clone();
+                        let animation_state = animation.clone();
+                        let stats_state = stats.clone();
                         let reset_state = reset_signal.clone();
                         move || {
                             let running = toggle_state.get();
-                            let toggle_color = if running {
+                            let button_color = if running {
                                 Color(0.50, 0.20, 0.35, 1.0)
                             } else {
                                 Color(0.2, 0.45, 0.9, 1.0)
@@ -592,10 +630,10 @@ fn async_runtime_example() {
                             Button(
                                 Modifier::rounded_corners(16.0)
                                     .then(Modifier::draw_behind({
-                                        let toggle_color = toggle_color;
+                                        let color = button_color;
                                         move |scope| {
                                             scope.draw_round_rect(
-                                                Brush::solid(toggle_color),
+                                                Brush::solid(color),
                                                 CornerRadii::uniform(16.0),
                                             );
                                         }
@@ -617,11 +655,10 @@ fn async_runtime_example() {
                                 },
                             );
 
-                            let reset_progress = progress_state.clone();
-                            let reset_frames = frame_count_state.clone();
-                            let reset_duration = frame_duration_state.clone();
-                            let reset_direction = direction_state.clone();
+                            let reset_animation = animation_state.clone();
+                            let reset_stats = stats_state.clone();
                             let reset_tick_state = reset_state.clone();
+                            let toggle_state = toggle_state.clone();
                             Button(
                                 Modifier::rounded_corners(16.0)
                                     .then(Modifier::draw_behind(|scope| {
@@ -632,10 +669,11 @@ fn async_runtime_example() {
                                     }))
                                     .then(Modifier::padding(12.0)),
                                 move || {
-                                    reset_progress.set(0.0);
-                                    reset_frames.set(0);
-                                    reset_duration.set(0.0);
-                                    reset_direction.set(1.0);
+                                    reset_animation.set(AnimationState::default());
+                                    reset_stats.set(FrameStats::default());
+                                    if !toggle_state.get() {
+                                        toggle_state.set(true);
+                                    }
                                     reset_tick_state.update(|tick| *tick = tick.wrapping_add(1));
                                 },
                                 || {
