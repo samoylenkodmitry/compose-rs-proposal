@@ -13,8 +13,10 @@ use self::core::{
 use crate::modifier::{
     DimensionConstraint, EdgeInsets, Modifier, Point, Rect as GeometryRect, Size,
 };
+use crate::modifier_bridge::{build_chain, ModifierNodeChainExt};
 use crate::primitives::{ButtonNode, LayoutNode, SpacerNode, TextNode};
 use crate::subcompose_layout::SubcomposeLayoutNode;
+use compose_foundation::BasicModifierNodeContext;
 use compose_ui_layout::Constraints;
 
 /// Result of running layout for a Compose tree.
@@ -160,9 +162,16 @@ impl<'a> LayoutBuilder<'a> {
         };
         self.runtime_handle = Some(runtime_handle.clone());
 
-        let props = unsafe { (&*node_ptr).modifier.layout_properties() };
+        let (modifier, layout_snapshot) = unsafe {
+            let node = &mut *node_ptr;
+            let modifier = node.modifier.clone();
+            let mut context = BasicModifierNodeContext::new();
+            let snapshot = node.mods.measure(&mut context, &modifier);
+            (modifier, snapshot)
+        };
+        let props = layout_snapshot.properties;
         let padding = props.padding();
-        let offset = unsafe { (&*node_ptr).modifier.total_offset() };
+        let offset = layout_snapshot.offset;
         let inner_constraints = normalize_constraints(subtract_padding(constraints, padding));
 
         self.slots.reset();
@@ -174,12 +183,7 @@ impl<'a> LayoutBuilder<'a> {
         );
         composer.enter_phase(Phase::Measure);
 
-        let (modifier, measure_result) = {
-            let node = unsafe { &mut *node_ptr };
-            let modifier = node.modifier.clone();
-            let result = node.measure(&mut composer, inner_constraints);
-            (modifier, result)
-        };
+        let measure_result = unsafe { (&mut *node_ptr).measure(&mut composer, inner_constraints) };
 
         let node_ids: Vec<NodeId> = measure_result
             .placements
@@ -239,9 +243,13 @@ impl<'a> LayoutBuilder<'a> {
         node: LayoutNode,
         constraints: Constraints,
     ) -> Result<MeasuredNode, NodeError> {
-        let props = node.modifier.layout_properties();
+        let mut node = node;
+        let modifier = node.modifier.clone();
+        let mut context = BasicModifierNodeContext::new();
+        let layout_snapshot = node.mods.measure(&mut context, &modifier);
+        let props = layout_snapshot.properties;
         let padding = props.padding();
-        let offset = node.modifier.total_offset();
+        let offset = layout_snapshot.offset;
         let inner_constraints = normalize_constraints(subtract_padding(constraints, padding));
         let error = Rc::new(RefCell::new(None));
         let mut records: HashMap<NodeId, ChildRecord> = HashMap::new();
@@ -331,7 +339,7 @@ impl<'a> LayoutBuilder<'a> {
             node_id,
             Size { width, height },
             offset,
-            node.modifier.clone(),
+            modifier,
             children,
         ))
     }
@@ -344,14 +352,14 @@ impl<'a> LayoutBuilder<'a> {
     ) -> Result<MeasuredNode, NodeError> {
         // Button is just a layout with column-like behavior
         use crate::layout::policies::ColumnMeasurePolicy;
-        let layout = LayoutNode {
-            modifier: node.modifier.clone(),
-            measure_policy: Rc::new(ColumnMeasurePolicy::new(
+        let mut layout = LayoutNode::new(
+            node.modifier.clone(),
+            Rc::new(ColumnMeasurePolicy::new(
                 LinearArrangement::Start,
                 HorizontalAlignment::Start,
             )),
-            children: node.children.clone(),
-        };
+        );
+        layout.children = node.children.clone();
         self.measure_layout_node(node_id, layout, constraints)
     }
 }
@@ -619,9 +627,12 @@ fn measure_leaf(
     base_size: Size,
     constraints: Constraints,
 ) -> MeasuredNode {
-    let props = modifier.layout_properties();
+    let mut chain = build_chain(modifier);
+    let mut context = BasicModifierNodeContext::new();
+    let snapshot = chain.measure(&mut context, modifier);
+    let props = snapshot.properties;
     let padding = props.padding();
-    let offset = modifier.total_offset();
+    let offset = snapshot.offset;
 
     let mut width = base_size.width + padding.horizontal_sum();
     let mut height = base_size.height + padding.vertical_sum();

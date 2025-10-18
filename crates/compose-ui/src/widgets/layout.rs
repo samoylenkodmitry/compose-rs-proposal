@@ -26,7 +26,7 @@ where
         composer.emit_node(|| LayoutNode::new(modifier.clone(), Rc::clone(&policy)))
     });
     if let Err(err) = compose_core::with_node_mut(id, |node: &mut LayoutNode| {
-        node.modifier = modifier.clone();
+        node.set_modifier(modifier.clone());
         node.set_measure_policy(Rc::clone(&policy));
     }) {
         debug_assert!(false, "failed to update Layout node: {err}");
@@ -48,7 +48,7 @@ pub fn SubcomposeLayout(
         composer.emit_node(|| SubcomposeLayoutNode::new(modifier.clone(), Rc::clone(&policy)))
     });
     if let Err(err) = compose_core::with_node_mut(id, |node: &mut SubcomposeLayoutNode| {
-        node.modifier = modifier.clone();
+        node.set_modifier(modifier.clone());
         node.set_measure_policy(Rc::clone(&policy));
     }) {
         debug_assert!(false, "failed to update SubcomposeLayout node: {err}");

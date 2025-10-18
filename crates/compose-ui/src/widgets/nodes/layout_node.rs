@@ -1,27 +1,48 @@
 use crate::modifier::Modifier;
+use crate::modifier_bridge::build_chain;
 use compose_core::{Node, NodeId};
+use compose_foundation::ModifierNodeChain;
 use compose_ui_layout::MeasurePolicy;
 use indexmap::IndexSet;
 use std::rc::Rc;
 
-#[derive(Clone)]
 pub struct LayoutNode {
     pub modifier: Modifier,
+    pub mods: ModifierNodeChain,
     pub measure_policy: Rc<dyn MeasurePolicy>,
     pub children: IndexSet<NodeId>,
 }
 
 impl LayoutNode {
     pub fn new(modifier: Modifier, measure_policy: Rc<dyn MeasurePolicy>) -> Self {
-        Self {
-            modifier,
+        let mut node = Self {
+            modifier: Modifier::empty(),
+            mods: ModifierNodeChain::new(),
             measure_policy,
             children: IndexSet::new(),
-        }
+        };
+        node.set_modifier(modifier);
+        node
+    }
+
+    pub fn set_modifier(&mut self, modifier: Modifier) {
+        self.modifier = modifier;
+        self.mods = build_chain(&self.modifier);
     }
 
     pub fn set_measure_policy(&mut self, policy: Rc<dyn MeasurePolicy>) {
         self.measure_policy = policy;
+    }
+}
+
+impl Clone for LayoutNode {
+    fn clone(&self) -> Self {
+        Self {
+            modifier: self.modifier.clone(),
+            mods: build_chain(&self.modifier),
+            measure_policy: self.measure_policy.clone(),
+            children: self.children.clone(),
+        }
     }
 }
 

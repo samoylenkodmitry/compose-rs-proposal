@@ -341,9 +341,8 @@ fn composition_local_example() {
 
 #[composable]
 fn composition_local_content() {
-    let r1 = random();
     Text(
-        format!("Outside provider (NOT reading): rand={}", r1),
+        format!("Outside provider (NOT reading): rand={}", random()),
         Modifier::padding(8.0)
             .then(Modifier::background(Color(0.3, 0.3, 0.3, 0.5)))
             .then(Modifier::rounded_corners(12.0)),
@@ -354,26 +353,29 @@ fn composition_local_content() {
         height: 8.0,
     });
 
-    let local = local_holder();
-    let holder = local.current();
-    let r2 = random();
-    Text(
-        format!("READING local: count={}, rand={}", holder.count, r2),
-        Modifier::padding(8.0)
-            .then(Modifier::background(Color(0.6, 0.9, 0.4, 0.7)))
-            .then(Modifier::rounded_corners(12.0)),
-    );
+    composition_local_content_inner();
 
     Spacer(Size {
         width: 0.0,
         height: 8.0,
     });
 
-    let r3 = random();
     Text(
-        format!("NOT reading local: rand={}", r3),
+        format!("NOT reading local: rand={}", random()),
         Modifier::padding(8.0)
             .then(Modifier::background(Color(0.9, 0.6, 0.4, 0.5)))
+            .then(Modifier::rounded_corners(12.0)),
+    );
+}
+
+#[composable]
+fn composition_local_content_inner() {
+    let local = local_holder();
+    let holder = local.current();
+    Text(
+        format!("READING local: count={}, rand={}", holder.count, random()),
+        Modifier::padding(8.0)
+            .then(Modifier::background(Color(0.6, 0.9, 0.4, 0.7)))
             .then(Modifier::rounded_corners(12.0)),
     );
 }
@@ -383,6 +385,9 @@ fn counter_app() {
     let counter = compose_core::useState(|| 0);
     let pointer_position = compose_core::useState(|| Point { x: 0.0, y: 0.0 });
     let pointer_down = compose_core::useState(|| false);
+    let async_message =
+        compose_core::useState(|| "Tap \"Fetch async value\" to run background work".to_string());
+    let fetch_request = compose_core::useState(|| 0u64);
     let pointer = pointer_position.get();
     let pointer_wave = (pointer.x / 360.0).clamp(0.0, 1.0);
     let target_wave = if pointer_down.get() {
@@ -391,6 +396,41 @@ fn counter_app() {
         pointer_wave * 0.6
     };
     let wave = animateFloatAsState(target_wave, "wave").value();
+    let fetch_key = fetch_request.get();
+    {
+        let async_message = async_message.clone();
+        LaunchedEffect!(fetch_key, move |scope| {
+            if fetch_key == 0 {
+                return;
+            }
+            let message_for_ui = async_message.clone();
+            scope.launch_background(
+                move |token| {
+                    use std::thread;
+                    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+                    for _ in 0..5 {
+                        if token.is_cancelled() {
+                            return String::new();
+                        }
+                        thread::sleep(Duration::from_millis(80));
+                    }
+
+                    let nanos = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .subsec_nanos();
+                    format!("Background fetch #{fetch_key}: {}", nanos % 1000)
+                },
+                move |value| {
+                    if value.is_empty() {
+                        return;
+                    }
+                    message_for_ui.set(value);
+                },
+            );
+        });
+    }
     LaunchedEffect!(counter.get(), |_| println!("effect call"));
 
     Column(
@@ -475,6 +515,8 @@ fn counter_app() {
                     height: 16.0,
                 });
 
+                let async_message_state = async_message.clone();
+                let fetch_request_state = fetch_request.clone();
                 Column(
                     Modifier::size(Size {
                         width: 360.0,
@@ -525,6 +567,8 @@ fn counter_app() {
                     .then(Modifier::padding(16.0)),
                     ColumnSpec::default(),
                     move || {
+                        let async_message_state = async_message_state.clone();
+                        let fetch_request_state = fetch_request_state.clone();
                         Text(
                             format!("Pointer: ({:.1}, {:.1})", pointer.x, pointer.y),
                             Modifier::padding(8.0)
@@ -659,6 +703,52 @@ fn counter_app() {
                                 },
                             );
                         });
+
+                        Spacer(Size {
+                            width: 0.0,
+                            height: 20.0,
+                        });
+
+                        let async_message_text = async_message_state.clone();
+                        Text(
+                            async_message_text.get(),
+                            Modifier::padding(10.0)
+                                .then(Modifier::background(Color(0.1, 0.18, 0.32, 0.6)))
+                                .then(Modifier::rounded_corners(14.0)),
+                        );
+
+                        Spacer(Size {
+                            width: 0.0,
+                            height: 12.0,
+                        });
+
+                        let async_message_button = async_message_state.clone();
+                        let fetch_request_button = fetch_request_state.clone();
+                        Button(
+                            Modifier::rounded_corners(16.0)
+                                .then(Modifier::draw_with_cache(|cache| {
+                                    cache.on_draw_behind(|scope| {
+                                        scope.draw_round_rect(
+                                            Brush::linear_gradient(vec![
+                                                Color(0.15, 0.35, 0.85, 1.0),
+                                                Color(0.08, 0.2, 0.55, 1.0),
+                                            ]),
+                                            CornerRadii::uniform(16.0),
+                                        );
+                                    });
+                                }))
+                                .then(Modifier::padding(12.0)),
+                            {
+                                move || {
+                                    async_message_button
+                                        .set("Fetching value on background thread...".to_string());
+                                    fetch_request_button.update(|value| *value += 1);
+                                }
+                            },
+                            || {
+                                Text("Fetch async value", Modifier::padding(6.0));
+                            },
+                        );
                     },
                 );
             }

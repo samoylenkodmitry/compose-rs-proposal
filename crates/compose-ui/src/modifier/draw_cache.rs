@@ -1,6 +1,6 @@
 use super::{DrawCacheBuilder, DrawCommand, ModOp, Modifier, Size};
-use std::rc::Rc;
 use compose_ui_graphics::{DrawScope, DrawScopeDefault};
+use std::rc::Rc;
 
 impl Modifier {
     pub fn draw_with_content(f: impl Fn(&mut dyn DrawScope) + 'static) -> Self {

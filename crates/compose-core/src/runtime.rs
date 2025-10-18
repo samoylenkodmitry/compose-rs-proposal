@@ -1,12 +1,95 @@
+use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::{Rc, Weak};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc};
+use std::thread::ThreadId;
 use std::thread_local;
 
 use crate::frame_clock::FrameClock;
 use crate::platform::RuntimeScheduler;
 use crate::{Applier, Command, FrameCallbackId, NodeError, RecomposeScopeInner, ScopeId};
+
+enum UiMessage {
+    Task(Box<dyn FnOnce() + Send + 'static>),
+    Invoke { id: u64, value: Box<dyn Any + Send> },
+}
+
+struct UiDispatcherInner {
+    scheduler: Arc<dyn RuntimeScheduler>,
+    tx: mpsc::Sender<UiMessage>,
+    pending: AtomicUsize,
+}
+
+impl UiDispatcherInner {
+    fn new(scheduler: Arc<dyn RuntimeScheduler>, tx: mpsc::Sender<UiMessage>) -> Self {
+        Self {
+            scheduler,
+            tx,
+            pending: AtomicUsize::new(0),
+        }
+    }
+
+    fn post(&self, task: impl FnOnce() + Send + 'static) {
+        self.pending.fetch_add(1, Ordering::SeqCst);
+        let _ = self.tx.send(UiMessage::Task(Box::new(task)));
+        self.scheduler.schedule_frame();
+    }
+
+    fn post_invoke(&self, id: u64, value: Box<dyn Any + Send>) {
+        self.pending.fetch_add(1, Ordering::SeqCst);
+        let _ = self.tx.send(UiMessage::Invoke { id, value });
+        self.scheduler.schedule_frame();
+    }
+
+    fn has_pending(&self) -> bool {
+        self.pending.load(Ordering::SeqCst) > 0
+    }
+}
+
+struct PendingGuard<'a> {
+    counter: &'a AtomicUsize,
+}
+
+impl<'a> PendingGuard<'a> {
+    fn new(counter: &'a AtomicUsize) -> Self {
+        Self { counter }
+    }
+}
+
+impl<'a> Drop for PendingGuard<'a> {
+    fn drop(&mut self) {
+        let previous = self.counter.fetch_sub(1, Ordering::SeqCst);
+        debug_assert!(previous > 0, "UI dispatcher pending count underflowed");
+    }
+}
+
+#[derive(Clone)]
+pub struct UiDispatcher {
+    inner: Arc<UiDispatcherInner>,
+}
+
+impl UiDispatcher {
+    fn new(inner: Arc<UiDispatcherInner>) -> Self {
+        Self { inner }
+    }
+
+    pub fn post(&self, task: impl FnOnce() + Send + 'static) {
+        self.inner.post(task);
+    }
+
+    pub fn post_invoke<T>(&self, id: u64, value: T)
+    where
+        T: Send + 'static,
+    {
+        self.inner.post_invoke(id, Box::new(value));
+    }
+
+    pub fn has_pending(&self) -> bool {
+        self.inner.has_pending()
+    }
+}
 
 struct RuntimeInner {
     scheduler: Arc<dyn RuntimeScheduler>,
@@ -16,10 +99,18 @@ struct RuntimeInner {
     scope_queue: RefCell<Vec<(ScopeId, Weak<RecomposeScopeInner>)>>, // FUTURE(no_std): use smallvec-backed queue.
     frame_callbacks: RefCell<VecDeque<FrameCallbackEntry>>, // FUTURE(no_std): migrate to ring buffer.
     next_frame_callback_id: Cell<u64>,
+    ui_dispatcher: Arc<UiDispatcherInner>,
+    ui_rx: RefCell<mpsc::Receiver<UiMessage>>,
+    local_tasks: RefCell<VecDeque<Box<dyn FnOnce() + 'static>>>,
+    ui_conts: RefCell<HashMap<u64, Box<dyn Fn(Box<dyn Any>) + 'static>>>,
+    next_cont_id: Cell<u64>,
+    ui_thread_id: ThreadId,
 }
 
 impl RuntimeInner {
     fn new(scheduler: Arc<dyn RuntimeScheduler>) -> Self {
+        let (tx, rx) = mpsc::channel();
+        let dispatcher = Arc::new(UiDispatcherInner::new(scheduler.clone(), tx));
         Self {
             scheduler,
             needs_frame: RefCell::new(false),
@@ -28,6 +119,12 @@ impl RuntimeInner {
             scope_queue: RefCell::new(Vec::new()),
             frame_callbacks: RefCell::new(VecDeque::new()),
             next_frame_callback_id: Cell::new(1),
+            ui_dispatcher: dispatcher,
+            ui_rx: RefCell::new(rx),
+            local_tasks: RefCell::new(VecDeque::new()),
+            ui_conts: RefCell::new(HashMap::new()),
+            next_cont_id: Cell::new(1),
+            ui_thread_id: std::thread::current().id(),
         }
     }
 
@@ -74,8 +171,99 @@ impl RuntimeInner {
         !self.frame_callbacks.borrow().is_empty()
     }
 
-    fn spawn_task(&self, task: Box<dyn FnOnce() + Send + 'static>) {
-        self.scheduler.spawn_task(task);
+    /// Queues a closure that is already bound to the UI thread's local queue.
+    ///
+    /// The closure may capture `Rc`/`RefCell` values because it never leaves the
+    /// runtime thread. Callers must only invoke this from the runtime thread.
+    fn enqueue_ui_task(&self, task: Box<dyn FnOnce() + 'static>) {
+        self.local_tasks.borrow_mut().push_back(task);
+        self.schedule();
+    }
+
+    fn drain_ui(&self) {
+        loop {
+            let mut executed = false;
+
+            {
+                let rx = &mut *self.ui_rx.borrow_mut();
+                for message in rx.try_iter() {
+                    executed = true;
+                    let _guard = PendingGuard::new(&self.ui_dispatcher.pending);
+                    match message {
+                        UiMessage::Task(task) => {
+                            task();
+                        }
+                        UiMessage::Invoke { id, value } => {
+                            self.invoke_ui_cont(id, value);
+                        }
+                    }
+                }
+            }
+
+            loop {
+                let task = {
+                    let mut local = self.local_tasks.borrow_mut();
+                    local.pop_front()
+                };
+
+                match task {
+                    Some(task) => {
+                        executed = true;
+                        task();
+                    }
+                    None => break,
+                }
+            }
+
+            if !executed {
+                break;
+            }
+        }
+    }
+
+    fn has_pending_ui(&self) -> bool {
+        !self.local_tasks.borrow().is_empty() || self.ui_dispatcher.has_pending()
+    }
+
+    fn register_ui_cont<T: 'static>(&self, f: impl FnOnce(T) + 'static) -> u64 {
+        debug_assert_eq!(
+            std::thread::current().id(),
+            self.ui_thread_id,
+            "UI continuation registered off the runtime thread",
+        );
+        let id = self.next_cont_id.get();
+        self.next_cont_id.set(id + 1);
+        let callback = RefCell::new(Some(f));
+        self.ui_conts.borrow_mut().insert(
+            id,
+            Box::new(move |value: Box<dyn Any>| {
+                let slot = callback
+                    .borrow_mut()
+                    .take()
+                    .expect("UI continuation invoked more than once");
+                let value = value
+                    .downcast::<T>()
+                    .expect("UI continuation type mismatch");
+                slot(*value);
+            }),
+        );
+        id
+    }
+
+    fn invoke_ui_cont(&self, id: u64, value: Box<dyn Any + Send>) {
+        debug_assert_eq!(
+            std::thread::current().id(),
+            self.ui_thread_id,
+            "UI continuation invoked off the runtime thread",
+        );
+        if let Some(callback) = self.ui_conts.borrow_mut().remove(&id) {
+            let value: Box<dyn Any> = value;
+            callback(value);
+        }
+    }
+
+    fn cancel_ui_cont(&self, id: u64) {
+        self.ui_conts.borrow_mut().remove(&id);
     }
 
     fn register_frame_callback(&self, callback: Box<dyn FnOnce(u64) + 'static>) -> FrameCallbackId {
@@ -132,7 +320,11 @@ impl Runtime {
     }
 
     pub fn handle(&self) -> RuntimeHandle {
-        RuntimeHandle(Rc::downgrade(&self.inner))
+        RuntimeHandle {
+            inner: Rc::downgrade(&self.inner),
+            dispatcher: UiDispatcher::new(self.inner.ui_dispatcher.clone()),
+            ui_thread_id: self.inner.ui_thread_id,
+        }
     }
 
     pub fn has_updates(&self) -> bool {
@@ -140,7 +332,7 @@ impl Runtime {
     }
 
     pub fn needs_frame(&self) -> bool {
-        *self.inner.needs_frame.borrow()
+        *self.inner.needs_frame.borrow() || self.inner.ui_dispatcher.has_pending()
     }
 
     pub fn set_needs_frame(&self, value: bool) {
@@ -157,10 +349,6 @@ pub struct DefaultScheduler;
 
 impl RuntimeScheduler for DefaultScheduler {
     fn schedule_frame(&self) {}
-
-    fn spawn_task(&self, task: Box<dyn FnOnce() + Send + 'static>) {
-        std::thread::spawn(move || task());
-    }
 }
 
 #[cfg(test)]
@@ -170,10 +358,6 @@ pub struct TestScheduler;
 #[cfg(test)]
 impl RuntimeScheduler for TestScheduler {
     fn schedule_frame(&self) {}
-
-    fn spawn_task(&self, task: Box<dyn FnOnce() + Send + 'static>) {
-        std::thread::spawn(move || task());
-    }
 }
 
 #[cfg(test)]
@@ -195,46 +379,87 @@ impl TestRuntime {
 }
 
 #[derive(Clone)]
-pub struct RuntimeHandle(pub(crate) Weak<RuntimeInner>);
+pub struct RuntimeHandle {
+    inner: Weak<RuntimeInner>,
+    dispatcher: UiDispatcher,
+    ui_thread_id: ThreadId,
+}
 
 impl RuntimeHandle {
     pub fn schedule(&self) {
-        if let Some(inner) = self.0.upgrade() {
+        if let Some(inner) = self.inner.upgrade() {
             inner.schedule();
         }
     }
 
     pub fn enqueue_node_update(&self, command: Command) {
-        if let Some(inner) = self.0.upgrade() {
+        if let Some(inner) = self.inner.upgrade() {
             inner.enqueue_update(command);
         }
     }
 
-    pub fn spawn_task(&self, task: Box<dyn FnOnce() + Send + 'static>) {
-        if let Some(inner) = self.0.upgrade() {
-            inner.spawn_task(task);
+    /// Schedules work that must run on the runtime thread.
+    ///
+    /// The closure executes on the UI thread immediately when the runtime
+    /// drains its local queue, so it may capture `Rc`/`RefCell` values. Calling
+    /// this from any other thread is a logic error and will panic in debug
+    /// builds via the inner assertion.
+    pub fn enqueue_ui_task(&self, task: Box<dyn FnOnce() + 'static>) {
+        if let Some(inner) = self.inner.upgrade() {
+            inner.enqueue_ui_task(task);
         } else {
             task();
         }
+    }
+
+    /// Enqueues work from any thread to run on the UI thread.
+    ///
+    /// The closure must be `Send` because it may cross threads before executing
+    /// on the runtime thread. Use this when posting from background work.
+    pub fn post_ui(&self, task: impl FnOnce() + Send + 'static) {
+        self.dispatcher.post(task);
+    }
+
+    pub fn register_ui_cont<T: 'static>(&self, f: impl FnOnce(T) + 'static) -> Option<u64> {
+        self.inner.upgrade().map(|inner| inner.register_ui_cont(f))
+    }
+
+    pub fn cancel_ui_cont(&self, id: u64) {
+        if let Some(inner) = self.inner.upgrade() {
+            inner.cancel_ui_cont(id);
+        }
+    }
+
+    pub fn drain_ui(&self) {
+        if let Some(inner) = self.inner.upgrade() {
+            inner.drain_ui();
+        }
+    }
+
+    pub fn has_pending_ui(&self) -> bool {
+        self.inner
+            .upgrade()
+            .map(|inner| inner.has_pending_ui())
+            .unwrap_or_else(|| self.dispatcher.has_pending())
     }
 
     pub fn register_frame_callback(
         &self,
         callback: impl FnOnce(u64) + 'static,
     ) -> Option<FrameCallbackId> {
-        self.0
+        self.inner
             .upgrade()
             .map(|inner| inner.register_frame_callback(Box::new(callback)))
     }
 
     pub fn cancel_frame_callback(&self, id: FrameCallbackId) {
-        if let Some(inner) = self.0.upgrade() {
+        if let Some(inner) = self.inner.upgrade() {
             inner.cancel_frame_callback(id);
         }
     }
 
     pub fn drain_frame_callbacks(&self, frame_time_nanos: u64) {
-        if let Some(inner) = self.0.upgrade() {
+        if let Some(inner) = self.inner.upgrade() {
             inner.drain_frame_callbacks(frame_time_nanos);
         }
     }
@@ -244,58 +469,70 @@ impl RuntimeHandle {
     }
 
     pub fn set_needs_frame(&self, value: bool) {
-        if let Some(inner) = self.0.upgrade() {
+        if let Some(inner) = self.inner.upgrade() {
             *inner.needs_frame.borrow_mut() = value;
         }
     }
 
     pub(crate) fn take_updates(&self) -> Vec<Command> {
         // FUTURE(no_std): return iterator over static buffer.
-        self.0
+        self.inner
             .upgrade()
             .map(|inner| inner.take_updates())
             .unwrap_or_default()
     }
 
     pub fn has_updates(&self) -> bool {
-        self.0
+        self.inner
             .upgrade()
             .map(|inner| inner.has_updates())
             .unwrap_or(false)
     }
 
     pub(crate) fn register_invalid_scope(&self, id: ScopeId, scope: Weak<RecomposeScopeInner>) {
-        if let Some(inner) = self.0.upgrade() {
+        if let Some(inner) = self.inner.upgrade() {
             inner.register_invalid_scope(id, scope);
         }
     }
 
     pub(crate) fn mark_scope_recomposed(&self, id: ScopeId) {
-        if let Some(inner) = self.0.upgrade() {
+        if let Some(inner) = self.inner.upgrade() {
             inner.mark_scope_recomposed(id);
         }
     }
 
     pub(crate) fn take_invalidated_scopes(&self) -> Vec<(ScopeId, Weak<RecomposeScopeInner>)> {
         // FUTURE(no_std): expose draining iterator without Vec allocation.
-        self.0
+        self.inner
             .upgrade()
             .map(|inner| inner.take_invalidated_scopes())
             .unwrap_or_default()
     }
 
     pub fn has_invalid_scopes(&self) -> bool {
-        self.0
+        self.inner
             .upgrade()
             .map(|inner| inner.has_invalid_scopes())
             .unwrap_or(false)
     }
 
     pub fn has_frame_callbacks(&self) -> bool {
-        self.0
+        self.inner
             .upgrade()
             .map(|inner| inner.has_frame_callbacks())
             .unwrap_or(false)
+    }
+
+    pub fn assert_ui_thread(&self) {
+        debug_assert_eq!(
+            std::thread::current().id(),
+            self.ui_thread_id,
+            "state mutated off the runtime's UI thread"
+        );
+    }
+
+    pub fn dispatcher(&self) -> UiDispatcher {
+        self.dispatcher.clone()
     }
 }
 

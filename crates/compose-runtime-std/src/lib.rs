@@ -41,10 +41,6 @@ impl RuntimeScheduler for StdScheduler {
     fn schedule_frame(&self) {
         self.frame_requested.store(true, Ordering::SeqCst);
     }
-
-    fn spawn_task(&self, task: Box<dyn FnOnce() + Send + 'static>) {
-        std::thread::spawn(move || task());
-    }
 }
 
 /// Clock implementation backed by [`std::time`].
