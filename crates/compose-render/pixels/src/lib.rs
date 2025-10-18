@@ -4,7 +4,7 @@ pub mod scene;
 pub mod style;
 
 use compose_core::MemoryApplier;
-use compose_render_common::{RenderScene, Renderer};
+use compose_render_common::{text::set_text_measurer, RenderScene, Renderer};
 use compose_ui::LayoutBox;
 use compose_ui_graphics::{GraphicsLayer, Size};
 
@@ -22,6 +22,7 @@ pub struct PixelsRenderer {
 
 impl PixelsRenderer {
     pub fn new() -> Self {
+        set_text_measurer(draw::RusttypeTextMeasurer);
         Self {
             scene: Scene::new(),
         }

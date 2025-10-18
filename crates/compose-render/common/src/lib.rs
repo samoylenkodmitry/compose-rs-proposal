@@ -7,6 +7,8 @@ use compose_ui_graphics::{DrawPrimitive, DrawScope, DrawScopeDefault, Rect, Size
 
 pub use compose_ui_graphics::Brush;
 
+pub mod text;
+
 /// Trait implemented by hit-test targets stored inside a [`RenderScene`].
 pub trait HitTestTarget {
     fn dispatch(&self, kind: PointerEventKind, x: f32, y: f32);

@@ -1,7 +1,10 @@
 use once_cell::sync::Lazy;
 use rusttype::{point, Font, Scale};
 
-use compose_render_common::Brush;
+use compose_render_common::{
+    text::{TextMeasurer, TextMetrics},
+    Brush,
+};
 use compose_ui_graphics::{Color, Rect};
 
 use crate::scene::{Scene, TextDraw};
@@ -16,12 +19,15 @@ static FONT: Lazy<Font<'static>> = Lazy::new(|| {
     f
 });
 
-pub struct TextMetrics {
-    pub width: f32,
-    pub height: f32,
+pub(crate) struct RusttypeTextMeasurer;
+
+impl TextMeasurer for RusttypeTextMeasurer {
+    fn measure(&self, text: &str) -> TextMetrics {
+        measure_text_impl(text)
+    }
 }
 
-pub fn measure_text(text: &str) -> TextMetrics {
+fn measure_text_impl(text: &str) -> TextMetrics {
     let scale = Scale::uniform(TEXT_SIZE);
     let font = &*FONT;
     let v_metrics = font.v_metrics(scale);
