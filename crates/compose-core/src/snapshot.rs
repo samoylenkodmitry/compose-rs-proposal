@@ -1,14 +1,14 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::state::StateObject;
 
-pub(crate) type SnapshotId = u64;
+pub(crate) type SnapshotId = usize;
 
-static GLOBAL_SNAPSHOT_ID: AtomicU64 = AtomicU64::new(0);
+static GLOBAL_SNAPSHOT_ID: AtomicUsize = AtomicUsize::new(0);
 
 #[inline]
 fn next_snapshot_id() -> SnapshotId {
@@ -27,7 +27,7 @@ fn current_stack_top() -> Arc<Snapshot> {
     SNAPSHOT_STACK.with(|stack| {
         let mut stack = stack.borrow_mut();
         if stack.is_empty() {
-            let global = GLOBAL_SNAPSHOT.with(|global| global.borrow().clone());
+            let global = global_snapshot();
             stack.push(global);
         }
         stack.last().unwrap().clone()
@@ -50,15 +50,15 @@ fn pop_snapshot() {
 #[derive(Clone, Copy, Eq, PartialEq, Hash, Debug)]
 pub(crate) struct ObjectId(usize);
 
-impl Default for ObjectId {
-    fn default() -> Self {
-        ObjectId(0)
-    }
-}
-
 impl ObjectId {
     pub(crate) fn new<T: ?Sized + 'static>(object: &Arc<T>) -> Self {
         ObjectId(Arc::as_ptr(object) as *const () as usize)
+    }
+}
+
+impl Default for ObjectId {
+    fn default() -> Self {
+        ObjectId(0)
     }
 }
 
@@ -67,8 +67,8 @@ pub(crate) struct Snapshot {
     pub(crate) parent: Option<Weak<Snapshot>>,
     invalid: Arc<Mutex<HashSet<SnapshotId>>>,
     pub(crate) modified: RefCell<HashMap<ObjectId, Arc<dyn StateObject>>>,
-    pub(crate) read_observer: Option<Box<dyn Fn(Arc<dyn StateObject>)>>,
-    pub(crate) write_observer: Option<Box<dyn Fn(Arc<dyn StateObject>)>>,
+    pub(crate) read_observer: Option<Box<dyn Fn(Arc<dyn StateObject>) + 'static>>,
+    pub(crate) write_observer: Option<Box<dyn Fn(Arc<dyn StateObject>) + 'static>>,
     base_parent_id: SnapshotId,
 }
 
@@ -181,7 +181,6 @@ impl Snapshot {
         }
 
         parent.invalid.lock().unwrap().remove(&self.id.get());
-        parent.id.set(GLOBAL_SNAPSHOT_ID.load(Ordering::SeqCst));
 
         let changed: Vec<Arc<dyn StateObject>> = modified.values().cloned().collect();
         if !changed.is_empty() {
@@ -209,8 +208,8 @@ pub(crate) fn alloc_record_id() -> SnapshotId {
 }
 
 pub(crate) fn take_mutable_snapshot(
-    read_observer: Option<Box<dyn Fn(Arc<dyn StateObject>)>>,
-    write_observer: Option<Box<dyn Fn(Arc<dyn StateObject>)>>,
+    read_observer: Option<Box<dyn Fn(Arc<dyn StateObject>) + 'static>>,
+    write_observer: Option<Box<dyn Fn(Arc<dyn StateObject>) + 'static>>,
 ) -> Arc<Snapshot> {
     let parent = current_snapshot();
     let child_id = next_snapshot_id();
@@ -239,4 +238,10 @@ where
     F: Fn(&[Arc<dyn StateObject>]) + 'static,
 {
     APPLY_OBSERVERS.with(|observers| observers.borrow_mut().push(Box::new(observer)));
+}
+
+pub(crate) fn advance_global_snapshot(id: SnapshotId) {
+    GLOBAL_SNAPSHOT.with(|global| {
+        global.borrow().set_id(id);
+    });
 }

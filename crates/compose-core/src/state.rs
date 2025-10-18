@@ -4,7 +4,9 @@ use std::collections::HashSet;
 use std::ptr;
 use std::sync::{Arc, Mutex, Weak};
 
-use crate::snapshot::{alloc_record_id, current_snapshot, ObjectId, Snapshot, SnapshotId};
+use crate::snapshot::{
+    advance_global_snapshot, alloc_record_id, current_snapshot, ObjectId, Snapshot, SnapshotId,
+};
 
 #[repr(C)]
 pub(crate) struct StateRecord {
@@ -77,7 +79,7 @@ pub(crate) struct SnapshotMutableState<T> {
     head: *mut TRecord<T>,
     policy: Arc<dyn MutationPolicy<T>>,
     id: ObjectId,
-    weak_self: Mutex<Option<Weak<dyn StateObject>>>, // used for snapshot observers
+    weak_self: Mutex<Option<Weak<dyn StateObject>>>,
 }
 
 unsafe impl<T: Send> Send for SnapshotMutableState<T> {}
@@ -85,7 +87,7 @@ unsafe impl<T: Sync> Sync for SnapshotMutableState<T> {}
 
 impl<T: Clone + 'static> SnapshotMutableState<T> {
     pub(crate) fn new_in_arc(initial: T, policy: Arc<dyn MutationPolicy<T>>) -> Arc<Self> {
-        let record_id = current_snapshot().id();
+        let record_id = alloc_record_id();
         let head = Box::into_raw(Box::new(TRecord {
             base: StateRecord::new(record_id),
             value: initial,
@@ -101,8 +103,10 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
         let id = ObjectId::new(&state);
         Arc::get_mut(&mut state).expect("fresh Arc").id = id;
 
-        let trait_object: Arc<dyn StateObject> = state.clone();
-        *state.weak_self.lock().unwrap() = Some(Arc::downgrade(&trait_object));
+        *state.weak_self.lock().unwrap() =
+            Some(Arc::downgrade(&(state.clone() as Arc<dyn StateObject>)));
+
+        advance_global_snapshot(record_id);
 
         state
     }
@@ -176,7 +180,7 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
             let raw = Box::into_raw(record);
             let this = self as *const _ as *mut Self;
             (*this).head = raw;
-            snapshot.set_id(new_id);
+            advance_global_snapshot(new_id);
 
             if snapshot.parent.is_none() && !snapshot.has_pending_children() {
                 let head_state = (*this).head as *mut StateRecord;
@@ -345,6 +349,7 @@ impl<T: Clone + 'static> StateObject for SnapshotMutableState<T> {
                 let raw = Box::into_raw(record);
                 let this = self as *const _ as *mut Self;
                 (*this).head = raw;
+                advance_global_snapshot(new_id);
                 true
             } else {
                 false
@@ -367,6 +372,7 @@ impl<T: Clone + 'static> StateObject for SnapshotMutableState<T> {
                     let raw = Box::into_raw(record);
                     let this = self as *const _ as *mut Self;
                     (*this).head = raw;
+                    advance_global_snapshot(new_id);
                     return Ok(());
                 }
                 cursor = (&*cursor).next();
