@@ -589,6 +589,38 @@ fn frame_callbacks_fire_in_registration_order() {
 }
 
 #[test]
+fn next_frame_future_resolves_after_callback() {
+    let runtime = Runtime::new(Arc::new(TestScheduler::default()));
+    let handle = runtime.handle();
+    let clock = runtime.frame_clock();
+    let state = MutableState::with_runtime(0u64, handle.clone());
+
+    {
+        let state = state.clone();
+        let clock = clock.clone();
+        handle
+            .spawn_ui(async move {
+                let first = clock.next_frame().await;
+                state.update(|value| *value = first);
+                let second = clock.next_frame().await;
+                state.update(|value| *value = second);
+            })
+            .expect("spawn_ui returns handle");
+    }
+
+    handle.drain_ui();
+    assert_eq!(state.value(), 0);
+
+    handle.drain_frame_callbacks(100);
+    handle.drain_ui();
+    assert_eq!(state.value(), 100);
+
+    handle.drain_frame_callbacks(200);
+    handle.drain_ui();
+    assert_eq!(state.value(), 200);
+}
+
+#[test]
 fn cancelling_frame_callback_prevents_execution() {
     let runtime = Runtime::new(Arc::new(TestScheduler::default()));
     let handle = runtime.handle();
@@ -607,6 +639,74 @@ fn cancelling_frame_callback_prevents_execution() {
     handle.drain_frame_callbacks(84);
     assert!(events.borrow().is_empty());
     assert!(!runtime.needs_frame());
+}
+
+#[test]
+fn launched_effect_async_restarts_on_key_change() {
+    let mut composition = Composition::new(MemoryApplier::new());
+    let runtime_handle = composition.runtime_handle();
+    let key_state = MutableState::with_runtime(0i32, runtime_handle.clone());
+    let log: Rc<RefCell<Vec<i32>>> = Rc::new(RefCell::new(Vec::new()));
+
+    let mut render = {
+        let key_state = key_state.clone();
+        let log = log.clone();
+        move || {
+            let key = key_state.value();
+            let log = log.clone();
+            compose_core::LaunchedEffectAsync!(key, move |scope| {
+                let log = log.clone();
+                Box::pin(async move {
+                    let clock = scope.runtime().frame_clock();
+                    loop {
+                        clock.next_frame().await;
+                        if !scope.is_active() {
+                            return;
+                        }
+                        log.borrow_mut().push(key);
+                    }
+                })
+            });
+        }
+    };
+
+    composition
+        .render(location_key(file!(), line!(), column!()), &mut render)
+        .expect("initial render");
+
+    runtime_handle.drain_ui();
+    runtime_handle.drain_frame_callbacks(1);
+    runtime_handle.drain_ui();
+    runtime_handle.drain_frame_callbacks(2);
+    runtime_handle.drain_ui();
+
+    {
+        let log = log.borrow();
+        assert_eq!(log.as_slice(), &[0, 0]);
+    }
+
+    key_state.set_value(1);
+    composition
+        .render(location_key(file!(), line!(), column!()), &mut render)
+        .expect("re-render with new key");
+
+    runtime_handle.drain_ui();
+    runtime_handle.drain_frame_callbacks(3);
+    runtime_handle.drain_ui();
+
+    {
+        let log = log.borrow();
+        assert_eq!(log.as_slice(), &[0, 0, 1]);
+    }
+
+    drop(composition);
+    runtime_handle.drain_frame_callbacks(4);
+    runtime_handle.drain_ui();
+
+    {
+        let log = log.borrow();
+        assert_eq!(log.as_slice(), &[0, 0, 1]);
+    }
 }
 
 #[test]

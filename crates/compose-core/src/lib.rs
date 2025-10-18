@@ -11,7 +11,9 @@ pub mod subcompose;
 pub use frame_clock::{FrameCallbackRegistration, FrameClock};
 pub use owned::Owned;
 pub use platform::{Clock, RuntimeScheduler};
-pub use runtime::{schedule_frame, schedule_node_update, DefaultScheduler, Runtime, RuntimeHandle};
+pub use runtime::{
+    schedule_frame, schedule_node_update, DefaultScheduler, Runtime, RuntimeHandle, TaskHandle,
+};
 
 #[cfg(test)]
 pub use runtime::{TestRuntime, TestScheduler};
@@ -20,8 +22,10 @@ use std::any::Any;
 use std::cell::{Cell, RefCell, UnsafeCell};
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet}; // FUTURE(no_std): replace HashMap/HashSet with arena-backed maps.
 use std::fmt;
+use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::mem;
+use std::pin::Pin;
 use std::ptr::{self, NonNull};
 use std::rc::{Rc, Weak}; // FUTURE(no_std): replace Rc/Weak with arena-managed handles.
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -608,6 +612,22 @@ struct LaunchedEffectCancellation {
     continuations: Rc<RefCell<Vec<u64>>>,
 }
 
+struct LaunchedEffectAsyncState {
+    key: Option<Key>,
+    cancel: Option<LaunchedEffectCancellation>,
+    task: Option<TaskHandle>,
+}
+
+impl Default for LaunchedEffectAsyncState {
+    fn default() -> Self {
+        Self {
+            key: None,
+            cancel: None,
+            task: None,
+        }
+    }
+}
+
 impl LaunchedEffectState {
     fn should_run(&self, key: Key) -> bool {
         match self.key {
@@ -643,16 +663,84 @@ impl LaunchedEffectState {
 
     fn cancel_current(&mut self) {
         if let Some(cancel) = self.cancel.take() {
-            cancel.active.store(false, Ordering::SeqCst);
-            let mut pending = cancel.continuations.borrow_mut();
-            for id in pending.drain(..) {
-                cancel.runtime.cancel_ui_cont(id);
+            cancel.cancel();
+        }
+    }
+}
+
+impl LaunchedEffectCancellation {
+    fn cancel(&self) {
+        self.active.store(false, Ordering::SeqCst);
+        let mut pending = self.continuations.borrow_mut();
+        for id in pending.drain(..) {
+            self.runtime.cancel_ui_cont(id);
+        }
+    }
+}
+
+impl LaunchedEffectAsyncState {
+    fn should_run(&self, key: Key) -> bool {
+        match self.key {
+            Some(current) => current != key,
+            None => true,
+        }
+    }
+
+    fn set_key(&mut self, key: Key) {
+        self.key = Some(key);
+    }
+
+    fn launch(
+        &mut self,
+        runtime: RuntimeHandle,
+        mk_future: impl FnOnce(LaunchedEffectScope) -> Pin<Box<dyn Future<Output = ()>>> + 'static,
+    ) {
+        self.cancel_current();
+        let active = Arc::new(AtomicBool::new(true));
+        let continuations = Rc::new(RefCell::new(Vec::new()));
+        self.cancel = Some(LaunchedEffectCancellation {
+            runtime: runtime.clone(),
+            active: Arc::clone(&active),
+            continuations: Rc::clone(&continuations),
+        });
+        let scope = LaunchedEffectScope {
+            active: Arc::clone(&active),
+            runtime: runtime.clone(),
+            continuations,
+        };
+        let future = mk_future(scope.clone());
+        let active_flag = Arc::clone(&scope.active);
+        match runtime.spawn_ui(async move {
+            future.await;
+            active_flag.store(false, Ordering::SeqCst);
+        }) {
+            Some(handle) => {
+                self.task = Some(handle);
             }
+            None => {
+                active.store(false, Ordering::SeqCst);
+                self.cancel = None;
+            }
+        }
+    }
+
+    fn cancel_current(&mut self) {
+        if let Some(handle) = self.task.take() {
+            handle.cancel();
+        }
+        if let Some(cancel) = self.cancel.take() {
+            cancel.cancel();
         }
     }
 }
 
 impl Drop for LaunchedEffectState {
+    fn drop(&mut self) {
+        self.cancel_current();
+    }
+}
+
+impl Drop for LaunchedEffectAsyncState {
     fn drop(&mut self) {
         self.cancel_current();
     }
@@ -884,6 +972,43 @@ macro_rules! LaunchedEffect {
             $crate::location_key(file!(), line!(), column!()),
             $keys,
             $effect,
+        )
+    };
+}
+
+pub fn __launched_effect_async_impl<K, F>(group_key: Key, keys: K, mk_future: F)
+where
+    K: Hash,
+    F: FnOnce(LaunchedEffectScope) -> Pin<Box<dyn Future<Output = ()>>> + 'static,
+{
+    with_current_composer(|composer| {
+        composer.with_group(group_key, |composer| {
+            let key_hash = hash_key(&keys);
+            let state = composer.remember(LaunchedEffectAsyncState::default);
+            if state.with(|state| state.should_run(key_hash)) {
+                state.update(|state| state.set_key(key_hash));
+                let runtime = composer.runtime_handle();
+                let state_for_effect = state.clone();
+                let mut mk_future_opt = Some(mk_future);
+                composer.register_side_effect(move || {
+                    if let Some(mk_future) = mk_future_opt.take() {
+                        state_for_effect.update(|state| {
+                            state.launch(runtime.clone(), mk_future);
+                        });
+                    }
+                });
+            }
+        });
+    });
+}
+
+#[macro_export]
+macro_rules! LaunchedEffectAsync {
+    ($keys:expr, $future:expr) => {
+        $crate::__launched_effect_async_impl(
+            $crate::location_key(file!(), line!(), column!()),
+            $keys,
+            $future,
         )
     };
 }
