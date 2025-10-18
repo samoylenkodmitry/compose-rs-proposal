@@ -78,6 +78,14 @@ where
         &mut self.renderer
     }
 
+    pub fn set_frame_waker(&mut self, waker: impl Fn() + Send + Sync + 'static) {
+        self.runtime.set_frame_waker(waker);
+    }
+
+    pub fn clear_frame_waker(&mut self) {
+        self.runtime.clear_frame_waker();
+    }
+
     pub fn should_render(&self) -> bool {
         if self.layout_dirty || self.scene_dirty {
             return true;
@@ -199,6 +207,15 @@ where
         } else {
             self.renderer.scene_mut().clear();
         }
+    }
+}
+
+impl<R> Drop for AppShell<R>
+where
+    R: Renderer,
+{
+    fn drop(&mut self) {
+        self.runtime.clear_frame_waker();
     }
 }
 
