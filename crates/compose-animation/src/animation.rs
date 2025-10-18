@@ -29,6 +29,43 @@ impl Lerp for f64 {
     }
 }
 
+/// Trait for values that can participate in spring animations.
+pub trait SpringScalar: Lerp + Clone {
+    /// Convert the value to `f32` for physics calculations.
+    fn to_f32(&self) -> f32;
+
+    /// Compute the current progress between the start and target values.
+    fn spring_progress(start: &Self, target: &Self, current: &Self) -> f32 {
+        let start_val = start.to_f32();
+        let target_val = target.to_f32();
+        let current_val = current.to_f32();
+
+        if (target_val - start_val).abs() < f32::EPSILON {
+            1.0
+        } else {
+            (current_val - start_val) / (target_val - start_val)
+        }
+    }
+
+    /// Determine whether the current value is close enough to the target to
+    /// consider the spring finished.
+    fn is_near_target(current: &Self, target: &Self, threshold: f32) -> bool {
+        (current.to_f32() - target.to_f32()).abs() < threshold
+    }
+}
+
+impl SpringScalar for f32 {
+    fn to_f32(&self) -> f32 {
+        *self
+    }
+}
+
+impl SpringScalar for f64 {
+    fn to_f32(&self) -> f32 {
+        *self as f32
+    }
+}
+
 /// Easing functions for animations matching Jetpack Compose.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Easing {
@@ -134,20 +171,6 @@ fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32, fraction: f32) -> f32 {
     }
 
     sample_curve(ay, by, cy, t)
-}
-
-/// Helper to extract f32 from generic types for spring physics calculations.
-/// Returns None if the type cannot be converted to f32.
-fn try_as_f32<T: 'static>(value: &T) -> Option<f32> {
-    // Use std::any to check for f32 type
-    use std::any::Any;
-    if let Some(val) = (value as &dyn Any).downcast_ref::<f32>() {
-        Some(*val)
-    } else if let Some(val) = (value as &dyn Any).downcast_ref::<f64>() {
-        Some(*val as f32)
-    } else {
-        None
-    }
 }
 
 /// Animation specification combining duration and easing.
@@ -256,11 +279,11 @@ impl Default for AnimationType {
 }
 
 /// Generic animatable value holder.
-pub struct Animatable<T: Lerp + Clone + 'static> {
+pub struct Animatable<T: SpringScalar + 'static> {
     inner: Rc<RefCell<AnimatableInner<T>>>,
 }
 
-struct AnimatableInner<T: Lerp + Clone> {
+struct AnimatableInner<T: SpringScalar> {
     state: MutableState<T>,
     runtime: RuntimeHandle,
     current: T,
@@ -274,7 +297,7 @@ struct AnimatableInner<T: Lerp + Clone> {
     registration: Option<FrameCallbackRegistration>,
 }
 
-impl<T: Lerp + Clone + 'static> Animatable<T> {
+impl<T: SpringScalar + 'static> Animatable<T> {
     /// Create a new animatable with the given initial value.
     pub fn new(initial: T, runtime: RuntimeHandle) -> Self {
         let inner = AnimatableInner {
@@ -393,8 +416,8 @@ impl<T: Lerp + Clone + 'static> Animatable<T> {
                     let elapsed_nanos = frame_time_nanos.saturating_sub(*start_time);
                     let dt = elapsed_nanos as f32 / 1_000_000_000.0; // Convert to seconds
 
-                    // For f32 values, we can implement proper spring physics
-                    // For other types, we use a simplified approach
+                    // SpringScalar ensures we have scalar values that support the
+                    // physics calculations below (currently f32 and f64).
                     if dt == 0.0 {
                         schedule_next = true;
                     } else {
@@ -413,24 +436,11 @@ impl<T: Lerp + Clone + 'static> Animatable<T> {
                             // Spring force: F = -k * displacement - damping * velocity
                             // For interpolation between start and target:
                             // We treat position as progress from 0 to 1
-                            let current_progress = if let Some(start_val) = try_as_f32(&inner.start)
-                            {
-                                if let Some(target_val) = try_as_f32(&inner.target) {
-                                    if let Some(current_val) = try_as_f32(&inner.current) {
-                                        if (target_val - start_val).abs() < f32::EPSILON {
-                                            1.0
-                                        } else {
-                                            (current_val - start_val) / (target_val - start_val)
-                                        }
-                                    } else {
-                                        0.5
-                                    }
-                                } else {
-                                    0.5
-                                }
-                            } else {
-                                0.5
-                            };
+                            let current_progress = <T as SpringScalar>::spring_progress(
+                                &inner.start,
+                                &inner.target,
+                                &inner.current,
+                            );
 
                             let displacement = current_progress - 1.0; // Target is at 1.0
                             let spring_force = -stiffness * displacement - damping * inner.velocity;
@@ -451,15 +461,11 @@ impl<T: Lerp + Clone + 'static> Animatable<T> {
 
                         // Check if we've settled (velocity and displacement both small)
                         let at_rest = inner.velocity.abs() < spec.velocity_threshold;
-                        let near_target = if let Some(current_val) = try_as_f32(&inner.current) {
-                            if let Some(target_val) = try_as_f32(&inner.target) {
-                                (current_val - target_val).abs() < spec.position_threshold
-                            } else {
-                                true
-                            }
-                        } else {
-                            true
-                        };
+                        let near_target = <T as SpringScalar>::is_near_target(
+                            &inner.current,
+                            &inner.target,
+                            spec.position_threshold,
+                        );
 
                         if at_rest && near_target {
                             inner.current = inner.target.clone();
@@ -481,7 +487,7 @@ impl<T: Lerp + Clone + 'static> Animatable<T> {
     }
 }
 
-impl<T: Lerp + Clone + 'static> Clone for Animatable<T> {
+impl<T: SpringScalar + 'static> Clone for Animatable<T> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
