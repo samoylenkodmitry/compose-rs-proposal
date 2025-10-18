@@ -214,7 +214,7 @@ fn render_text(node: TextNode, layout: &LayoutBox, layer: GraphicsLayer, scene: 
         let brush = apply_layer_to_brush(Brush::solid(color), node_layer);
         scene.push_shape(transformed_rect, brush, scaled_shape.clone());
     }
-    let metrics = crate::draw::measure_text(&node.text);
+    let metrics = compose_render_common::text::measure_text(&node.text);
     let padding = style.padding;
     let text_rect = Rect {
         x: rect.x + padding.left,

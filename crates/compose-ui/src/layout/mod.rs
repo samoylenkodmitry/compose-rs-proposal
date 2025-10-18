@@ -653,10 +653,10 @@ fn measure_leaf(
 }
 
 fn measure_text_content(text: &str) -> Size {
-    let width = (text.chars().count() as f32) * 8.0;
+    let metrics = compose_render_common::text::measure_text(text);
     Size {
-        width,
-        height: 20.0,
+        width: metrics.width,
+        height: metrics.height,
     }
 }
 
