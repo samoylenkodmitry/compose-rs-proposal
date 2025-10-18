@@ -341,6 +341,16 @@ impl<T: SpringScalar + 'static> Animatable<T> {
         }
     }
 
+    /// Return the current animation target.
+    pub fn target(&self) -> T {
+        self.inner.borrow().target.clone()
+    }
+
+    /// Return the animation spec currently driving this animatable.
+    pub fn animation_type(&self) -> AnimationType {
+        self.inner.borrow().animation_type
+    }
+
     /// Get the current state.
     pub fn state(&self) -> State<T> {
         self.inner.borrow().state.as_state()
@@ -505,8 +515,9 @@ pub fn animateFloatAsStateWithSpec(
         let runtime = composer.runtime_handle();
         let anim: Owned<Animatable<f32>> = composer.remember(|| Animatable::new(target, runtime));
         anim.update(|animatable| {
-            let current = animatable.state().value();
-            if (current - target).abs() > f32::EPSILON {
+            let is_new_target = (animatable.target() - target).abs() > f32::EPSILON;
+            let is_new_animation = animatable.animation_type() != animation;
+            if is_new_target || is_new_animation {
                 animatable.animateTo(target, animation);
             }
         });
