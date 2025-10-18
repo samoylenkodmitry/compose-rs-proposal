@@ -85,16 +85,16 @@ impl LayoutModifierNode for PaddingNode {
         measurable: &dyn ModifierMeasurable,
         constraints: ModifierConstraints,
     ) -> ModifierMeasure {
-        // Convert padding to integer values (rounding)
-        let horizontal_padding = (self.padding.horizontal_sum()).round() as i32;
-        let vertical_padding = (self.padding.vertical_sum()).round() as i32;
+        // Convert padding to floating point values
+        let horizontal_padding = self.padding.horizontal_sum();
+        let vertical_padding = self.padding.vertical_sum();
 
         // Subtract padding from available space
         let inner_constraints = ModifierConstraints {
-            min_width: (constraints.min_width - horizontal_padding).max(0),
-            max_width: (constraints.max_width - horizontal_padding).max(0),
-            min_height: (constraints.min_height - vertical_padding).max(0),
-            max_height: (constraints.max_height - vertical_padding).max(0),
+            min_width: (constraints.min_width - horizontal_padding).max(0.0),
+            max_width: (constraints.max_width - horizontal_padding).max(0.0),
+            min_height: (constraints.min_height - vertical_padding).max(0.0),
+            max_height: (constraints.max_height - vertical_padding).max(0.0),
         };
 
         // Measure the wrapped content
@@ -107,32 +107,32 @@ impl LayoutModifierNode for PaddingNode {
         }
     }
 
-    fn min_intrinsic_width(&self, measurable: &dyn ModifierMeasurable, height: i32) -> i32 {
-        let vertical_padding = self.padding.vertical_sum().round() as i32;
-        let inner_height = (height - vertical_padding).max(0);
+    fn min_intrinsic_width(&self, measurable: &dyn ModifierMeasurable, height: f32) -> f32 {
+        let vertical_padding = self.padding.vertical_sum();
+        let inner_height = (height - vertical_padding).max(0.0);
         let inner_width = measurable.min_intrinsic_width(inner_height);
-        inner_width + self.padding.horizontal_sum().round() as i32
+        inner_width + self.padding.horizontal_sum()
     }
 
-    fn max_intrinsic_width(&self, measurable: &dyn ModifierMeasurable, height: i32) -> i32 {
-        let vertical_padding = self.padding.vertical_sum().round() as i32;
-        let inner_height = (height - vertical_padding).max(0);
+    fn max_intrinsic_width(&self, measurable: &dyn ModifierMeasurable, height: f32) -> f32 {
+        let vertical_padding = self.padding.vertical_sum();
+        let inner_height = (height - vertical_padding).max(0.0);
         let inner_width = measurable.max_intrinsic_width(inner_height);
-        inner_width + self.padding.horizontal_sum().round() as i32
+        inner_width + self.padding.horizontal_sum()
     }
 
-    fn min_intrinsic_height(&self, measurable: &dyn ModifierMeasurable, width: i32) -> i32 {
-        let horizontal_padding = self.padding.horizontal_sum().round() as i32;
-        let inner_width = (width - horizontal_padding).max(0);
+    fn min_intrinsic_height(&self, measurable: &dyn ModifierMeasurable, width: f32) -> f32 {
+        let horizontal_padding = self.padding.horizontal_sum();
+        let inner_width = (width - horizontal_padding).max(0.0);
         let inner_height = measurable.min_intrinsic_height(inner_width);
-        inner_height + self.padding.vertical_sum().round() as i32
+        inner_height + self.padding.vertical_sum()
     }
 
-    fn max_intrinsic_height(&self, measurable: &dyn ModifierMeasurable, width: i32) -> i32 {
-        let horizontal_padding = self.padding.horizontal_sum().round() as i32;
-        let inner_width = (width - horizontal_padding).max(0);
+    fn max_intrinsic_height(&self, measurable: &dyn ModifierMeasurable, width: f32) -> f32 {
+        let horizontal_padding = self.padding.horizontal_sum();
+        let inner_width = (width - horizontal_padding).max(0.0);
         let inner_height = measurable.max_intrinsic_height(inner_width);
-        inner_height + self.padding.vertical_sum().round() as i32
+        inner_height + self.padding.vertical_sum()
     }
 }
 
@@ -249,12 +249,12 @@ impl ModifierElement for BackgroundElement {
 /// Node that enforces a specific size on its content.
 #[derive(Debug)]
 pub struct SizeNode {
-    width: Option<i32>,
-    height: Option<i32>,
+    width: Option<f32>,
+    height: Option<f32>,
 }
 
 impl SizeNode {
-    pub fn new(width: Option<i32>, height: Option<i32>) -> Self {
+    pub fn new(width: Option<f32>, height: Option<f32>) -> Self {
         Self { width, height }
     }
 }
@@ -273,49 +273,56 @@ impl LayoutModifierNode for SizeNode {
         constraints: ModifierConstraints,
     ) -> ModifierMeasure {
         // Override constraints with explicit sizes if specified
-        let width = self.width.unwrap_or(constraints.max_width);
-        let height = self.height.unwrap_or(constraints.max_height);
+        let width = self
+            .width
+            .map(|value| value.clamp(constraints.min_width, constraints.max_width));
+        let height = self
+            .height
+            .map(|value| value.clamp(constraints.min_height, constraints.max_height));
 
         let inner_constraints = ModifierConstraints {
-            min_width: self.width.unwrap_or(constraints.min_width),
-            max_width: width,
-            min_height: self.height.unwrap_or(constraints.min_height),
-            max_height: height,
+            min_width: width.unwrap_or(constraints.min_width),
+            max_width: width.unwrap_or(constraints.max_width),
+            min_height: height.unwrap_or(constraints.min_height),
+            max_height: height.unwrap_or(constraints.max_height),
         };
 
         // Measure wrapped content with size constraints
-        let _ = measurable.measure(inner_constraints);
+        let result = measurable.measure(inner_constraints);
 
-        // Return the specified size
-        ModifierMeasure { width, height }
+        // Return the specified size or the measured size when not overridden
+        ModifierMeasure {
+            width: width.unwrap_or(result.width),
+            height: height.unwrap_or(result.height),
+        }
     }
 
-    fn min_intrinsic_width(&self, _measurable: &dyn ModifierMeasurable, _height: i32) -> i32 {
-        self.width.unwrap_or(0)
+    fn min_intrinsic_width(&self, _measurable: &dyn ModifierMeasurable, _height: f32) -> f32 {
+        self.width.unwrap_or(0.0)
     }
 
-    fn max_intrinsic_width(&self, _measurable: &dyn ModifierMeasurable, _height: i32) -> i32 {
-        self.width.unwrap_or(i32::MAX)
+    fn max_intrinsic_width(&self, _measurable: &dyn ModifierMeasurable, _height: f32) -> f32 {
+        self.width.unwrap_or(f32::INFINITY)
     }
 
-    fn min_intrinsic_height(&self, _measurable: &dyn ModifierMeasurable, _width: i32) -> i32 {
-        self.height.unwrap_or(0)
+    fn min_intrinsic_height(&self, _measurable: &dyn ModifierMeasurable, _width: f32) -> f32 {
+        self.height.unwrap_or(0.0)
     }
 
-    fn max_intrinsic_height(&self, _measurable: &dyn ModifierMeasurable, _width: i32) -> i32 {
-        self.height.unwrap_or(i32::MAX)
+    fn max_intrinsic_height(&self, _measurable: &dyn ModifierMeasurable, _width: f32) -> f32 {
+        self.height.unwrap_or(f32::INFINITY)
     }
 }
 
 /// Element that creates and updates size nodes.
 #[derive(Debug, Clone)]
 pub struct SizeElement {
-    width: Option<i32>,
-    height: Option<i32>,
+    width: Option<f32>,
+    height: Option<f32>,
 }
 
 impl SizeElement {
-    pub fn new(width: Option<i32>, height: Option<i32>) -> Self {
+    pub fn new(width: Option<f32>, height: Option<f32>) -> Self {
         Self { width, height }
     }
 }
@@ -536,8 +543,8 @@ mod tests {
     use std::cell::Cell;
 
     struct TestMeasurable {
-        intrinsic_width: i32,
-        intrinsic_height: i32,
+        intrinsic_width: f32,
+        intrinsic_height: f32,
     }
 
     impl ModifierMeasurable for TestMeasurable {
@@ -548,19 +555,19 @@ mod tests {
             }
         }
 
-        fn min_intrinsic_width(&self, _height: i32) -> i32 {
+        fn min_intrinsic_width(&self, _height: f32) -> f32 {
             self.intrinsic_width
         }
 
-        fn max_intrinsic_width(&self, _height: i32) -> i32 {
+        fn max_intrinsic_width(&self, _height: f32) -> f32 {
             self.intrinsic_width
         }
 
-        fn min_intrinsic_height(&self, _width: i32) -> i32 {
+        fn min_intrinsic_height(&self, _width: f32) -> f32 {
             self.intrinsic_height
         }
 
-        fn max_intrinsic_height(&self, _width: i32) -> i32 {
+        fn max_intrinsic_height(&self, _width: f32) -> f32 {
             self.intrinsic_height
         }
     }
@@ -580,20 +587,20 @@ mod tests {
         // Test that padding node correctly implements layout
         let node = chain.node_mut::<PaddingNode>(0).unwrap();
         let measurable = TestMeasurable {
-            intrinsic_width: 50,
-            intrinsic_height: 50,
+            intrinsic_width: 50.0,
+            intrinsic_height: 50.0,
         };
         let constraints = ModifierConstraints {
-            min_width: 0,
-            max_width: 200,
-            min_height: 0,
-            max_height: 200,
+            min_width: 0.0,
+            max_width: 200.0,
+            min_height: 0.0,
+            max_height: 200.0,
         };
 
         let result = node.measure(&mut context, &measurable, constraints);
         // Content is 50x50, padding is 10 on each side, so total is 70x70
-        assert_eq!(result.width, 70);
-        assert_eq!(result.height, 70);
+        assert_eq!(result.width, 70.0);
+        assert_eq!(result.height, 70.0);
     }
 
     #[test]
@@ -601,17 +608,17 @@ mod tests {
         let padding = EdgeInsets::uniform(10.0);
         let node = PaddingNode::new(padding);
         let measurable = TestMeasurable {
-            intrinsic_width: 50,
-            intrinsic_height: 30,
+            intrinsic_width: 50.0,
+            intrinsic_height: 30.0,
         };
 
         // Intrinsic widths should include padding
-        assert_eq!(node.min_intrinsic_width(&measurable, 100), 70); // 50 + 20
-        assert_eq!(node.max_intrinsic_width(&measurable, 100), 70);
+        assert_eq!(node.min_intrinsic_width(&measurable, 100.0), 70.0); // 50 + 20
+        assert_eq!(node.max_intrinsic_width(&measurable, 100.0), 70.0);
 
         // Intrinsic heights should include padding
-        assert_eq!(node.min_intrinsic_height(&measurable, 100), 50); // 30 + 20
-        assert_eq!(node.max_intrinsic_height(&measurable, 100), 50);
+        assert_eq!(node.min_intrinsic_height(&measurable, 100.0), 50.0); // 30 + 20
+        assert_eq!(node.max_intrinsic_height(&measurable, 100.0), 50.0);
     }
 
     #[test]
@@ -659,24 +666,24 @@ mod tests {
         let mut chain = ModifierNodeChain::new();
         let mut context = BasicModifierNodeContext::new();
 
-        let elements = vec![modifier_element(SizeElement::new(Some(100), Some(200)))];
+        let elements = vec![modifier_element(SizeElement::new(Some(100.0), Some(200.0)))];
         chain.update_from_slice(&elements, &mut context);
 
         let node = chain.node_mut::<SizeNode>(0).unwrap();
         let measurable = TestMeasurable {
-            intrinsic_width: 50,
-            intrinsic_height: 50,
+            intrinsic_width: 50.0,
+            intrinsic_height: 50.0,
         };
         let constraints = ModifierConstraints {
-            min_width: 0,
-            max_width: 500,
-            min_height: 0,
-            max_height: 500,
+            min_width: 0.0,
+            max_width: 500.0,
+            min_height: 0.0,
+            max_height: 500.0,
         };
 
         let result = node.measure(&mut context, &measurable, constraints);
-        assert_eq!(result.width, 100);
-        assert_eq!(result.height, 200);
+        assert_eq!(result.width, 100.0);
+        assert_eq!(result.height, 200.0);
     }
 
     #[test]

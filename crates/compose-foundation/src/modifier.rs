@@ -10,6 +10,9 @@
 use std::any::{type_name, Any, TypeId};
 use std::fmt;
 
+use compose_ui_graphics::Size;
+use compose_ui_layout::Constraints;
+
 use crate::nodes::input::types::PointerEvent;
 
 /// Identifies which part of the rendering pipeline should be invalidated
@@ -133,23 +136,23 @@ pub trait LayoutModifierNode: ModifierNode {
     }
 
     /// Returns the minimum intrinsic width of this modifier node.
-    fn min_intrinsic_width(&self, _measurable: &dyn ModifierMeasurable, _height: i32) -> i32 {
-        0
+    fn min_intrinsic_width(&self, _measurable: &dyn ModifierMeasurable, _height: f32) -> f32 {
+        0.0
     }
 
     /// Returns the maximum intrinsic width of this modifier node.
-    fn max_intrinsic_width(&self, _measurable: &dyn ModifierMeasurable, _height: i32) -> i32 {
-        0
+    fn max_intrinsic_width(&self, _measurable: &dyn ModifierMeasurable, _height: f32) -> f32 {
+        0.0
     }
 
     /// Returns the minimum intrinsic height of this modifier node.
-    fn min_intrinsic_height(&self, _measurable: &dyn ModifierMeasurable, _width: i32) -> i32 {
-        0
+    fn min_intrinsic_height(&self, _measurable: &dyn ModifierMeasurable, _width: f32) -> f32 {
+        0.0
     }
 
     /// Returns the maximum intrinsic height of this modifier node.
-    fn max_intrinsic_height(&self, _measurable: &dyn ModifierMeasurable, _width: i32) -> i32 {
-        0
+    fn max_intrinsic_height(&self, _measurable: &dyn ModifierMeasurable, _width: f32) -> f32 {
+        0.0
     }
 }
 
@@ -204,32 +207,22 @@ pub trait SemanticsNode: ModifierNode {
     }
 }
 
-// Placeholder types for the specialized node traits.
-// These will be properly defined in the UI layer.
+// Bridge types for the specialized node traits.
+// These reuse the layout and geometry contracts instead of defining duplicates.
 
 /// Constraints passed to measure functions within modifier nodes.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ModifierConstraints {
-    pub min_width: i32,
-    pub max_width: i32,
-    pub min_height: i32,
-    pub max_height: i32,
-}
+pub type ModifierConstraints = Constraints;
 
 /// Result of a measure operation performed by modifier nodes.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ModifierMeasure {
-    pub width: i32,
-    pub height: i32,
-}
+pub type ModifierMeasure = Size;
 
 /// Trait for objects that can be measured by modifier nodes.
 pub trait ModifierMeasurable {
     fn measure(&self, constraints: ModifierConstraints) -> ModifierMeasure;
-    fn min_intrinsic_width(&self, height: i32) -> i32;
-    fn max_intrinsic_width(&self, height: i32) -> i32;
-    fn min_intrinsic_height(&self, width: i32) -> i32;
-    fn max_intrinsic_height(&self, width: i32) -> i32;
+    fn min_intrinsic_width(&self, height: f32) -> f32;
+    fn max_intrinsic_width(&self, height: f32) -> f32;
+    fn min_intrinsic_height(&self, width: f32) -> f32;
+    fn max_intrinsic_height(&self, width: f32) -> f32;
 }
 
 /// Drawing scope for draw operations triggered by modifier nodes.
@@ -840,13 +833,13 @@ mod tests {
         ) -> ModifierMeasure {
             self.measure_count.set(self.measure_count.get() + 1);
             ModifierMeasure {
-                width: 100,
-                height: 100,
+                width: 100.0,
+                height: 100.0,
             }
         }
 
-        fn min_intrinsic_width(&self, _measurable: &dyn ModifierMeasurable, _height: i32) -> i32 {
-            50
+        fn min_intrinsic_width(&self, _measurable: &dyn ModifierMeasurable, _height: f32) -> f32 {
+            50.0
         }
     }
 
