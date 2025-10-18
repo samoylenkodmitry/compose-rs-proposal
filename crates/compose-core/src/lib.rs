@@ -587,10 +587,24 @@ impl Default for DisposableEffectResult {
     }
 }
 
-#[derive(Default)]
 struct LaunchedEffectState {
     key: Option<Key>,
-    cancel_flag: Option<Arc<AtomicBool>>,
+    cancel: Option<LaunchedEffectCancellation>,
+}
+
+impl Default for LaunchedEffectState {
+    fn default() -> Self {
+        Self {
+            key: None,
+            cancel: None,
+        }
+    }
+}
+
+struct LaunchedEffectCancellation {
+    runtime: RuntimeHandle,
+    active: Arc<AtomicBool>,
+    continuations: Rc<RefCell<Vec<u64>>>,
 }
 
 impl LaunchedEffectState {
@@ -608,20 +622,31 @@ impl LaunchedEffectState {
     fn launch(
         &mut self,
         runtime: RuntimeHandle,
-        effect: impl FnOnce(LaunchedEffectScope) + Send + 'static,
+        effect: impl FnOnce(LaunchedEffectScope) + 'static,
     ) {
         self.cancel_current();
         let active = Arc::new(AtomicBool::new(true));
+        let continuations = Rc::new(RefCell::new(Vec::new()));
+        self.cancel = Some(LaunchedEffectCancellation {
+            runtime: runtime.clone(),
+            active: Arc::clone(&active),
+            continuations: Rc::clone(&continuations),
+        });
         let scope = LaunchedEffectScope {
             active: Arc::clone(&active),
+            runtime: runtime.clone(),
+            continuations,
         };
-        self.cancel_flag = Some(active);
-        runtime.spawn_task(Box::new(move || effect(scope)));
+        runtime.enqueue_ui_task(Box::new(move || effect(scope)));
     }
 
     fn cancel_current(&mut self) {
-        if let Some(flag) = self.cancel_flag.take() {
-            flag.store(false, Ordering::SeqCst);
+        if let Some(cancel) = self.cancel.take() {
+            cancel.active.store(false, Ordering::SeqCst);
+            let mut pending = cancel.continuations.borrow_mut();
+            for id in pending.drain(..) {
+                cancel.runtime.cancel_ui_cont(id);
+            }
         }
     }
 }
@@ -635,9 +660,146 @@ impl Drop for LaunchedEffectState {
 #[derive(Clone)]
 pub struct LaunchedEffectScope {
     active: Arc<AtomicBool>,
+    runtime: RuntimeHandle,
+    continuations: Rc<RefCell<Vec<u64>>>,
 }
 
 impl LaunchedEffectScope {
+    fn track_continuation(&self, id: u64) {
+        self.continuations.borrow_mut().push(id);
+    }
+
+    fn release_continuation(&self, id: u64) {
+        let mut continuations = self.continuations.borrow_mut();
+        if let Some(index) = continuations.iter().position(|entry| *entry == id) {
+            continuations.remove(index);
+        }
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.active.load(Ordering::SeqCst)
+    }
+
+    pub fn runtime(&self) -> RuntimeHandle {
+        self.runtime.clone()
+    }
+
+    /// Runs a follow-up `LaunchedEffect` task on the UI thread.
+    ///
+    /// The provided closure executes on the runtime thread and may freely
+    /// capture `Rc`/`RefCell` state. This must only be called from the UI
+    /// thread, typically inside another effect callback.
+    pub fn launch(&self, task: impl FnOnce(LaunchedEffectScope) + 'static) {
+        if !self.is_active() {
+            return;
+        }
+        let scope = self.clone();
+        self.runtime.enqueue_ui_task(Box::new(move || {
+            if scope.is_active() {
+                task(scope);
+            }
+        }));
+    }
+
+    /// Posts UI-only work that will execute on the runtime thread.
+    ///
+    /// The closure never crosses threads, so it may capture non-`Send` values.
+    /// Callers must invoke this from the UI thread.
+    pub fn post_ui(&self, task: impl FnOnce() + 'static) {
+        if !self.is_active() {
+            return;
+        }
+        let active = Arc::clone(&self.active);
+        self.runtime.enqueue_ui_task(Box::new(move || {
+            if active.load(Ordering::SeqCst) {
+                task();
+            }
+        }));
+    }
+
+    /// Posts work from any thread to run on the UI thread.
+    ///
+    /// The closure must be `Send` because it may be sent across threads before
+    /// running on the runtime thread. Use this helper when posting from
+    /// background threads that need to interact with UI state.
+    pub fn post_ui_send(&self, task: impl FnOnce() + Send + 'static) {
+        if !self.is_active() {
+            return;
+        }
+        let active = Arc::clone(&self.active);
+        self.runtime.post_ui(move || {
+            if active.load(Ordering::SeqCst) {
+                task();
+            }
+        });
+    }
+
+    /// Runs background work on a worker thread and delivers results to the UI.
+    ///
+    /// `work` executes on a background thread, receives a cooperative
+    /// [`CancelToken`], and must produce a `Send` value. The `on_ui` continuation
+    /// runs on the runtime thread, so it may capture `Rc`/`RefCell` state safely.
+    pub fn launch_background<T, Work, Ui>(&self, work: Work, on_ui: Ui)
+    where
+        T: Send + 'static,
+        Work: FnOnce(CancelToken) -> T + Send + 'static,
+        Ui: FnOnce(T) + 'static,
+    {
+        if !self.is_active() {
+            return;
+        }
+        let dispatcher = self.runtime.dispatcher();
+        let active_for_thread = Arc::clone(&self.active);
+        let continuation_scope = self.clone();
+        let continuation_active = Arc::clone(&self.active);
+        let id_cell = Rc::new(Cell::new(0));
+        let id_for_closure = Rc::clone(&id_cell);
+        let continuation = move |value: T| {
+            let id = id_for_closure.get();
+            continuation_scope.release_continuation(id);
+            if continuation_active.load(Ordering::SeqCst) {
+                on_ui(value);
+            }
+        };
+
+        let Some(cont_id) = self.runtime.register_ui_cont(continuation) else {
+            return;
+        };
+        id_cell.set(cont_id);
+        self.track_continuation(cont_id);
+
+        std::thread::spawn(move || {
+            let token = CancelToken::new(Arc::clone(&active_for_thread));
+            let value = work(token.clone());
+            if token.is_cancelled() {
+                return;
+            }
+            dispatcher.post_invoke(cont_id, value);
+        });
+    }
+}
+
+#[derive(Clone)]
+/// Cooperative cancellation token passed into background `LaunchedEffect` work.
+///
+/// The token flips to "cancelled" when the associated scope leaves composition.
+/// Callers should periodically check [`CancelToken::is_cancelled`] in long-running
+/// operations and exit early; blocking I/O will not be interrupted automatically.
+pub struct CancelToken {
+    active: Arc<AtomicBool>,
+}
+
+impl CancelToken {
+    fn new(active: Arc<AtomicBool>) -> Self {
+        Self { active }
+    }
+
+    /// Returns `true` once the associated scope has been cancelled.
+    pub fn is_cancelled(&self) -> bool {
+        !self.active.load(Ordering::SeqCst)
+    }
+
+    /// Returns whether the scope is still active.
     pub fn is_active(&self) -> bool {
         self.active.load(Ordering::SeqCst)
     }
@@ -691,7 +853,7 @@ macro_rules! DisposableEffect {
 pub fn __launched_effect_impl<K, F>(group_key: Key, keys: K, effect: F)
 where
     K: Hash,
-    F: FnOnce(LaunchedEffectScope) + Send + 'static,
+    F: FnOnce(LaunchedEffectScope) + 'static,
 {
     // Create a group using the caller's location to ensure each LaunchedEffect
     // gets its own slot table entry, even in conditional branches
@@ -1552,7 +1714,7 @@ impl<'a> Composer<'a> {
 struct MutableStateInner<T> {
     value: RefCell<T>,
     watchers: RefCell<Vec<Weak<RecomposeScopeInner>>>, // FUTURE(no_std): move to stack-allocated subscription list.
-    _runtime: RuntimeHandle,
+    runtime: RuntimeHandle,
 }
 
 pub struct State<T> {
@@ -1601,7 +1763,7 @@ impl<T> MutableState<T> {
             inner: Rc::new(MutableStateInner {
                 value: RefCell::new(value),
                 watchers: RefCell::new(Vec::new()),
-                _runtime: runtime,
+                runtime,
             }),
         }
     }
@@ -1617,6 +1779,7 @@ impl<T> MutableState<T> {
     }
 
     pub fn update<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        self.inner.runtime.assert_ui_thread();
         let result = {
             let mut value = self.inner.value.borrow_mut();
             f(&mut *value)
@@ -1626,6 +1789,7 @@ impl<T> MutableState<T> {
     }
 
     pub fn replace(&self, value: T) {
+        self.inner.runtime.assert_ui_thread();
         *self.inner.value.borrow_mut() = value;
         self.notify_watchers();
     }
@@ -1844,6 +2008,7 @@ impl<A: Applier> Composition<A> {
     pub fn render(&mut self, key: Key, mut content: impl FnMut()) -> Result<(), NodeError> {
         self.slots.reset();
         let runtime_handle = self.runtime_handle();
+        runtime_handle.drain_ui();
         let (root, commands, side_effects) = {
             let mut composer = Composer::new(
                 &mut self.slots,
@@ -1865,15 +2030,18 @@ impl<A: Applier> Composition<A> {
         for mut command in runtime_handle.take_updates() {
             command(&mut self.applier)?;
         }
+        runtime_handle.drain_ui();
         for effect in side_effects {
             effect();
         }
+        runtime_handle.drain_ui();
         self.root = root;
         self.slots.trim_to_cursor();
         self.process_invalid_scopes()?;
         if !self.runtime.has_updates()
             && !runtime_handle.has_invalid_scopes()
             && !runtime_handle.has_frame_callbacks()
+            && !runtime_handle.has_pending_ui()
         {
             self.runtime.set_needs_frame(false);
         }
@@ -1899,6 +2067,7 @@ impl<A: Applier> Composition<A> {
     pub fn process_invalid_scopes(&mut self) -> Result<(), NodeError> {
         let runtime_handle = self.runtime_handle();
         loop {
+            runtime_handle.drain_ui();
             let pending = runtime_handle.take_invalidated_scopes();
             if pending.is_empty() {
                 break;
@@ -1936,10 +2105,12 @@ impl<A: Applier> Composition<A> {
             for effect in side_effects {
                 effect();
             }
+            runtime_handle.drain_ui();
         }
         if !self.runtime.has_updates()
             && !runtime_handle.has_invalid_scopes()
             && !runtime_handle.has_frame_callbacks()
+            && !runtime_handle.has_pending_ui()
         {
             self.runtime.set_needs_frame(false);
         }

@@ -1,7 +1,7 @@
 //! Geometric primitives: Point, Size, Rect, Insets, Path
 
-use std::ops::AddAssign;
 use crate::Brush;
+use std::ops::AddAssign;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Point {
