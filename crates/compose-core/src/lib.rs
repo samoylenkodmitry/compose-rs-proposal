@@ -2422,7 +2422,7 @@ impl<A: Applier> Composition<A> {
         runtime_handle.drain_ui();
         self.root = root;
         self.slots.trim_to_cursor();
-        self.process_invalid_scopes()?;
+        let _ = self.process_invalid_scopes()?;
         if !self.runtime.has_updates()
             && !runtime_handle.has_invalid_scopes()
             && !runtime_handle.has_frame_callbacks()
@@ -2449,8 +2449,9 @@ impl<A: Applier> Composition<A> {
         self.root
     }
 
-    pub fn process_invalid_scopes(&mut self) -> Result<(), NodeError> {
+    pub fn process_invalid_scopes(&mut self) -> Result<bool, NodeError> {
         let runtime_handle = self.runtime_handle();
+        let mut did_recompose = false;
         loop {
             runtime_handle.drain_ui();
             let pending = runtime_handle.take_invalidated_scopes();
@@ -2468,6 +2469,7 @@ impl<A: Applier> Composition<A> {
             if scopes.is_empty() {
                 continue;
             }
+            did_recompose = true;
             let runtime_clone = runtime_handle.clone();
             let (commands, side_effects) = {
                 let mut composer =
@@ -2499,7 +2501,7 @@ impl<A: Applier> Composition<A> {
         {
             self.runtime.set_needs_frame(false);
         }
-        Ok(())
+        Ok(did_recompose)
     }
 
     pub fn flush_pending_node_updates(&mut self) -> Result<(), NodeError> {

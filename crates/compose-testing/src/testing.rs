@@ -71,7 +71,7 @@ impl ComposeTestRule {
             }
 
             if handle.has_invalid_scopes() {
-                self.composition.process_invalid_scopes()?;
+                let _ = self.composition.process_invalid_scopes()?;
                 progressed = true;
             }
 

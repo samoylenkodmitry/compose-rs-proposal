@@ -13,8 +13,8 @@
 //! log_layout_tree(&layout_tree);
 //!
 //! // After rendering
-//! let mut renderer = HeadlessRenderer::new(applier);
-//! let render_scene = renderer.render(&layout_tree)?;
+//! let renderer = HeadlessRenderer::new();
+//! let render_scene = renderer.render(&layout_tree);
 //! log_render_scene(&render_scene);
 //!
 //! // Or get a quick summary

@@ -44,6 +44,7 @@ fn main() {
     println!();
 
     let event_loop = EventLoopBuilder::new().build();
+    let frame_proxy = event_loop.create_proxy();
     let window = WindowBuilder::new()
         .with_title("Compose Counter")
         .with_inner_size(LogicalSize::new(
@@ -59,10 +60,16 @@ fn main() {
     let renderer = PixelsRenderer::new();
     let mut app = AppShell::new(renderer, default_root_key(), combined_app);
     let mut platform = DesktopWinitPlatform::default();
+    app.set_frame_waker({
+        let proxy = frame_proxy.clone();
+        move || {
+            let _ = proxy.send_event(());
+        }
+    });
     app.set_viewport(size.width as f32, size.height as f32);
 
     event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::Poll;
+        *control_flow = ControlFlow::Wait;
         match event {
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::CloseRequested => {
@@ -130,14 +137,10 @@ fn main() {
                 }
                 _ => {}
             },
-            Event::MainEventsCleared => {
+            Event::MainEventsCleared | Event::RedrawEventsCleared | Event::UserEvent(()) => {
                 if app.should_render() {
                     window.request_redraw();
-                }
-            }
-            Event::RedrawEventsCleared => {
-                if app.should_render() {
-                    window.request_redraw();
+                    *control_flow = ControlFlow::Poll;
                 }
             }
             Event::RedrawRequested(_) => {

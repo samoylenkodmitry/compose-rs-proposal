@@ -2,6 +2,7 @@
 
 use compose_foundation::PointerEventKind;
 use compose_render_common::{HitTestTarget, RenderScene, Renderer};
+use compose_ui::LayoutTree;
 use compose_ui_graphics::Size;
 
 #[derive(Default)]
@@ -18,8 +19,6 @@ impl WgpuRenderer {
 impl Renderer for WgpuRenderer {
     type Scene = StubScene;
     type Error = ();
-    type Applier = ();
-    type LayoutRoot = ();
 
     fn scene(&self) -> &Self::Scene {
         &self.scene
@@ -31,8 +30,7 @@ impl Renderer for WgpuRenderer {
 
     fn rebuild_scene(
         &mut self,
-        _applier: &mut Self::Applier,
-        _root: &Self::LayoutRoot,
+        _layout_tree: &LayoutTree,
         _viewport: Size,
     ) -> Result<(), Self::Error> {
         Ok(())

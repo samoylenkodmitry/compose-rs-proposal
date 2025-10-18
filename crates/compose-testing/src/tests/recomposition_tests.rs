@@ -73,7 +73,7 @@ fn test_child_recomposition_preserves_parent() {
         text_state.set_value("World".to_string());
         {
             let composition = rule.composition();
-            composition
+            let _ = composition
                 .process_invalid_scopes()
                 .expect("process invalid scopes");
         }

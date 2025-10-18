@@ -1,8 +1,7 @@
 use std::rc::Rc;
 
 use compose_foundation::PointerEvent;
-use compose_render_common::{Brush, DrawCommand};
-use compose_ui::Modifier;
+use compose_ui::{Brush, DrawCommand, Modifier};
 use compose_ui_graphics::{
     Color, CornerRadii, DrawPrimitive, GraphicsLayer, Point, Rect, RoundedCornerShape, Size,
 };

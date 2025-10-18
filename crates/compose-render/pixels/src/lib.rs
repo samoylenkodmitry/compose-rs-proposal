@@ -3,10 +3,9 @@ mod pipeline;
 pub mod scene;
 pub mod style;
 
-use compose_core::MemoryApplier;
-use compose_render_common::{text::set_text_measurer, RenderScene, Renderer};
-use compose_ui::LayoutBox;
-use compose_ui_graphics::{GraphicsLayer, Size};
+use compose_render_common::{RenderScene, Renderer};
+use compose_ui::{set_text_measurer, LayoutTree};
+use compose_ui_graphics::Size;
 
 pub use draw::draw_scene;
 pub use scene::{HitRegion, Scene};
@@ -36,8 +35,6 @@ impl PixelsRenderer {
 impl Renderer for PixelsRenderer {
     type Scene = Scene;
     type Error = PixelsRendererError;
-    type Applier = MemoryApplier;
-    type LayoutRoot = LayoutBox;
 
     fn scene(&self) -> &Self::Scene {
         &self.scene
@@ -49,12 +46,11 @@ impl Renderer for PixelsRenderer {
 
     fn rebuild_scene(
         &mut self,
-        applier: &mut Self::Applier,
-        root: &Self::LayoutRoot,
+        layout_tree: &LayoutTree,
         _viewport: Size,
     ) -> Result<(), Self::Error> {
         self.scene.clear();
-        pipeline::render_layout_node(applier, root, GraphicsLayer::default(), &mut self.scene);
+        pipeline::render_layout_tree(layout_tree.root(), &mut self.scene);
         Ok(())
     }
 }

@@ -68,7 +68,7 @@ fn animate_float_as_state_interpolates_over_time() {
         }
         frame_time += 16_666_667; // ~60 FPS
         runtime.drain_frame_callbacks(frame_time);
-        composition
+        let _ = composition
             .process_invalid_scopes()
             .expect("process invalid scopes succeeds");
         if let Some(state) = state_slot.borrow().as_ref() {
@@ -152,5 +152,3 @@ fn spring_spec_stiff_has_high_stiffness() {
     assert_eq!(spec.stiffness, 3000.0);
     assert!(spec.stiffness > SpringSpec::default().stiffness);
 }
-
-

@@ -1,85 +1,45 @@
-use compose_core::{MemoryApplier, Node, NodeError, NodeId};
+use std::rc::Rc;
+
 use compose_render_common::Brush;
-use compose_ui::{
-    ButtonNode, LayoutBox, LayoutNode, Modifier, SpacerNode, SubcomposeLayoutNode, TextNode,
-};
+use compose_ui::{measure_text, LayoutBox, LayoutNodeKind};
 use compose_ui_graphics::{Color, GraphicsLayer, Rect, RoundedCornerShape, Size};
 
 use crate::scene::{ClickAction, Scene};
 use crate::style::{
-    apply_draw_commands, apply_layer_to_brush, apply_layer_to_rect, combine_layers,
-    scale_corner_radii, DrawPlacement, NodeStyle,
+    apply_draw_commands, apply_layer_to_brush, apply_layer_to_color, apply_layer_to_rect,
+    combine_layers, scale_corner_radii, DrawPlacement, NodeStyle,
 };
 
-fn try_node<T: Node + 'static, R>(
-    applier: &mut MemoryApplier,
-    node_id: NodeId,
-    f: impl FnOnce(&mut T) -> R,
-) -> Option<R> {
-    match applier.with_node(node_id, f) {
-        Ok(value) => Some(value),
-        Err(NodeError::TypeMismatch { .. }) => None,
-        Err(err) => {
-            debug_assert!(false, "failed to access node {node_id}: {err}");
-            None
+pub(crate) fn render_layout_tree(root: &LayoutBox, scene: &mut Scene) {
+    render_layout_node(root, GraphicsLayer::default(), scene);
+}
+
+fn render_layout_node(layout: &LayoutBox, parent_layer: GraphicsLayer, scene: &mut Scene) {
+    match &layout.node_data.kind {
+        LayoutNodeKind::Text { value } => {
+            render_text(layout, value, parent_layer, scene);
+        }
+        LayoutNodeKind::Spacer => {
+            render_spacer(layout, parent_layer, scene);
+        }
+        LayoutNodeKind::Button { on_click } => {
+            render_button(layout, Rc::clone(on_click), parent_layer, scene);
+        }
+        LayoutNodeKind::Layout | LayoutNodeKind::Subcompose | LayoutNodeKind::Unknown => {
+            render_container(layout, parent_layer, scene, Vec::new());
         }
     }
 }
 
-pub(crate) fn render_layout_node(
-    applier: &mut MemoryApplier,
+fn render_container(
     layout: &LayoutBox,
-    layer: GraphicsLayer,
+    parent_layer: GraphicsLayer,
     scene: &mut Scene,
+    mut extra_clicks: Vec<ClickAction>,
 ) {
-    if let Some(layout_node) = try_node(applier, layout.node_id, |node: &mut LayoutNode| {
-        node.clone()
-    }) {
-        render_layout(applier, layout_node, layout, layer, scene);
-        return;
-    }
-    if let Some(subcompose_node) = try_node(
-        applier,
-        layout.node_id,
-        |node: &mut SubcomposeLayoutNode| SubcomposeNodeData {
-            modifier: node.modifier.clone(),
-            children: node.active_children(),
-        },
-    ) {
-        render_subcompose(applier, subcompose_node, layout, layer, scene);
-        return;
-    }
-    if let Some(text_node) = try_node(applier, layout.node_id, |node: &mut TextNode| node.clone()) {
-        render_text(text_node, layout, layer, scene);
-        return;
-    }
-    if let Some(spacer_node) = try_node(applier, layout.node_id, |node: &mut SpacerNode| {
-        node.clone()
-    }) {
-        render_spacer(spacer_node, layout, layer, scene);
-        return;
-    }
-    if let Some(button_node) = try_node(applier, layout.node_id, |node: &mut ButtonNode| {
-        node.clone()
-    }) {
-        render_button(applier, button_node, layout, layer, scene);
-    }
-}
-
-struct SubcomposeNodeData {
-    modifier: Modifier,
-    children: Vec<NodeId>,
-}
-
-fn render_layout(
-    applier: &mut MemoryApplier,
-    node: LayoutNode,
-    layout: &LayoutBox,
-    layer: GraphicsLayer,
-    scene: &mut Scene,
-) {
-    let style = NodeStyle::from_modifier(&node.modifier);
-    let node_layer = combine_layers(layer, style.graphics_layer);
+    let modifier = &layout.node_data.modifier;
+    let style = NodeStyle::from_modifier(modifier);
+    let node_layer = combine_layers(parent_layer, style.graphics_layer);
     let rect = layout.rect;
     let size = Size {
         width: rect.width,
@@ -104,19 +64,17 @@ fn render_layout(
         let brush = apply_layer_to_brush(Brush::solid(color), node_layer);
         scene.push_shape(transformed_rect, brush, scaled_shape.clone());
     }
-    let mut click_actions = Vec::new();
     if let Some(handler) = style.clickable {
-        click_actions.push(ClickAction::WithPoint(handler));
+        extra_clicks.push(ClickAction::WithPoint(handler));
     }
     scene.push_hit(
         transformed_rect,
         scaled_shape.clone(),
-        click_actions,
+        extra_clicks,
         style.pointer_inputs.clone(),
     );
-    for (child_id, child_layout) in node.children.iter().zip(&layout.children) {
-        debug_assert_eq!(*child_id, child_layout.node_id);
-        render_layout_node(applier, child_layout, node_layer, scene);
+    for child_layout in &layout.children {
+        render_layout_node(child_layout, node_layer, scene);
     }
     apply_draw_commands(
         &style.draw_commands,
@@ -129,15 +87,10 @@ fn render_layout(
     );
 }
 
-fn render_subcompose(
-    applier: &mut MemoryApplier,
-    node: SubcomposeNodeData,
-    layout: &LayoutBox,
-    layer: GraphicsLayer,
-    scene: &mut Scene,
-) {
-    let style = NodeStyle::from_modifier(&node.modifier);
-    let node_layer = combine_layers(layer, style.graphics_layer);
+fn render_text(layout: &LayoutBox, value: &str, parent_layer: GraphicsLayer, scene: &mut Scene) {
+    let modifier = &layout.node_data.modifier;
+    let style = NodeStyle::from_modifier(modifier);
+    let node_layer = combine_layers(parent_layer, style.graphics_layer);
     let rect = layout.rect;
     let size = Size {
         width: rect.width,
@@ -162,59 +115,7 @@ fn render_subcompose(
         let brush = apply_layer_to_brush(Brush::solid(color), node_layer);
         scene.push_shape(transformed_rect, brush, scaled_shape.clone());
     }
-    let mut click_actions = Vec::new();
-    if let Some(handler) = style.clickable {
-        click_actions.push(ClickAction::WithPoint(handler));
-    }
-    scene.push_hit(
-        transformed_rect,
-        scaled_shape.clone(),
-        click_actions,
-        style.pointer_inputs.clone(),
-    );
-    for (child_id, child_layout) in node.children.iter().zip(&layout.children) {
-        debug_assert_eq!(*child_id, child_layout.node_id);
-        render_layout_node(applier, child_layout, node_layer, scene);
-    }
-    apply_draw_commands(
-        &style.draw_commands,
-        DrawPlacement::Overlay,
-        rect,
-        origin,
-        size,
-        node_layer,
-        scene,
-    );
-}
-
-fn render_text(node: TextNode, layout: &LayoutBox, layer: GraphicsLayer, scene: &mut Scene) {
-    let style = NodeStyle::from_modifier(&node.modifier);
-    let node_layer = combine_layers(layer, style.graphics_layer);
-    let rect = layout.rect;
-    let size = Size {
-        width: rect.width,
-        height: rect.height,
-    };
-    let origin = (rect.x, rect.y);
-    apply_draw_commands(
-        &style.draw_commands,
-        DrawPlacement::Behind,
-        rect,
-        origin,
-        size,
-        node_layer,
-        scene,
-    );
-    let scaled_shape = style.shape.map(|shape| {
-        let resolved = shape.resolve(rect.width, rect.height);
-        RoundedCornerShape::with_radii(scale_corner_radii(resolved, node_layer.scale))
-    });
-    let transformed_rect = apply_layer_to_rect(rect, origin, node_layer);
-    if let Some(color) = style.background {
-        let brush = apply_layer_to_brush(Brush::solid(color), node_layer);
-        scene.push_shape(transformed_rect, brush, scaled_shape.clone());
-    }
-    let metrics = compose_render_common::text::measure_text(&node.text);
+    let metrics = measure_text(value);
     let padding = style.padding;
     let text_rect = Rect {
         x: rect.x + padding.left,
@@ -225,8 +126,8 @@ fn render_text(node: TextNode, layout: &LayoutBox, layer: GraphicsLayer, scene: 
     let transformed_text_rect = apply_layer_to_rect(text_rect, origin, node_layer);
     scene.push_text(
         transformed_text_rect,
-        node.text,
-        crate::style::apply_layer_to_color(Color(1.0, 1.0, 1.0, 1.0), node_layer),
+        value.to_string(),
+        apply_layer_to_color(Color(1.0, 1.0, 1.0, 1.0), node_layer),
         node_layer.scale,
     );
     let mut click_actions = Vec::new();
@@ -250,68 +151,16 @@ fn render_text(node: TextNode, layout: &LayoutBox, layer: GraphicsLayer, scene: 
     );
 }
 
-fn render_spacer(
-    _node: SpacerNode,
-    _layout: &LayoutBox,
-    _layer: GraphicsLayer,
-    _scene: &mut Scene,
-) {
+fn render_spacer(layout: &LayoutBox, parent_layer: GraphicsLayer, scene: &mut Scene) {
+    render_container(layout, parent_layer, scene, Vec::new());
 }
 
 fn render_button(
-    applier: &mut MemoryApplier,
-    node: ButtonNode,
     layout: &LayoutBox,
-    layer: GraphicsLayer,
+    on_click: Rc<std::cell::RefCell<dyn FnMut()>>,
+    parent_layer: GraphicsLayer,
     scene: &mut Scene,
 ) {
-    let style = NodeStyle::from_modifier(&node.modifier);
-    let node_layer = combine_layers(layer, style.graphics_layer);
-    let rect = layout.rect;
-    let size = Size {
-        width: rect.width,
-        height: rect.height,
-    };
-    let origin = (rect.x, rect.y);
-    apply_draw_commands(
-        &style.draw_commands,
-        DrawPlacement::Behind,
-        rect,
-        origin,
-        size,
-        node_layer,
-        scene,
-    );
-    let scaled_shape = style.shape.map(|shape| {
-        let resolved = shape.resolve(rect.width, rect.height);
-        RoundedCornerShape::with_radii(scale_corner_radii(resolved, node_layer.scale))
-    });
-    let transformed_rect = apply_layer_to_rect(rect, origin, node_layer);
-    if let Some(color) = style.background {
-        let brush = apply_layer_to_brush(Brush::solid(color), node_layer);
-        scene.push_shape(transformed_rect, brush, scaled_shape.clone());
-    }
-    let mut click_actions = vec![ClickAction::Simple(node.on_click.clone())];
-    if let Some(handler) = style.clickable {
-        click_actions.push(ClickAction::WithPoint(handler));
-    }
-    scene.push_hit(
-        transformed_rect,
-        scaled_shape.clone(),
-        click_actions,
-        style.pointer_inputs.clone(),
-    );
-    for (child_id, child_layout) in node.children.iter().zip(&layout.children) {
-        debug_assert_eq!(*child_id, child_layout.node_id);
-        render_layout_node(applier, child_layout, node_layer, scene);
-    }
-    apply_draw_commands(
-        &style.draw_commands,
-        DrawPlacement::Overlay,
-        rect,
-        origin,
-        size,
-        node_layer,
-        scene,
-    );
+    let clicks = vec![ClickAction::Simple(on_click)];
+    render_container(layout, parent_layer, scene, clicks);
 }

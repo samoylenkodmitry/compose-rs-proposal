@@ -187,7 +187,7 @@ fn text_updates_with_state_after_write() {
     state.set(1);
     assert!(composition.should_render());
 
-    composition
+    let _ = composition
         .process_invalid_scopes()
         .expect("process invalid scopes succeeds");
 
@@ -239,7 +239,7 @@ fn counter_state_skips_when_label_static() {
 
     COUNTER_ROW_INVOCATIONS.with(|calls| calls.set(0));
 
-    composition
+    let _ = composition
         .process_invalid_scopes()
         .expect("process invalid scopes succeeds");
 

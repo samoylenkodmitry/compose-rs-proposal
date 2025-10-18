@@ -9,3 +9,4 @@ description = "WGPU renderer backend for Compose-RS"
 compose-render-common = { path = "../common" }
 compose-ui-graphics = { path = "../../compose-ui-graphics" }
 compose-foundation = { path = "../../compose-foundation" }
+compose-ui = { path = "../../compose-ui" }

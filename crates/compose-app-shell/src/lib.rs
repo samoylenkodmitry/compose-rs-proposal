@@ -5,12 +5,15 @@ use compose_core::{location_key, Composition, Key, MemoryApplier};
 use compose_foundation::PointerEventKind;
 use compose_render_common::{HitTestTarget, RenderScene, Renderer};
 use compose_runtime_std::StdRuntime;
-use compose_ui::{log_layout_tree, log_render_scene, log_screen_summary, LayoutBox, LayoutEngine};
+use compose_ui::{
+    log_layout_tree, log_render_scene, log_screen_summary, HeadlessRenderer, LayoutEngine,
+    LayoutTree,
+};
 use compose_ui_graphics::Size;
 
 pub struct AppShell<R>
 where
-    R: Renderer<Applier = MemoryApplier, LayoutRoot = LayoutBox>,
+    R: Renderer,
 {
     runtime: StdRuntime,
     composition: Composition<MemoryApplier>,
@@ -19,12 +22,14 @@ where
     viewport: (f32, f32),
     buffer_size: (u32, u32),
     start_time: Instant,
-    last_layout: Option<LayoutBox>,
+    layout_tree: Option<LayoutTree>,
+    layout_dirty: bool,
+    scene_dirty: bool,
 }
 
 impl<R> AppShell<R>
 where
-    R: Renderer<Applier = MemoryApplier, LayoutRoot = LayoutBox>,
+    R: Renderer,
     R::Error: Debug,
 {
     pub fn new(mut renderer: R, root_key: Key, content: impl FnMut() + 'static) -> Self {
@@ -43,15 +48,18 @@ where
             viewport: (800.0, 600.0),
             buffer_size: (800, 600),
             start_time: Instant::now(),
-            last_layout: None,
+            layout_tree: None,
+            layout_dirty: true,
+            scene_dirty: true,
         };
-        shell.rebuild_scene();
+        shell.process_frame();
         shell
     }
 
     pub fn set_viewport(&mut self, width: f32, height: f32) {
         self.viewport = (width, height);
-        self.rebuild_scene();
+        self.layout_dirty = true;
+        self.process_frame();
     }
 
     pub fn set_buffer_size(&mut self, width: u32, height: u32) {
@@ -70,7 +78,18 @@ where
         &mut self.renderer
     }
 
+    pub fn set_frame_waker(&mut self, waker: impl Fn() + Send + Sync + 'static) {
+        self.runtime.set_frame_waker(waker);
+    }
+
+    pub fn clear_frame_waker(&mut self) {
+        self.runtime.clear_frame_waker();
+    }
+
     pub fn should_render(&self) -> bool {
+        if self.layout_dirty || self.scene_dirty {
+            return true;
+        }
         self.runtime.take_frame_request() || self.composition.should_render()
     }
 
@@ -82,11 +101,19 @@ where
             .as_nanos() as u64;
         self.runtime.drain_frame_callbacks(frame_time);
         if self.composition.should_render() {
-            if let Err(err) = self.composition.process_invalid_scopes() {
-                log::error!("recomposition failed: {err}");
+            match self.composition.process_invalid_scopes() {
+                Ok(changed) => {
+                    if changed {
+                        self.layout_dirty = true;
+                    }
+                }
+                Err(err) => {
+                    log::error!("recomposition failed: {err}");
+                    self.layout_dirty = true;
+                }
             }
-            self.rebuild_scene();
         }
+        self.process_frame();
     }
 
     pub fn set_cursor(&mut self, x: f32, y: f32) {
@@ -114,21 +141,12 @@ where
         println!("           DEBUG: CURRENT SCREEN STATE");
         println!("════════════════════════════════════════════════════════");
 
-        if let Some(ref layout) = self.last_layout {
-            use compose_ui::LayoutTree;
-            let layout_tree = LayoutTree::new(layout.clone());
-            log_layout_tree(&layout_tree);
-            let applier = self.composition.applier_mut();
-            let mut renderer = compose_ui::HeadlessRenderer::new(applier);
-            match renderer.render(&layout_tree) {
-                Ok(render_scene) => {
-                    log_render_scene(&render_scene);
-                    log_screen_summary(&layout_tree, &render_scene);
-                }
-                Err(err) => {
-                    println!("Failed to render scene for debug: {}", err);
-                }
-            }
+        if let Some(ref layout_tree) = self.layout_tree {
+            log_layout_tree(layout_tree);
+            let renderer = HeadlessRenderer::new();
+            let render_scene = renderer.render(layout_tree);
+            log_render_scene(&render_scene);
+            log_screen_summary(layout_tree, &render_scene);
         } else {
             println!("No layout available");
         }
@@ -137,32 +155,67 @@ where
         println!("\n\n");
     }
 
-    fn rebuild_scene(&mut self) {
-        self.renderer.scene_mut().clear();
+    fn process_frame(&mut self) {
+        self.run_layout_phase();
+        self.run_render_phase();
+    }
+
+    fn run_layout_phase(&mut self) {
+        if !self.layout_dirty {
+            return;
+        }
+        self.layout_dirty = false;
+        let viewport_size = Size {
+            width: self.viewport.0,
+            height: self.viewport.1,
+        };
         if let Some(root) = self.composition.root() {
-            let viewport_size = Size {
-                width: self.viewport.0,
-                height: self.viewport.1,
-            };
             let handle = self.composition.runtime_handle();
             let applier = self.composition.applier_mut();
             applier.set_runtime_handle(handle);
             match applier.compute_layout(root, viewport_size) {
                 Ok(layout_tree) => {
-                    let root_layout = layout_tree.into_root();
-                    self.last_layout = Some(root_layout.clone());
-                    if let Err(err) =
-                        self.renderer
-                            .rebuild_scene(applier, &root_layout, viewport_size)
-                    {
-                        log::error!("renderer rebuild failed: {err:?}");
-                    }
+                    self.layout_tree = Some(layout_tree);
+                    self.scene_dirty = true;
                 }
                 Err(err) => {
                     log::error!("failed to compute layout: {err}");
+                    self.layout_tree = None;
+                    self.scene_dirty = true;
                 }
             }
+            applier.clear_runtime_handle();
+        } else {
+            self.layout_tree = None;
+            self.scene_dirty = true;
         }
+    }
+
+    fn run_render_phase(&mut self) {
+        if !self.scene_dirty {
+            return;
+        }
+        self.scene_dirty = false;
+        if let Some(layout_tree) = self.layout_tree.as_ref() {
+            let viewport_size = Size {
+                width: self.viewport.0,
+                height: self.viewport.1,
+            };
+            if let Err(err) = self.renderer.rebuild_scene(layout_tree, viewport_size) {
+                log::error!("renderer rebuild failed: {err:?}");
+            }
+        } else {
+            self.renderer.scene_mut().clear();
+        }
+    }
+}
+
+impl<R> Drop for AppShell<R>
+where
+    R: Renderer,
+{
+    fn drop(&mut self) {
+        self.runtime.clear_frame_waker();
     }
 }
 

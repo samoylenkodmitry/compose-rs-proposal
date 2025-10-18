@@ -1,7 +1,7 @@
 pub mod core;
 pub mod policies;
 
-use std::{cell::RefCell, collections::HashMap, marker::PhantomData, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, fmt, marker::PhantomData, rc::Rc};
 
 use compose_core::{
     Applier, Composer, MemoryApplier, Node, NodeError, NodeId, Phase, RuntimeHandle, SlotTable,
@@ -44,15 +44,59 @@ impl LayoutTree {
 pub struct LayoutBox {
     pub node_id: NodeId,
     pub rect: GeometryRect,
+    pub node_data: LayoutNodeData,
     pub children: Vec<LayoutBox>,
 }
 
 impl LayoutBox {
-    pub fn new(node_id: NodeId, rect: GeometryRect, children: Vec<LayoutBox>) -> Self {
+    pub fn new(
+        node_id: NodeId,
+        rect: GeometryRect,
+        node_data: LayoutNodeData,
+        children: Vec<LayoutBox>,
+    ) -> Self {
         Self {
             node_id,
             rect,
+            node_data,
             children,
+        }
+    }
+}
+
+/// Snapshot of the data required to render a layout node.
+#[derive(Debug, Clone)]
+pub struct LayoutNodeData {
+    pub modifier: Modifier,
+    pub kind: LayoutNodeKind,
+}
+
+impl LayoutNodeData {
+    pub fn new(modifier: Modifier, kind: LayoutNodeKind) -> Self {
+        Self { modifier, kind }
+    }
+}
+
+/// Classification of the node captured inside a [`LayoutBox`].
+#[derive(Clone)]
+pub enum LayoutNodeKind {
+    Layout,
+    Subcompose,
+    Text { value: String },
+    Spacer,
+    Button { on_click: Rc<RefCell<dyn FnMut()>> },
+    Unknown,
+}
+
+impl fmt::Debug for LayoutNodeKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LayoutNodeKind::Layout => f.write_str("Layout"),
+            LayoutNodeKind::Subcompose => f.write_str("Subcompose"),
+            LayoutNodeKind::Text { value } => f.debug_struct("Text").field("value", value).finish(),
+            LayoutNodeKind::Spacer => f.write_str("Spacer"),
+            LayoutNodeKind::Button { .. } => f.write_str("Button"),
+            LayoutNodeKind::Unknown => f.write_str("Unknown"),
         }
     }
 }
@@ -123,7 +167,7 @@ impl<'a> LayoutBuilder<'a> {
             node_id,
             Size::default(),
             Point { x: 0.0, y: 0.0 },
-            Modifier::empty(),
+            LayoutNodeData::new(Modifier::empty(), LayoutNodeKind::Unknown),
             Vec::new(),
         ))
     }
@@ -232,7 +276,7 @@ impl<'a> LayoutBuilder<'a> {
             node_id,
             Size { width, height },
             offset,
-            modifier,
+            LayoutNodeData::new(modifier, LayoutNodeKind::Subcompose),
             children,
         )))
     }
@@ -339,7 +383,7 @@ impl<'a> LayoutBuilder<'a> {
             node_id,
             Size { width, height },
             offset,
-            modifier,
+            LayoutNodeData::new(modifier, LayoutNodeKind::Layout),
             children,
         ))
     }
@@ -360,7 +404,14 @@ impl<'a> LayoutBuilder<'a> {
             )),
         );
         layout.children = node.children.clone();
-        self.measure_layout_node(node_id, layout, constraints)
+        let mut measured = self.measure_layout_node(node_id, layout, constraints)?;
+        measured.data = LayoutNodeData::new(
+            node.modifier.clone(),
+            LayoutNodeKind::Button {
+                on_click: node.on_click.clone(),
+            },
+        );
+        Ok(measured)
     }
 }
 
@@ -369,7 +420,7 @@ struct MeasuredNode {
     node_id: NodeId,
     size: Size,
     offset: Point,
-    modifier: Modifier,
+    data: LayoutNodeData,
     children: Vec<MeasuredChild>,
 }
 
@@ -378,14 +429,14 @@ impl MeasuredNode {
         node_id: NodeId,
         size: Size,
         offset: Point,
-        modifier: Modifier,
+        data: LayoutNodeData,
         children: Vec<MeasuredChild>,
     ) -> Self {
         Self {
             node_id,
             size,
             offset,
-            modifier,
+            data,
             children,
         }
     }
@@ -609,27 +660,42 @@ fn place_node(node: &MeasuredNode, origin: Point) -> LayoutBox {
             place_node(&child.node, child_origin)
         })
         .collect();
-    LayoutBox::new(node.node_id, rect, children)
+    LayoutBox::new(node.node_id, rect, node.data.clone(), children)
 }
 
 fn measure_text(node_id: NodeId, node: &TextNode, constraints: Constraints) -> MeasuredNode {
     let base = measure_text_content(&node.text);
-    measure_leaf(node_id, &node.modifier, base, constraints)
+    measure_leaf(
+        node_id,
+        LayoutNodeData::new(
+            node.modifier.clone(),
+            LayoutNodeKind::Text {
+                value: node.text.clone(),
+            },
+        ),
+        base,
+        constraints,
+    )
 }
 
 fn measure_spacer(node_id: NodeId, node: &SpacerNode, constraints: Constraints) -> MeasuredNode {
-    measure_leaf(node_id, &Modifier::empty(), node.size, constraints)
+    measure_leaf(
+        node_id,
+        LayoutNodeData::new(Modifier::empty(), LayoutNodeKind::Spacer),
+        node.size,
+        constraints,
+    )
 }
 
 fn measure_leaf(
     node_id: NodeId,
-    modifier: &Modifier,
+    data: LayoutNodeData,
     base_size: Size,
     constraints: Constraints,
 ) -> MeasuredNode {
-    let mut chain = build_chain(modifier);
+    let mut chain = build_chain(&data.modifier);
     let mut context = BasicModifierNodeContext::new();
-    let snapshot = chain.measure(&mut context, modifier);
+    let snapshot = chain.measure(&mut context, &data.modifier);
     let props = snapshot.properties;
     let padding = props.padding();
     let offset = snapshot.offset;
@@ -654,17 +720,11 @@ fn measure_leaf(
         constraints.max_height,
     );
 
-    MeasuredNode::new(
-        node_id,
-        Size { width, height },
-        offset,
-        modifier.clone(),
-        Vec::new(),
-    )
+    MeasuredNode::new(node_id, Size { width, height }, offset, data, Vec::new())
 }
 
 fn measure_text_content(text: &str) -> Size {
-    let metrics = compose_render_common::text::measure_text(text);
+    let metrics = crate::text::measure_text(text);
     Size {
         width: metrics.width,
         height: metrics.height,
