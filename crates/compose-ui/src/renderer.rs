@@ -4,6 +4,7 @@ use crate::modifier::{
 };
 use crate::modifier_bridge::{build_chain, ModifierNodeChainExt};
 use crate::primitives::{ButtonNode, LayoutNode, TextNode};
+use crate::SubcomposeLayoutNode;
 use compose_core::{MemoryApplier, Node, NodeError, NodeId};
 use compose_foundation::BasicModifierNodeContext;
 use compose_ui_graphics::DrawPrimitive;
@@ -120,6 +121,11 @@ impl<'a> HeadlessRenderer<'a> {
         // Box, Row, and Column all use LayoutNode now
         if let Some(modifier) =
             self.read_node::<LayoutNode, _>(node_id, |node| node.modifier.clone())?
+        {
+            return Ok(Some(modifier));
+        }
+        if let Some(modifier) =
+            self.read_node::<SubcomposeLayoutNode, _>(node_id, |node| node.modifier.clone())?
         {
             return Ok(Some(modifier));
         }
