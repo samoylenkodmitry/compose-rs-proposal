@@ -17,11 +17,12 @@ pub use runtime::{schedule_frame, schedule_node_update, DefaultScheduler, Runtim
 pub use runtime::{TestRuntime, TestScheduler};
 
 use std::any::Any;
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, RefCell, UnsafeCell};
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet}; // FUTURE(no_std): replace HashMap/HashSet with arena-backed maps.
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::mem;
+use std::ptr::{self, NonNull};
 use std::rc::{Rc, Weak}; // FUTURE(no_std): replace Rc/Weak with arena-managed handles.
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -903,34 +904,59 @@ pub fn pop_parent() {
 }
 
 #[derive(Default)]
-struct GroupEntry {
-    key: Key,
-    end_slot: usize,
-    start_slot: usize,
-}
-
-#[derive(Default)]
 struct GroupFrame {
-    index: usize,
+    key: Key,
+    start: usize,
+    end: usize,
 }
 
 #[derive(Default)]
 pub struct SlotTable {
     slots: Vec<Slot>, // FUTURE(no_std): replace Vec with arena-backed slot storage.
-    groups: Vec<GroupEntry>, // FUTURE(no_std): migrate to fixed-capacity collection.
     cursor: usize,
     group_stack: Vec<GroupFrame>, // FUTURE(no_std): switch to small stack buffer.
 }
 
 enum Slot {
-    Group { index: usize },
+    Group { key: Key, len: usize },
     Value(Box<dyn Any>),
     Node(NodeId),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SlotKind {
+    Group,
+    Value,
+    Node,
+}
+
+impl Slot {
+    fn kind(&self) -> SlotKind {
+        match self {
+            Slot::Group { .. } => SlotKind::Group,
+            Slot::Value(_) => SlotKind::Value,
+            Slot::Node(_) => SlotKind::Node,
+        }
+    }
+
+    fn as_value<T: 'static>(&self) -> &T {
+        match self {
+            Slot::Value(value) => value.downcast_ref::<T>().expect("slot value type mismatch"),
+            _ => panic!("slot is not a value"),
+        }
+    }
+
+    fn as_value_mut<T: 'static>(&mut self) -> &mut T {
+        match self {
+            Slot::Value(value) => value.downcast_mut::<T>().expect("slot value type mismatch"),
+            _ => panic!("slot is not a value"),
+        }
+    }
+}
+
 impl Default for Slot {
     fn default() -> Self {
-        Slot::Group { index: 0 }
+        Slot::Group { key: 0, len: 0 }
     }
 }
 
@@ -939,56 +965,103 @@ impl SlotTable {
         Self::default()
     }
 
+    fn update_group_bounds(&mut self) {
+        for frame in &mut self.group_stack {
+            if frame.end < self.cursor {
+                frame.end = self.cursor;
+            }
+        }
+    }
+
     pub fn start(&mut self, key: Key) -> usize {
         let cursor = self.cursor;
-        if let Some(slot) = self.slots.get(cursor) {
-            match slot {
-                Slot::Group { index } => {
-                    let entry = &self.groups[*index];
-                    if entry.key == key {
-                        self.cursor += 1;
-                        if let Some(entry) = self.groups.get_mut(*index) {
-                            entry.start_slot = cursor;
-                        }
-                        self.group_stack.push(GroupFrame { index: *index });
-                        return *index;
-                    }
-                }
-                _ => {}
+        debug_assert!(
+            cursor <= self.slots.len(),
+            "slot cursor {} out of bounds",
+            cursor
+        );
+        let reuse_len = match self.slots.get(cursor) {
+            Some(Slot::Group {
+                key: existing_key,
+                len,
+            }) if *existing_key == key => {
+                debug_assert_eq!(*existing_key, key, "group key mismatch");
+                Some(*len)
             }
+            Some(_slot) => None,
+            None => None,
+        };
+        if let Some(len) = reuse_len {
+            let frame = GroupFrame {
+                key,
+                start: cursor,
+                end: cursor + len,
+            };
+            self.group_stack.push(frame);
+            self.cursor = cursor + 1;
+            self.update_group_bounds();
+            return cursor;
+        }
+        if cursor < self.slots.len() {
             self.slots.truncate(cursor);
         }
-        let index = self.groups.len();
-        self.groups.push(GroupEntry {
-            key,
-            end_slot: cursor,
-            start_slot: cursor,
-        });
         if cursor == self.slots.len() {
-            self.slots.push(Slot::Group { index });
+            self.slots.push(Slot::Group { key, len: 0 });
         } else {
-            self.slots[cursor] = Slot::Group { index };
+            self.slots[cursor] = Slot::Group { key, len: 0 };
         }
-        self.cursor += 1;
-        self.group_stack.push(GroupFrame { index });
-        index
+        self.cursor = cursor + 1;
+        self.group_stack.push(GroupFrame {
+            key,
+            start: cursor,
+            end: self.cursor,
+        });
+        self.update_group_bounds();
+        cursor
     }
 
     pub fn end(&mut self) {
         if let Some(frame) = self.group_stack.pop() {
-            if let Some(entry) = self.groups.get_mut(frame.index) {
-                entry.end_slot = self.cursor;
+            let end = self.cursor;
+            if let Some(slot) = self.slots.get_mut(frame.start) {
+                debug_assert_eq!(
+                    SlotKind::Group,
+                    slot.kind(),
+                    "slot kind mismatch at {}",
+                    frame.start
+                );
+                if let Slot::Group { key, len } = slot {
+                    debug_assert_eq!(*key, frame.key, "group key mismatch");
+                    *len = end.saturating_sub(frame.start);
+                }
+            }
+            if let Some(parent) = self.group_stack.last_mut() {
+                if parent.end < end {
+                    parent.end = end;
+                }
             }
         }
     }
 
     fn start_recompose(&mut self, index: usize) {
-        if let Some(entry) = self.groups.get(index) {
-            self.cursor = entry.start_slot;
-            self.group_stack.push(GroupFrame { index });
-            self.cursor += 1;
-            if self.cursor < self.slots.len() {
-                if matches!(self.slots.get(self.cursor), Some(Slot::Value(_))) {
+        if let Some(slot) = self.slots.get(index) {
+            debug_assert_eq!(
+                SlotKind::Group,
+                slot.kind(),
+                "slot kind mismatch at {}",
+                index
+            );
+            if let Slot::Group { key, len } = *slot {
+                let frame = GroupFrame {
+                    key,
+                    start: index,
+                    end: index + len,
+                };
+                self.group_stack.push(frame);
+                self.cursor = index + 1;
+                if self.cursor < self.slots.len()
+                    && matches!(self.slots.get(self.cursor), Some(Slot::Value(_)))
+                {
                     self.cursor += 1;
                 }
             }
@@ -997,17 +1070,13 @@ impl SlotTable {
 
     fn end_recompose(&mut self) {
         if let Some(frame) = self.group_stack.pop() {
-            if let Some(entry) = self.groups.get(frame.index) {
-                self.cursor = entry.end_slot;
-            }
+            self.cursor = frame.end;
         }
     }
 
     pub fn skip_current(&mut self) {
         if let Some(frame) = self.group_stack.last() {
-            if let Some(entry) = self.groups.get(frame.index) {
-                self.cursor = entry.end_slot;
-            }
+            self.cursor = frame.end.min(self.slots.len());
         }
     }
 
@@ -1015,11 +1084,8 @@ impl SlotTable {
         let Some(frame) = self.group_stack.last() else {
             return Vec::new();
         };
-        let Some(entry) = self.groups.get(frame.index) else {
-            return Vec::new();
-        };
-        let end = entry.end_slot.min(self.slots.len());
-        self.slots[entry.start_slot..end]
+        let end = frame.end.min(self.slots.len());
+        self.slots[frame.start..end]
             .iter()
             .filter_map(|slot| match slot {
                 Slot::Node(id) => Some(*id),
@@ -1028,34 +1094,95 @@ impl SlotTable {
             .collect()
     }
 
-    pub fn remember<T: 'static>(&mut self, init: impl FnOnce() -> T) -> Owned<T> {
+    pub fn use_value_slot<T: 'static>(&mut self, init: impl FnOnce() -> T) -> usize {
         let cursor = self.cursor;
+        debug_assert!(
+            cursor <= self.slots.len(),
+            "slot cursor {} out of bounds",
+            cursor
+        );
         if cursor < self.slots.len() {
-            if let Some(Slot::Value(value)) = self.slots.get(cursor) {
-                if let Some(existing) = value.downcast_ref::<Owned<T>>() {
-                    self.cursor += 1;
-                    return existing.clone();
-                }
+            let reuse = matches!(
+                self.slots.get(cursor),
+                Some(Slot::Value(existing)) if existing.is::<T>()
+            );
+            if reuse {
+                self.cursor = cursor + 1;
+                self.update_group_bounds();
+                return cursor;
             }
             self.slots.truncate(cursor);
         }
-        let owned = Owned::new(init());
-        let boxed: Box<dyn Any> = Box::new(owned.clone());
+        let boxed: Box<dyn Any> = Box::new(init());
         if cursor == self.slots.len() {
             self.slots.push(Slot::Value(boxed));
         } else {
             self.slots[cursor] = Slot::Value(boxed);
         }
-        self.cursor += 1;
-        owned
+        self.cursor = cursor + 1;
+        self.update_group_bounds();
+        cursor
+    }
+
+    pub fn read_value<T: 'static>(&self, idx: usize) -> &T {
+        let slot = self
+            .slots
+            .get(idx)
+            .unwrap_or_else(|| panic!("slot index {} out of bounds", idx));
+        debug_assert_eq!(
+            SlotKind::Value,
+            slot.kind(),
+            "slot kind mismatch at {}",
+            idx
+        );
+        slot.as_value()
+    }
+
+    pub fn read_value_mut<T: 'static>(&mut self, idx: usize) -> &mut T {
+        let slot = self
+            .slots
+            .get_mut(idx)
+            .unwrap_or_else(|| panic!("slot index {} out of bounds", idx));
+        debug_assert_eq!(
+            SlotKind::Value,
+            slot.kind(),
+            "slot kind mismatch at {}",
+            idx
+        );
+        slot.as_value_mut()
+    }
+
+    pub fn write_value<T: 'static>(&mut self, idx: usize, value: T) {
+        if idx >= self.slots.len() {
+            panic!("attempted to write slot {} out of bounds", idx);
+        }
+        let slot = &mut self.slots[idx];
+        debug_assert_eq!(
+            SlotKind::Value,
+            slot.kind(),
+            "slot kind mismatch at {}",
+            idx
+        );
+        *slot = Slot::Value(Box::new(value));
+    }
+
+    pub fn remember<T: 'static>(&mut self, init: impl FnOnce() -> T) -> Owned<T> {
+        let index = self.use_value_slot(|| Owned::new(init()));
+        self.read_value::<Owned<T>>(index).clone()
     }
 
     pub fn record_node(&mut self, id: NodeId) {
         let cursor = self.cursor;
+        debug_assert!(
+            cursor <= self.slots.len(),
+            "slot cursor {} out of bounds",
+            cursor
+        );
         if cursor < self.slots.len() {
             if let Some(Slot::Node(existing)) = self.slots.get(cursor) {
                 if *existing == id {
-                    self.cursor += 1;
+                    self.cursor = cursor + 1;
+                    self.update_group_bounds();
                     return;
                 }
             }
@@ -1066,18 +1193,27 @@ impl SlotTable {
         } else {
             self.slots[cursor] = Slot::Node(id);
         }
-        self.cursor += 1;
+        self.cursor = cursor + 1;
+        self.update_group_bounds();
     }
 
     pub fn read_node(&mut self) -> Option<NodeId> {
         let cursor = self.cursor;
-        match self.slots.get(cursor) {
-            Some(Slot::Node(id)) => {
-                self.cursor += 1;
-                Some(*id)
-            }
-            _ => None,
+        debug_assert!(
+            cursor <= self.slots.len(),
+            "slot cursor {} out of bounds",
+            cursor
+        );
+        let node = match self.slots.get(cursor) {
+            Some(Slot::Node(id)) => Some(*id),
+            Some(_slot) => None,
+            None => None,
+        };
+        if node.is_some() {
+            self.cursor = cursor + 1;
+            self.update_group_bounds();
         }
+        node
     }
 
     pub fn reset(&mut self) {
@@ -1087,9 +1223,19 @@ impl SlotTable {
 
     pub fn trim_to_cursor(&mut self) {
         self.slots.truncate(self.cursor);
-        if let Some(frame) = self.group_stack.last() {
-            if let Some(entry) = self.groups.get_mut(frame.index) {
-                entry.end_slot = self.cursor;
+        if let Some(frame) = self.group_stack.last_mut() {
+            frame.end = self.cursor;
+            if let Some(slot) = self.slots.get_mut(frame.start) {
+                debug_assert_eq!(
+                    SlotKind::Group,
+                    slot.kind(),
+                    "slot kind mismatch at {}",
+                    frame.start
+                );
+                if let Slot::Group { key, len } = slot {
+                    debug_assert_eq!(*key, frame.key, "group key mismatch");
+                    *len = frame.end.saturating_sub(frame.start);
+                }
             }
         }
     }
@@ -1369,6 +1515,22 @@ impl<'a> Composer<'a> {
 
     pub fn remember<T: 'static>(&mut self, init: impl FnOnce() -> T) -> Owned<T> {
         self.slots.remember(init)
+    }
+
+    pub fn use_value_slot<T: 'static>(&mut self, init: impl FnOnce() -> T) -> usize {
+        self.slots.use_value_slot(init)
+    }
+
+    pub fn read_slot_value<T: 'static>(&self, idx: usize) -> &T {
+        self.slots.read_value(idx)
+    }
+
+    pub fn read_slot_value_mut<T: 'static>(&mut self, idx: usize) -> &mut T {
+        self.slots.read_value_mut(idx)
+    }
+
+    pub fn write_slot_value<T: 'static>(&mut self, idx: usize, value: T) {
+        self.slots.write_value(idx, value);
     }
 
     pub fn mutable_state_of<T: 'static>(&mut self, initial: T) -> MutableState<T> {
@@ -1713,8 +1875,105 @@ impl<'a> Composer<'a> {
 
 struct MutableStateInner<T> {
     value: RefCell<T>,
+    pending: RefCell<Option<T>>,
     watchers: RefCell<Vec<Weak<RecomposeScopeInner>>>, // FUTURE(no_std): move to stack-allocated subscription list.
     runtime: RuntimeHandle,
+    active_borrow: Cell<Option<NonNull<T>>>,
+}
+
+impl<T> MutableStateInner<T> {
+    fn new(value: T, runtime: RuntimeHandle) -> Self {
+        Self {
+            value: RefCell::new(value),
+            pending: RefCell::new(None),
+            watchers: RefCell::new(Vec::new()),
+            runtime,
+            active_borrow: Cell::new(None),
+        }
+    }
+
+    fn begin_active_borrow(&self, ptr: NonNull<T>) -> ActiveBorrowGuard<'_, T> {
+        debug_assert!(self.active_borrow.get().is_none());
+        self.active_borrow.set(Some(ptr));
+        ActiveBorrowGuard { inner: self }
+    }
+
+    fn active_value(&self) -> Option<T>
+    where
+        T: Clone,
+    {
+        self.active_borrow
+            .get()
+            .map(|ptr| unsafe { Self::clone_from_active(ptr) })
+    }
+
+    unsafe fn clone_from_active(slot: NonNull<T>) -> T
+    where
+        T: Clone,
+    {
+        struct Restore<T> {
+            ptr: *mut T,
+            value: Option<T>,
+        }
+
+        impl<T> Drop for Restore<T> {
+            fn drop(&mut self) {
+                if let Some(value) = self.value.take() {
+                    unsafe {
+                        ptr::write(self.ptr, value);
+                    }
+                }
+            }
+        }
+
+        let ptr = slot.as_ptr();
+        let mut restore = Restore {
+            ptr,
+            value: Some(ptr::read(ptr)),
+        };
+        let clone = restore.value.as_ref().unwrap().clone();
+        let value = restore.value.take().unwrap();
+        ptr::write(ptr, value);
+        clone
+    }
+
+    fn flush_pending(&self) -> bool {
+        let mut slot = match self.pending.try_borrow_mut() {
+            Ok(slot) => slot,
+            Err(_) => return false,
+        };
+        if let Some(value) = slot.take() {
+            match self.value.try_borrow_mut() {
+                Ok(mut current) => {
+                    let ptr = NonNull::from(&mut *current);
+                    let guard = self.begin_active_borrow(ptr);
+                    *current = value;
+                    drop(guard);
+                    true
+                }
+                Err(_) => {
+                    *slot = Some(value);
+                    false
+                }
+            }
+        } else {
+            false
+        }
+    }
+
+    fn store_pending(&self, value: T) {
+        *self.pending.borrow_mut() = Some(value);
+    }
+}
+
+struct ActiveBorrowGuard<'a, T> {
+    inner: &'a MutableStateInner<T>,
+}
+
+impl<'a, T> Drop for ActiveBorrowGuard<'a, T> {
+    fn drop(&mut self) {
+        self.inner.active_borrow.set(None);
+    }
 }
 
 pub struct State<T> {
@@ -1760,11 +2019,7 @@ impl<T> Clone for MutableState<T> {
 impl<T> MutableState<T> {
     pub fn with_runtime(value: T, runtime: RuntimeHandle) -> Self {
         Self {
-            inner: Rc::new(MutableStateInner {
-                value: RefCell::new(value),
-                watchers: RefCell::new(Vec::new()),
-                runtime,
-            }),
+            inner: Rc::new(MutableStateInner::new(value, runtime)),
         }
     }
 
@@ -1775,14 +2030,21 @@ impl<T> MutableState<T> {
     }
 
     pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
+        self.inner.flush_pending();
         self.as_state().with(f)
     }
 
     pub fn update<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
         self.inner.runtime.assert_ui_thread();
+        self.inner.flush_pending();
         let result = {
             let mut value = self.inner.value.borrow_mut();
-            f(&mut *value)
+            let value_ref: &mut T = &mut *value;
+            let ptr = NonNull::from(&mut *value_ref);
+            let guard = self.inner.begin_active_borrow(ptr);
+            let result = f(value_ref);
+            drop(guard);
+            result
         };
         self.notify_watchers();
         result
@@ -1790,8 +2052,21 @@ impl<T> MutableState<T> {
 
     pub fn replace(&self, value: T) {
         self.inner.runtime.assert_ui_thread();
-        *self.inner.value.borrow_mut() = value;
+        let applied_now = if let Ok(mut current) = self.inner.value.try_borrow_mut() {
+            *current = value;
+            // Clear any stale pending value now that we've applied the latest update.
+            self.inner.pending.borrow_mut().take();
+            true
+        } else {
+            self.inner.store_pending(value);
+            false
+        };
         self.notify_watchers();
+        if !applied_now {
+            // If we couldn't apply immediately, try to flush any pending value eagerly so
+            // the next read observes the latest state.
+            self.inner.flush_pending();
+        }
     }
 
     pub fn set_value(&self, value: T) {
@@ -1821,7 +2096,21 @@ impl<T> MutableState<T> {
 
 impl<T: Clone> MutableState<T> {
     pub fn value(&self) -> T {
-        self.as_state().value()
+        let state = self.as_state();
+        state.subscribe_current_scope();
+        self.inner.flush_pending();
+        if let Ok(pending) = self.inner.pending.try_borrow() {
+            if let Some(pending) = pending.as_ref() {
+                return pending.clone();
+            }
+        }
+        if let Ok(value) = self.inner.value.try_borrow() {
+            value.clone()
+        } else if let Some(active) = self.inner.active_value() {
+            active
+        } else {
+            panic!("state value unavailable: pending update missing")
+        }
     }
 
     pub fn get(&self) -> T {
@@ -1882,6 +2171,7 @@ impl<T> State<T> {
 
     pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
         self.subscribe_current_scope();
+        self.inner.flush_pending();
         let value = self.inner.value.borrow();
         f(&value)
     }
@@ -1889,7 +2179,20 @@ impl<T> State<T> {
 
 impl<T: Clone> State<T> {
     pub fn value(&self) -> T {
-        self.with(|value| value.clone())
+        self.subscribe_current_scope();
+        self.inner.flush_pending();
+        if let Ok(pending) = self.inner.pending.try_borrow() {
+            if let Some(pending) = pending.as_ref() {
+                return pending.clone();
+            }
+        }
+        if let Ok(value) = self.inner.value.try_borrow() {
+            value.clone()
+        } else if let Some(active) = self.inner.active_value() {
+            active
+        } else {
+            panic!("state value unavailable: pending update missing")
+        }
     }
 
     pub fn get(&self) -> T {
@@ -1934,27 +2237,40 @@ impl<T> ParamState<T> {
 /// ParamSlot holds function/closure parameters by ownership (no PartialEq/Clone required).
 /// Used by the #[composable] macro to store Fn-like parameters in the slot table.
 pub struct ParamSlot<T> {
-    val: Option<T>,
+    val: UnsafeCell<Option<T>>,
 }
 
 impl<T> Default for ParamSlot<T> {
     fn default() -> Self {
-        Self { val: None }
+        Self {
+            val: UnsafeCell::new(None),
+        }
     }
 }
 
 impl<T> ParamSlot<T> {
-    pub fn set(&mut self, v: T) {
-        self.val = Some(v);
+    pub fn set(&self, v: T) {
+        unsafe {
+            *self.val.get() = Some(v);
+        }
     }
 
-    pub fn as_mut(&mut self) -> &mut T {
-        self.val.as_mut().expect("ParamSlot accessed before set")
+    pub fn get_mut(&self) -> &'static mut T {
+        unsafe {
+            let ptr = (*self.val.get())
+                .as_mut()
+                .expect("ParamSlot accessed before set") as *mut T;
+            &mut *ptr
+        }
     }
 
     /// Takes the value out temporarily (for recomposition callback)
-    pub fn take(&mut self) -> T {
-        self.val.take().expect("ParamSlot take() called before set")
+    pub fn take(&self) -> T {
+        unsafe {
+            (*self.val.get())
+                .take()
+                .expect("ParamSlot take() called before set")
+        }
     }
 }
 
