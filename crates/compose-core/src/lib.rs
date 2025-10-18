@@ -2088,16 +2088,16 @@ mod tests {
     use std::time::Duration;
 
     #[derive(Default)]
-    struct TextNode {
+    struct TestTextNode {
         text: String,
     }
 
-    impl Node for TextNode {}
+    impl Node for TestTextNode {}
 
     #[derive(Default)]
-    struct DummyNode;
+    struct TestDummyNode;
 
-    impl Node for DummyNode {}
+    impl Node for TestDummyNode {}
 
     fn runtime_handle() -> (RuntimeHandle, Runtime) {
         let runtime = Runtime::new(Arc::new(TestScheduler::default()));
@@ -2148,7 +2148,7 @@ mod tests {
             let mut composer = Composer::new(&mut slots, &mut applier, handle.clone(), None);
             composer.set_phase(Phase::Measure);
             let (_, first_nodes) = composer.subcompose(&mut state, SlotId::new(7), |composer| {
-                composer.emit_node(|| DummyNode::default())
+                composer.emit_node(|| TestDummyNode::default())
             });
             assert_eq!(first_nodes.len(), 1);
             first_id = first_nodes[0];
@@ -2160,7 +2160,7 @@ mod tests {
             let mut composer = Composer::new(&mut slots, &mut applier, handle.clone(), None);
             composer.set_phase(Phase::Measure);
             let (_, second_nodes) = composer.subcompose(&mut state, SlotId::new(7), |composer| {
-                composer.emit_node(|| DummyNode::default())
+                composer.emit_node(|| TestDummyNode::default())
             });
             assert_eq!(second_nodes.len(), 1);
             assert_eq!(second_nodes[0], first_id);
@@ -2335,8 +2335,8 @@ mod tests {
     #[composable]
     fn counted_text(value: i32) -> NodeId {
         INVOCATIONS.with(|calls| calls.set(calls.get() + 1));
-        let id = compose_test_node(|| TextNode::default());
-        with_node_mut(id, |node: &mut TextNode| {
+        let id = compose_test_node(|| TestTextNode::default());
+        with_node_mut(id, |node: &mut TestTextNode| {
             node.text = format!("{}", value);
         })
         .expect("update text node");
@@ -2374,7 +2374,7 @@ mod tests {
         compose_core::SideEffect(|| {
             SIDE_EFFECT_LOG.with(|log| log.borrow_mut().push("effect"));
         });
-        compose_test_node(|| TextNode::default())
+        compose_test_node(|| TestTextNode::default())
     }
 
     #[composable]
@@ -2387,7 +2387,7 @@ mod tests {
                 DISPOSABLE_EFFECT_LOG.with(|log| log.borrow_mut().push("dispose"));
             })
         });
-        compose_test_node(|| TextNode::default())
+        compose_test_node(|| TestTextNode::default())
     }
 
     #[test]
@@ -2464,7 +2464,7 @@ mod tests {
             scope.on_dispose(move || drop(registration));
             DisposableEffectResult::default()
         });
-        compose_test_node(|| TextNode::default())
+        compose_test_node(|| TestTextNode::default())
     }
 
     #[test]
@@ -2509,9 +2509,9 @@ mod tests {
                             location_key(file!(), line!(), column!()),
                             |composer| {
                                 let count = composer.use_state(|| 0);
-                                let node_id = composer.emit_node(|| TextNode::default());
+                                let node_id = composer.emit_node(|| TestTextNode::default());
                                 composer
-                                    .with_node_mut(node_id, |node: &mut TextNode| {
+                                    .with_node_mut(node_id, |node: &mut TestTextNode| {
                                         node.text = format!("{}", count.get());
                                     })
                                     .expect("update text node");

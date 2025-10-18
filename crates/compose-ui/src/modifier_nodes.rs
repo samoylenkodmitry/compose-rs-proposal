@@ -47,12 +47,10 @@
 //! implementation path that will eventually replace value-based modifiers once
 //! the migration is complete.
 
-#[cfg(test)]
-use compose_foundation::BasicModifierNodeContext;
 use compose_foundation::{
-    DrawModifierNode, LayoutModifierNode, Measurable, MeasureResult, ModifierElement, ModifierNode,
-    ModifierNodeContext, NodeCapabilities, PointerButton, PointerButtons, PointerEvent,
-    PointerEventKind, PointerInputNode, PointerPhase,
+    DrawModifierNode, LayoutModifierNode, ModifierConstraints, ModifierDrawScope, ModifierElement,
+    ModifierMeasurable, ModifierMeasure, ModifierNode, ModifierNodeContext, NodeCapabilities,
+    PointerEvent, PointerEventKind, PointerInputNode,
 };
 use std::rc::Rc;
 
@@ -84,15 +82,15 @@ impl LayoutModifierNode for PaddingNode {
     fn measure(
         &mut self,
         _context: &mut dyn ModifierNodeContext,
-        measurable: &dyn Measurable,
-        constraints: compose_foundation::Constraints,
-    ) -> MeasureResult {
+        measurable: &dyn ModifierMeasurable,
+        constraints: ModifierConstraints,
+    ) -> ModifierMeasure {
         // Convert padding to integer values (rounding)
         let horizontal_padding = (self.padding.horizontal_sum()).round() as i32;
         let vertical_padding = (self.padding.vertical_sum()).round() as i32;
 
         // Subtract padding from available space
-        let inner_constraints = compose_foundation::Constraints {
+        let inner_constraints = ModifierConstraints {
             min_width: (constraints.min_width - horizontal_padding).max(0),
             max_width: (constraints.max_width - horizontal_padding).max(0),
             min_height: (constraints.min_height - vertical_padding).max(0),
@@ -103,34 +101,34 @@ impl LayoutModifierNode for PaddingNode {
         let inner_result = measurable.measure(inner_constraints);
 
         // Add padding back to the result
-        MeasureResult {
+        ModifierMeasure {
             width: inner_result.width + horizontal_padding,
             height: inner_result.height + vertical_padding,
         }
     }
 
-    fn min_intrinsic_width(&self, measurable: &dyn Measurable, height: i32) -> i32 {
+    fn min_intrinsic_width(&self, measurable: &dyn ModifierMeasurable, height: i32) -> i32 {
         let vertical_padding = self.padding.vertical_sum().round() as i32;
         let inner_height = (height - vertical_padding).max(0);
         let inner_width = measurable.min_intrinsic_width(inner_height);
         inner_width + self.padding.horizontal_sum().round() as i32
     }
 
-    fn max_intrinsic_width(&self, measurable: &dyn Measurable, height: i32) -> i32 {
+    fn max_intrinsic_width(&self, measurable: &dyn ModifierMeasurable, height: i32) -> i32 {
         let vertical_padding = self.padding.vertical_sum().round() as i32;
         let inner_height = (height - vertical_padding).max(0);
         let inner_width = measurable.max_intrinsic_width(inner_height);
         inner_width + self.padding.horizontal_sum().round() as i32
     }
 
-    fn min_intrinsic_height(&self, measurable: &dyn Measurable, width: i32) -> i32 {
+    fn min_intrinsic_height(&self, measurable: &dyn ModifierMeasurable, width: i32) -> i32 {
         let horizontal_padding = self.padding.horizontal_sum().round() as i32;
         let inner_width = (width - horizontal_padding).max(0);
         let inner_height = measurable.min_intrinsic_height(inner_width);
         inner_height + self.padding.vertical_sum().round() as i32
     }
 
-    fn max_intrinsic_height(&self, measurable: &dyn Measurable, width: i32) -> i32 {
+    fn max_intrinsic_height(&self, measurable: &dyn ModifierMeasurable, width: i32) -> i32 {
         let horizontal_padding = self.padding.horizontal_sum().round() as i32;
         let inner_width = (width - horizontal_padding).max(0);
         let inner_height = measurable.max_intrinsic_height(inner_width);
@@ -200,7 +198,7 @@ impl DrawModifierNode for BackgroundNode {
     fn draw(
         &mut self,
         _context: &mut dyn ModifierNodeContext,
-        _draw_scope: &mut dyn compose_foundation::DrawScope,
+        _draw_scope: &mut dyn ModifierDrawScope,
     ) {
         // In a full implementation, this would draw the background color
         // using the draw scope. For now, this is a placeholder.
@@ -271,14 +269,14 @@ impl LayoutModifierNode for SizeNode {
     fn measure(
         &mut self,
         _context: &mut dyn ModifierNodeContext,
-        measurable: &dyn Measurable,
-        constraints: compose_foundation::Constraints,
-    ) -> MeasureResult {
+        measurable: &dyn ModifierMeasurable,
+        constraints: ModifierConstraints,
+    ) -> ModifierMeasure {
         // Override constraints with explicit sizes if specified
         let width = self.width.unwrap_or(constraints.max_width);
         let height = self.height.unwrap_or(constraints.max_height);
 
-        let inner_constraints = compose_foundation::Constraints {
+        let inner_constraints = ModifierConstraints {
             min_width: self.width.unwrap_or(constraints.min_width),
             max_width: width,
             min_height: self.height.unwrap_or(constraints.min_height),
@@ -289,22 +287,22 @@ impl LayoutModifierNode for SizeNode {
         let _ = measurable.measure(inner_constraints);
 
         // Return the specified size
-        MeasureResult { width, height }
+        ModifierMeasure { width, height }
     }
 
-    fn min_intrinsic_width(&self, _measurable: &dyn Measurable, _height: i32) -> i32 {
+    fn min_intrinsic_width(&self, _measurable: &dyn ModifierMeasurable, _height: i32) -> i32 {
         self.width.unwrap_or(0)
     }
 
-    fn max_intrinsic_width(&self, _measurable: &dyn Measurable, _height: i32) -> i32 {
+    fn max_intrinsic_width(&self, _measurable: &dyn ModifierMeasurable, _height: i32) -> i32 {
         self.width.unwrap_or(i32::MAX)
     }
 
-    fn min_intrinsic_height(&self, _measurable: &dyn Measurable, _width: i32) -> i32 {
+    fn min_intrinsic_height(&self, _measurable: &dyn ModifierMeasurable, _width: i32) -> i32 {
         self.height.unwrap_or(0)
     }
 
-    fn max_intrinsic_height(&self, _measurable: &dyn Measurable, _width: i32) -> i32 {
+    fn max_intrinsic_height(&self, _measurable: &dyn ModifierMeasurable, _width: i32) -> i32 {
         self.height.unwrap_or(i32::MAX)
     }
 }
@@ -383,9 +381,9 @@ impl PointerInputNode for ClickableNode {
     fn on_pointer_event(
         &mut self,
         _context: &mut dyn ModifierNodeContext,
-        event: &compose_foundation::PointerEvent,
+        event: &PointerEvent,
     ) -> bool {
-        if matches!(event.kind, compose_foundation::PointerEventKind::Down) {
+        if matches!(event.kind, PointerEventKind::Down) {
             let point = Point {
                 x: event.position.x,
                 y: event.position.y,
@@ -477,7 +475,7 @@ impl DrawModifierNode for AlphaNode {
     fn draw(
         &mut self,
         _context: &mut dyn ModifierNodeContext,
-        _draw_scope: &mut dyn compose_foundation::DrawScope,
+        _draw_scope: &mut dyn ModifierDrawScope,
     ) {
         // In a full implementation, this would:
         // 1. Save the current alpha/layer state
@@ -531,7 +529,10 @@ impl ModifierElement for AlphaElement {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use compose_foundation::{modifier_element, ModifierNodeChain};
+    use compose_foundation::{
+        modifier_element, BasicModifierNodeContext, ModifierNodeChain, PointerButton,
+        PointerButtons, PointerPhase,
+    };
     use std::cell::Cell;
 
     struct TestMeasurable {
@@ -539,9 +540,9 @@ mod tests {
         intrinsic_height: i32,
     }
 
-    impl Measurable for TestMeasurable {
-        fn measure(&self, constraints: compose_foundation::Constraints) -> MeasureResult {
-            MeasureResult {
+    impl ModifierMeasurable for TestMeasurable {
+        fn measure(&self, constraints: ModifierConstraints) -> ModifierMeasure {
+            ModifierMeasure {
                 width: constraints.max_width.min(self.intrinsic_width),
                 height: constraints.max_height.min(self.intrinsic_height),
             }
@@ -582,7 +583,7 @@ mod tests {
             intrinsic_width: 50,
             intrinsic_height: 50,
         };
-        let constraints = compose_foundation::Constraints {
+        let constraints = ModifierConstraints {
             min_width: 0,
             max_width: 200,
             min_height: 0,
@@ -666,7 +667,7 @@ mod tests {
             intrinsic_width: 50,
             intrinsic_height: 50,
         };
-        let constraints = compose_foundation::Constraints {
+        let constraints = ModifierConstraints {
             min_width: 0,
             max_width: 500,
             min_height: 0,

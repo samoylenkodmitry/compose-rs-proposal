@@ -22,15 +22,7 @@ pub use compose_ui_graphics::{
 };
 use compose_ui_layout::{Alignment, HorizontalAlignment, VerticalAlignment};
 
-/// Specifies how to size a component based on its intrinsic measurements.
-/// Mirrors Jetpack Compose's IntrinsicSize API.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum IntrinsicSize {
-    /// Use the minimum intrinsic size of the content.
-    Min,
-    /// Use the maximum intrinsic size of the content.
-    Max,
-}
+pub use compose_ui_layout::IntrinsicSize;
 
 #[derive(Clone)]
 pub enum ModOp {

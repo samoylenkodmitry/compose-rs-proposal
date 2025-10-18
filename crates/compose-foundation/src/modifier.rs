@@ -125,30 +125,30 @@ pub trait LayoutModifierNode: ModifierNode {
     fn measure(
         &mut self,
         _context: &mut dyn ModifierNodeContext,
-        _measurable: &dyn Measurable,
-        _constraints: Constraints,
-    ) -> MeasureResult {
+        _measurable: &dyn ModifierMeasurable,
+        _constraints: ModifierConstraints,
+    ) -> ModifierMeasure {
         // Default: pass through to wrapped content
-        MeasureResult::default()
+        ModifierMeasure::default()
     }
 
     /// Returns the minimum intrinsic width of this modifier node.
-    fn min_intrinsic_width(&self, _measurable: &dyn Measurable, _height: i32) -> i32 {
+    fn min_intrinsic_width(&self, _measurable: &dyn ModifierMeasurable, _height: i32) -> i32 {
         0
     }
 
     /// Returns the maximum intrinsic width of this modifier node.
-    fn max_intrinsic_width(&self, _measurable: &dyn Measurable, _height: i32) -> i32 {
+    fn max_intrinsic_width(&self, _measurable: &dyn ModifierMeasurable, _height: i32) -> i32 {
         0
     }
 
     /// Returns the minimum intrinsic height of this modifier node.
-    fn min_intrinsic_height(&self, _measurable: &dyn Measurable, _width: i32) -> i32 {
+    fn min_intrinsic_height(&self, _measurable: &dyn ModifierMeasurable, _width: i32) -> i32 {
         0
     }
 
     /// Returns the maximum intrinsic height of this modifier node.
-    fn max_intrinsic_height(&self, _measurable: &dyn Measurable, _width: i32) -> i32 {
+    fn max_intrinsic_height(&self, _measurable: &dyn ModifierMeasurable, _width: i32) -> i32 {
         0
     }
 }
@@ -160,7 +160,11 @@ pub trait LayoutModifierNode: ModifierNode {
 pub trait DrawModifierNode: ModifierNode {
     /// Draws this modifier node. The node can draw before and/or after
     /// calling `draw_content` to draw the wrapped content.
-    fn draw(&mut self, _context: &mut dyn ModifierNodeContext, _draw_scope: &mut dyn DrawScope) {
+    fn draw(
+        &mut self,
+        _context: &mut dyn ModifierNodeContext,
+        _draw_scope: &mut dyn ModifierDrawScope,
+    ) {
         // Default: draw wrapped content without modification
     }
 }
@@ -203,33 +207,33 @@ pub trait SemanticsNode: ModifierNode {
 // Placeholder types for the specialized node traits.
 // These will be properly defined in the UI layer.
 
-/// Constraints passed to measure functions.
+/// Constraints passed to measure functions within modifier nodes.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct Constraints {
+pub struct ModifierConstraints {
     pub min_width: i32,
     pub max_width: i32,
     pub min_height: i32,
     pub max_height: i32,
 }
 
-/// Result of a measure operation.
+/// Result of a measure operation performed by modifier nodes.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct MeasureResult {
+pub struct ModifierMeasure {
     pub width: i32,
     pub height: i32,
 }
 
-/// Trait for objects that can be measured.
-pub trait Measurable {
-    fn measure(&self, constraints: Constraints) -> MeasureResult;
+/// Trait for objects that can be measured by modifier nodes.
+pub trait ModifierMeasurable {
+    fn measure(&self, constraints: ModifierConstraints) -> ModifierMeasure;
     fn min_intrinsic_width(&self, height: i32) -> i32;
     fn max_intrinsic_width(&self, height: i32) -> i32;
     fn min_intrinsic_height(&self, width: i32) -> i32;
     fn max_intrinsic_height(&self, width: i32) -> i32;
 }
 
-/// Drawing scope for draw operations.
-pub trait DrawScope {
+/// Drawing scope for draw operations triggered by modifier nodes.
+pub trait ModifierDrawScope {
     fn draw_content(&mut self);
 }
 
@@ -831,17 +835,17 @@ mod tests {
         fn measure(
             &mut self,
             _context: &mut dyn ModifierNodeContext,
-            _measurable: &dyn Measurable,
-            _constraints: Constraints,
-        ) -> MeasureResult {
+            _measurable: &dyn ModifierMeasurable,
+            _constraints: ModifierConstraints,
+        ) -> ModifierMeasure {
             self.measure_count.set(self.measure_count.get() + 1);
-            MeasureResult {
+            ModifierMeasure {
                 width: 100,
                 height: 100,
             }
         }
 
-        fn min_intrinsic_width(&self, _measurable: &dyn Measurable, _height: i32) -> i32 {
+        fn min_intrinsic_width(&self, _measurable: &dyn ModifierMeasurable, _height: i32) -> i32 {
             50
         }
     }
@@ -879,7 +883,7 @@ mod tests {
         fn draw(
             &mut self,
             _context: &mut dyn ModifierNodeContext,
-            _draw_scope: &mut dyn DrawScope,
+            _draw_scope: &mut dyn ModifierDrawScope,
         ) {
             self.draw_count.set(self.draw_count.get() + 1);
         }
