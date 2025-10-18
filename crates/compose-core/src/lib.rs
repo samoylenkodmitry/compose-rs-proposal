@@ -17,17 +17,15 @@ pub use runtime::{schedule_frame, schedule_node_update, DefaultScheduler, Runtim
 pub use runtime::{TestRuntime, TestScheduler};
 
 use std::any::Any;
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, RefCell, UnsafeCell};
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet}; // FUTURE(no_std): replace HashMap/HashSet with arena-backed maps.
 use std::fmt;
-use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::mem;
-use std::pin::Pin;
 use std::rc::{Rc, Weak}; // FUTURE(no_std): replace Rc/Weak with arena-managed handles.
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+use std::thread::ThreadId;
 use std::thread_local;
 
 pub type Key = u64;
@@ -620,7 +618,7 @@ impl LaunchedEffectState {
             runtime: runtime.clone(),
         };
         self.cancel_flag = Some(active);
-        runtime.spawn_task(Box::new(move || effect(scope)));
+        runtime.enqueue_ui_task(Box::new(move || effect(scope)));
     }
 
     fn cancel_current(&mut self) {
@@ -656,98 +654,112 @@ impl LaunchedEffectScope {
             return;
         }
         let scope = self.clone();
-        self.runtime.spawn_task(Box::new(move || {
+        self.runtime.enqueue_ui_task(Box::new(move || {
             if scope.is_active() {
                 task(scope);
             }
         }));
     }
 
-    pub fn launch_future<Fut>(&self, future: Fut)
+    pub fn post_ui(&self, task: impl FnOnce() + 'static) {
+        if !self.is_active() {
+            return;
+        }
+        let active = Arc::clone(&self.active);
+        self.runtime.enqueue_ui_task(Box::new(move || {
+            if active.load(Ordering::SeqCst) {
+                task();
+            }
+        }));
+    }
+
+    pub fn post_ui_send(&self, task: impl FnOnce() + Send + 'static) {
+        if !self.is_active() {
+            return;
+        }
+        let active = Arc::clone(&self.active);
+        self.runtime.post_ui(move || {
+            if active.load(Ordering::SeqCst) {
+                task();
+            }
+        });
+    }
+
+    pub fn launch_background<T, Work, Ui>(&self, work: Work, on_ui: Ui)
     where
-        Fut: Future<Output = ()> + 'static,
+        T: Send + 'static,
+        Work: FnOnce(CancelToken) -> T + Send + 'static,
+        Ui: FnOnce(T) + 'static,
     {
         if !self.is_active() {
             return;
         }
-        let task = Rc::new(LaunchedEffectFutureTask {
-            scope: self.clone(),
-            future: RefCell::new(Some(Box::pin(future))),
-        });
-        task.schedule();
-    }
-}
-
-struct LaunchedEffectFutureTask {
-    scope: LaunchedEffectScope,
-    future: RefCell<Option<Pin<Box<dyn Future<Output = ()> + 'static>>>>,
-}
-
-impl LaunchedEffectFutureTask {
-    fn poll(self: Rc<Self>) {
-        if !self.scope.is_active() {
-            self.future.borrow_mut().take();
-            return;
-        }
-        let future_opt = self.future.borrow_mut().take();
-        if let Some(mut future) = future_opt {
-            let waker = self.waker();
-            let mut cx = Context::from_waker(&waker);
-            match future.as_mut().poll(&mut cx) {
-                Poll::Ready(()) => {}
-                Poll::Pending => {
-                    *self.future.borrow_mut() = Some(future);
+        let active = Arc::clone(&self.active);
+        let dispatcher = self.runtime.dispatcher();
+        let ui_thread = self.runtime.ui_thread_id();
+        let callback = Arc::new(UiCallback::new(on_ui, ui_thread));
+        std::thread::spawn(move || {
+            let token = CancelToken::new(Arc::clone(&active));
+            let value = work(token.clone());
+            if token.is_cancelled() {
+                return;
+            }
+            dispatcher.post(move || {
+                if active.load(Ordering::SeqCst) {
+                    callback.run(value);
                 }
-            }
-        }
-    }
-
-    fn schedule(self: Rc<Self>) {
-        if !self.scope.is_active() {
-            return;
-        }
-        let scope = self.scope.clone();
-        let task = self.clone();
-        self.scope.runtime.spawn_task(Box::new(move || {
-            if scope.is_active() {
-                task.poll();
-            }
-        }));
-    }
-    fn waker(self: &Rc<Self>) -> Waker {
-        let ptr = Rc::into_raw(self.clone()) as *const ();
-        unsafe { Waker::from_raw(RawWaker::new(ptr, &Self::VTABLE)) }
-    }
-
-    unsafe fn clone_waker(data: *const ()) -> RawWaker {
-        Rc::increment_strong_count(data as *const LaunchedEffectFutureTask);
-        RawWaker::new(data, &Self::VTABLE)
-    }
-
-    unsafe fn wake(data: *const ()) {
-        let task = Rc::from_raw(data as *const LaunchedEffectFutureTask);
-        task.clone().schedule();
-    }
-
-    unsafe fn wake_by_ref(data: *const ()) {
-        let task = Rc::from_raw(data as *const LaunchedEffectFutureTask);
-        task.clone().schedule();
-        let _ = Rc::into_raw(task);
-    }
-
-    unsafe fn drop_waker(data: *const ()) {
-        Rc::from_raw(data as *const LaunchedEffectFutureTask);
+            });
+        });
     }
 }
 
-impl LaunchedEffectFutureTask {
-    const VTABLE: RawWakerVTable = RawWakerVTable::new(
-        Self::clone_waker,
-        Self::wake,
-        Self::wake_by_ref,
-        Self::drop_waker,
-    );
+#[derive(Clone)]
+pub struct CancelToken {
+    active: Arc<AtomicBool>,
 }
+
+impl CancelToken {
+    fn new(active: Arc<AtomicBool>) -> Self {
+        Self { active }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        !self.active.load(Ordering::SeqCst)
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.active.load(Ordering::SeqCst)
+    }
+}
+
+struct UiCallback<T> {
+    callback: UnsafeCell<Option<Box<dyn FnOnce(T) + 'static>>>,
+    ui_thread: ThreadId,
+}
+
+impl<T> UiCallback<T> {
+    fn new(callback: impl FnOnce(T) + 'static, ui_thread: ThreadId) -> Self {
+        Self {
+            callback: UnsafeCell::new(Some(Box::new(callback))),
+            ui_thread,
+        }
+    }
+
+    fn run(&self, value: T) {
+        debug_assert_eq!(
+            std::thread::current().id(),
+            self.ui_thread,
+            "UI callback invoked off the runtime thread"
+        );
+        let slot = unsafe { &mut *self.callback.get() };
+        if let Some(callback) = slot.take() {
+            callback(value);
+        }
+    }
+}
+
+unsafe impl<T> Send for UiCallback<T> {}
+unsafe impl<T> Sync for UiCallback<T> {}
 
 #[allow(non_snake_case)]
 pub fn SideEffect(effect: impl FnOnce() + 'static) {
@@ -1658,7 +1670,7 @@ impl<'a> Composer<'a> {
 struct MutableStateInner<T> {
     value: RefCell<T>,
     watchers: RefCell<Vec<Weak<RecomposeScopeInner>>>, // FUTURE(no_std): move to stack-allocated subscription list.
-    _runtime: RuntimeHandle,
+    runtime: RuntimeHandle,
 }
 
 pub struct State<T> {
@@ -1707,7 +1719,7 @@ impl<T> MutableState<T> {
             inner: Rc::new(MutableStateInner {
                 value: RefCell::new(value),
                 watchers: RefCell::new(Vec::new()),
-                _runtime: runtime,
+                runtime,
             }),
         }
     }
@@ -1723,6 +1735,7 @@ impl<T> MutableState<T> {
     }
 
     pub fn update<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        self.inner.runtime.assert_ui_thread();
         let result = {
             let mut value = self.inner.value.borrow_mut();
             f(&mut *value)
@@ -1732,6 +1745,7 @@ impl<T> MutableState<T> {
     }
 
     pub fn replace(&self, value: T) {
+        self.inner.runtime.assert_ui_thread();
         *self.inner.value.borrow_mut() = value;
         self.notify_watchers();
     }
@@ -1950,6 +1964,7 @@ impl<A: Applier> Composition<A> {
     pub fn render(&mut self, key: Key, mut content: impl FnMut()) -> Result<(), NodeError> {
         self.slots.reset();
         let runtime_handle = self.runtime_handle();
+        runtime_handle.drain_ui();
         let (root, commands, side_effects) = {
             let mut composer = Composer::new(
                 &mut self.slots,
@@ -1971,17 +1986,18 @@ impl<A: Applier> Composition<A> {
         for mut command in runtime_handle.take_updates() {
             command(&mut self.applier)?;
         }
+        runtime_handle.drain_ui();
         for effect in side_effects {
             effect();
         }
-        runtime_handle.drain_tasks();
+        runtime_handle.drain_ui();
         self.root = root;
         self.slots.trim_to_cursor();
         self.process_invalid_scopes()?;
         if !self.runtime.has_updates()
             && !runtime_handle.has_invalid_scopes()
             && !runtime_handle.has_frame_callbacks()
-            && !runtime_handle.has_pending_tasks()
+            && !runtime_handle.has_pending_ui()
         {
             self.runtime.set_needs_frame(false);
         }
@@ -2007,7 +2023,7 @@ impl<A: Applier> Composition<A> {
     pub fn process_invalid_scopes(&mut self) -> Result<(), NodeError> {
         let runtime_handle = self.runtime_handle();
         loop {
-            runtime_handle.drain_tasks();
+            runtime_handle.drain_ui();
             let pending = runtime_handle.take_invalidated_scopes();
             if pending.is_empty() {
                 break;
@@ -2045,12 +2061,12 @@ impl<A: Applier> Composition<A> {
             for effect in side_effects {
                 effect();
             }
-            runtime_handle.drain_tasks();
+            runtime_handle.drain_ui();
         }
         if !self.runtime.has_updates()
             && !runtime_handle.has_invalid_scopes()
             && !runtime_handle.has_frame_callbacks()
-            && !runtime_handle.has_pending_tasks()
+            && !runtime_handle.has_pending_ui()
         {
             self.runtime.set_needs_frame(false);
         }

@@ -1,12 +1,62 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashSet, VecDeque};
 use std::rc::{Rc, Weak};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc};
+use std::thread::ThreadId;
 use std::thread_local;
 
 use crate::frame_clock::FrameClock;
 use crate::platform::RuntimeScheduler;
 use crate::{Applier, Command, FrameCallbackId, NodeError, RecomposeScopeInner, ScopeId};
+
+struct UiDispatcherInner {
+    scheduler: Arc<dyn RuntimeScheduler>,
+    tx: mpsc::Sender<Box<dyn FnOnce() + Send + 'static>>,
+    pending: AtomicUsize,
+}
+
+impl UiDispatcherInner {
+    fn new(
+        scheduler: Arc<dyn RuntimeScheduler>,
+        tx: mpsc::Sender<Box<dyn FnOnce() + Send + 'static>>,
+    ) -> Self {
+        Self {
+            scheduler,
+            tx,
+            pending: AtomicUsize::new(0),
+        }
+    }
+
+    fn post(&self, task: Box<dyn FnOnce() + Send + 'static>) {
+        self.pending.fetch_add(1, Ordering::SeqCst);
+        let _ = self.tx.send(task);
+        self.scheduler.schedule_frame();
+    }
+
+    fn has_pending(&self) -> bool {
+        self.pending.load(Ordering::SeqCst) > 0
+    }
+}
+
+#[derive(Clone)]
+pub struct UiDispatcher {
+    inner: Arc<UiDispatcherInner>,
+}
+
+impl UiDispatcher {
+    fn new(inner: Arc<UiDispatcherInner>) -> Self {
+        Self { inner }
+    }
+
+    pub fn post(&self, task: impl FnOnce() + Send + 'static) {
+        self.inner.post(Box::new(task));
+    }
+
+    pub fn has_pending(&self) -> bool {
+        self.inner.has_pending()
+    }
+}
 
 struct RuntimeInner {
     scheduler: Arc<dyn RuntimeScheduler>,
@@ -16,11 +66,16 @@ struct RuntimeInner {
     scope_queue: RefCell<Vec<(ScopeId, Weak<RecomposeScopeInner>)>>, // FUTURE(no_std): use smallvec-backed queue.
     frame_callbacks: RefCell<VecDeque<FrameCallbackEntry>>, // FUTURE(no_std): migrate to ring buffer.
     next_frame_callback_id: Cell<u64>,
-    pending_tasks: RefCell<VecDeque<Box<dyn FnOnce() + 'static>>>,
+    ui_dispatcher: Arc<UiDispatcherInner>,
+    ui_rx: RefCell<mpsc::Receiver<Box<dyn FnOnce() + Send + 'static>>>,
+    local_tasks: RefCell<VecDeque<Box<dyn FnOnce() + 'static>>>,
+    ui_thread_id: ThreadId,
 }
 
 impl RuntimeInner {
     fn new(scheduler: Arc<dyn RuntimeScheduler>) -> Self {
+        let (tx, rx) = mpsc::channel();
+        let dispatcher = Arc::new(UiDispatcherInner::new(scheduler.clone(), tx));
         Self {
             scheduler,
             needs_frame: RefCell::new(false),
@@ -29,7 +84,10 @@ impl RuntimeInner {
             scope_queue: RefCell::new(Vec::new()),
             frame_callbacks: RefCell::new(VecDeque::new()),
             next_frame_callback_id: Cell::new(1),
-            pending_tasks: RefCell::new(VecDeque::new()),
+            ui_dispatcher: dispatcher,
+            ui_rx: RefCell::new(rx),
+            local_tasks: RefCell::new(VecDeque::new()),
+            ui_thread_id: std::thread::current().id(),
         }
     }
 
@@ -76,23 +134,48 @@ impl RuntimeInner {
         !self.frame_callbacks.borrow().is_empty()
     }
 
-    fn enqueue_task(&self, task: Box<dyn FnOnce() + 'static>) {
-        self.pending_tasks.borrow_mut().push_back(task);
+    fn enqueue_ui_task(&self, task: Box<dyn FnOnce() + 'static>) {
+        self.local_tasks.borrow_mut().push_back(task);
         self.schedule();
     }
 
-    fn drain_tasks(&self) {
-        let mut tasks: Vec<Box<dyn FnOnce() + 'static>> = {
-            let mut pending = self.pending_tasks.borrow_mut();
-            pending.drain(..).collect()
-        };
-        for task in tasks.drain(..) {
-            task();
+    fn drain_ui(&self) {
+        loop {
+            let mut executed = false;
+
+            {
+                let rx = &mut *self.ui_rx.borrow_mut();
+                for task in rx.try_iter() {
+                    executed = true;
+                    task();
+                    let prev = self.ui_dispatcher.pending.fetch_sub(1, Ordering::SeqCst);
+                    debug_assert!(prev > 0, "UI dispatcher pending count underflowed");
+                }
+            }
+
+            loop {
+                let task = {
+                    let mut local = self.local_tasks.borrow_mut();
+                    local.pop_front()
+                };
+
+                match task {
+                    Some(task) => {
+                        executed = true;
+                        task();
+                    }
+                    None => break,
+                }
+            }
+
+            if !executed {
+                break;
+            }
         }
     }
 
-    fn has_tasks(&self) -> bool {
-        !self.pending_tasks.borrow().is_empty()
+    fn has_pending_ui(&self) -> bool {
+        !self.local_tasks.borrow().is_empty() || self.ui_dispatcher.has_pending()
     }
 
     fn register_frame_callback(&self, callback: Box<dyn FnOnce(u64) + 'static>) -> FrameCallbackId {
@@ -149,7 +232,11 @@ impl Runtime {
     }
 
     pub fn handle(&self) -> RuntimeHandle {
-        RuntimeHandle(Rc::downgrade(&self.inner))
+        RuntimeHandle {
+            inner: Rc::downgrade(&self.inner),
+            dispatcher: UiDispatcher::new(self.inner.ui_dispatcher.clone()),
+            ui_thread_id: self.inner.ui_thread_id,
+        }
     }
 
     pub fn has_updates(&self) -> bool {
@@ -157,7 +244,7 @@ impl Runtime {
     }
 
     pub fn needs_frame(&self) -> bool {
-        *self.inner.needs_frame.borrow()
+        *self.inner.needs_frame.borrow() || self.inner.ui_dispatcher.has_pending()
     }
 
     pub fn set_needs_frame(&self, value: bool) {
@@ -204,59 +291,67 @@ impl TestRuntime {
 }
 
 #[derive(Clone)]
-pub struct RuntimeHandle(pub(crate) Weak<RuntimeInner>);
+pub struct RuntimeHandle {
+    inner: Weak<RuntimeInner>,
+    dispatcher: UiDispatcher,
+    ui_thread_id: ThreadId,
+}
 
 impl RuntimeHandle {
     pub fn schedule(&self) {
-        if let Some(inner) = self.0.upgrade() {
+        if let Some(inner) = self.inner.upgrade() {
             inner.schedule();
         }
     }
 
     pub fn enqueue_node_update(&self, command: Command) {
-        if let Some(inner) = self.0.upgrade() {
+        if let Some(inner) = self.inner.upgrade() {
             inner.enqueue_update(command);
         }
     }
 
-    pub fn spawn_task(&self, task: Box<dyn FnOnce() + 'static>) {
-        if let Some(inner) = self.0.upgrade() {
-            inner.enqueue_task(task);
+    pub fn enqueue_ui_task(&self, task: Box<dyn FnOnce() + 'static>) {
+        if let Some(inner) = self.inner.upgrade() {
+            inner.enqueue_ui_task(task);
         } else {
             task();
         }
     }
 
-    pub fn drain_tasks(&self) {
-        if let Some(inner) = self.0.upgrade() {
-            inner.drain_tasks();
+    pub fn post_ui(&self, task: impl FnOnce() + Send + 'static) {
+        self.dispatcher.post(task);
+    }
+
+    pub fn drain_ui(&self) {
+        if let Some(inner) = self.inner.upgrade() {
+            inner.drain_ui();
         }
     }
 
-    pub fn has_pending_tasks(&self) -> bool {
-        self.0
+    pub fn has_pending_ui(&self) -> bool {
+        self.inner
             .upgrade()
-            .map(|inner| inner.has_tasks())
-            .unwrap_or(false)
+            .map(|inner| inner.has_pending_ui())
+            .unwrap_or_else(|| self.dispatcher.has_pending())
     }
 
     pub fn register_frame_callback(
         &self,
         callback: impl FnOnce(u64) + 'static,
     ) -> Option<FrameCallbackId> {
-        self.0
+        self.inner
             .upgrade()
             .map(|inner| inner.register_frame_callback(Box::new(callback)))
     }
 
     pub fn cancel_frame_callback(&self, id: FrameCallbackId) {
-        if let Some(inner) = self.0.upgrade() {
+        if let Some(inner) = self.inner.upgrade() {
             inner.cancel_frame_callback(id);
         }
     }
 
     pub fn drain_frame_callbacks(&self, frame_time_nanos: u64) {
-        if let Some(inner) = self.0.upgrade() {
+        if let Some(inner) = self.inner.upgrade() {
             inner.drain_frame_callbacks(frame_time_nanos);
         }
     }
@@ -266,58 +361,78 @@ impl RuntimeHandle {
     }
 
     pub fn set_needs_frame(&self, value: bool) {
-        if let Some(inner) = self.0.upgrade() {
+        if let Some(inner) = self.inner.upgrade() {
             *inner.needs_frame.borrow_mut() = value;
         }
     }
 
     pub(crate) fn take_updates(&self) -> Vec<Command> {
         // FUTURE(no_std): return iterator over static buffer.
-        self.0
+        self.inner
             .upgrade()
             .map(|inner| inner.take_updates())
             .unwrap_or_default()
     }
 
     pub fn has_updates(&self) -> bool {
-        self.0
+        self.inner
             .upgrade()
             .map(|inner| inner.has_updates())
             .unwrap_or(false)
     }
 
     pub(crate) fn register_invalid_scope(&self, id: ScopeId, scope: Weak<RecomposeScopeInner>) {
-        if let Some(inner) = self.0.upgrade() {
+        if let Some(inner) = self.inner.upgrade() {
             inner.register_invalid_scope(id, scope);
         }
     }
 
     pub(crate) fn mark_scope_recomposed(&self, id: ScopeId) {
-        if let Some(inner) = self.0.upgrade() {
+        if let Some(inner) = self.inner.upgrade() {
             inner.mark_scope_recomposed(id);
         }
     }
 
     pub(crate) fn take_invalidated_scopes(&self) -> Vec<(ScopeId, Weak<RecomposeScopeInner>)> {
         // FUTURE(no_std): expose draining iterator without Vec allocation.
-        self.0
+        self.inner
             .upgrade()
             .map(|inner| inner.take_invalidated_scopes())
             .unwrap_or_default()
     }
 
     pub fn has_invalid_scopes(&self) -> bool {
-        self.0
+        self.inner
             .upgrade()
             .map(|inner| inner.has_invalid_scopes())
             .unwrap_or(false)
     }
 
     pub fn has_frame_callbacks(&self) -> bool {
-        self.0
+        self.inner
             .upgrade()
             .map(|inner| inner.has_frame_callbacks())
             .unwrap_or(false)
+    }
+
+    pub(crate) fn ui_thread_id(&self) -> ThreadId {
+        if let Some(inner) = self.inner.upgrade() {
+            inner.ui_thread_id
+        } else {
+            std::thread::current().id()
+        }
+    }
+
+    pub fn assert_ui_thread(&self) {
+        debug_assert_eq!(
+            std::thread::current().id(),
+            self.ui_thread_id,
+            "state mutated off the runtime's UI thread"
+        );
+    }
+
+    pub fn dispatcher(&self) -> UiDispatcher {
+        self.dispatcher.clone()
     }
 }
 

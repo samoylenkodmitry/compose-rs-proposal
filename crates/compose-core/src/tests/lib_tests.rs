@@ -1,11 +1,9 @@
 use super::*;
 use crate as compose_core;
 use compose_macros::composable;
-use futures_util::future::poll_fn;
 use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::task::Poll;
 use std::time::Duration;
 
 #[derive(Default)]
@@ -176,91 +174,110 @@ fn launched_effect_runs_side_effect_body() {
 }
 
 #[test]
-fn launched_effect_launch_future_runs() {
+fn launched_effect_background_updates_ui() {
     let mut composition = Composition::new(MemoryApplier::new());
     let runtime = composition.runtime_handle();
     let state = MutableState::with_runtime(0i32, runtime.clone());
-    let completed = Rc::new(Cell::new(0));
+    let (tx, rx) = std::sync::mpsc::channel::<i32>();
+    let receiver = Rc::new(RefCell::new(Some(rx)));
 
     {
-        let completed = Rc::clone(&completed);
         let state = state.clone();
+        let receiver = Rc::clone(&receiver);
         composition
             .render(0, move || {
-                let completed = Rc::clone(&completed);
                 let state = state.clone();
-                LaunchedEffect!(state.value(), move |scope| {
-                    scope.launch_future({
-                        let completed = Rc::clone(&completed);
-                        let state = state.clone();
-                        async move {
-                            completed.set(completed.get() + 1);
-                            state.set_value(42);
-                        }
-                    });
+                let receiver = Rc::clone(&receiver);
+                LaunchedEffect!((), move |scope| {
+                    if let Some(rx) = receiver.borrow_mut().take() {
+                        scope.launch_background(
+                            move |_| rx.recv().expect("value available"),
+                            move |value| state.set_value(value),
+                        );
+                    }
                 });
             })
             .expect("render succeeds");
     }
 
-    assert_eq!(completed.get(), 1);
-    assert_eq!(state.value(), 42);
+    tx.send(27).expect("send succeeds");
+    for _ in 0..5 {
+        composition
+            .process_invalid_scopes()
+            .expect("process succeeds");
+        if state.value() == 27 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(state.value(), 27);
 }
 
 #[test]
-fn launched_effect_future_stops_after_cancellation() {
+fn launched_effect_background_ignores_late_result_after_cancel() {
     let mut composition = Composition::new(MemoryApplier::new());
     let runtime = composition.runtime_handle();
     let key_state = MutableState::with_runtime(0i32, runtime.clone());
-    let poll_counter = Rc::new(Cell::new(0usize));
+    let result_state = MutableState::with_runtime(0i32, runtime.clone());
+    let (tx, rx) = std::sync::mpsc::channel::<i32>();
+    let receiver = Rc::new(RefCell::new(Some(rx)));
 
     {
-        let poll_counter = Rc::clone(&poll_counter);
         let key_state = key_state.clone();
+        let result_state = result_state.clone();
+        let receiver = Rc::clone(&receiver);
         composition
             .render(0, move || {
                 let key = key_state.value();
-                let poll_counter = Rc::clone(&poll_counter);
+                let result_state = result_state.clone();
+                let receiver = Rc::clone(&receiver);
                 LaunchedEffect!(key, move |scope| {
-                    scope.launch_future({
-                        let poll_counter = Rc::clone(&poll_counter);
-                        async move {
-                            poll_fn(move |cx| {
-                                let count = poll_counter.get();
-                                poll_counter.set(count + 1);
-                                if count < 32 {
-                                    cx.waker().wake_by_ref();
-                                    Poll::<()>::Pending
-                                } else {
-                                    Poll::<()>::Ready(())
-                                }
-                            })
-                            .await;
+                    if key == 0 {
+                        if let Some(rx) = receiver.borrow_mut().take() {
+                            scope.launch_background(
+                                move |_| rx.recv().expect("value available"),
+                                move |value| result_state.set_value(value),
+                            );
                         }
-                    });
+                    }
                 });
             })
             .expect("render succeeds");
     }
-
-    assert!(poll_counter.get() > 0);
 
     key_state.set_value(1);
 
     {
         let key_state = key_state.clone();
+        let result_state = result_state.clone();
+        let receiver = Rc::clone(&receiver);
         composition
             .render(0, move || {
                 let key = key_state.value();
-                LaunchedEffect!(key, move |_scope| {});
+                let result_state = result_state.clone();
+                let receiver = Rc::clone(&receiver);
+                LaunchedEffect!(key, move |scope| {
+                    if key == 0 {
+                        if let Some(rx) = receiver.borrow_mut().take() {
+                            scope.launch_background(
+                                move |_| rx.recv().expect("value available"),
+                                move |value| result_state.set_value(value),
+                            );
+                        }
+                    }
+                });
             })
             .expect("render succeeds");
     }
 
-    let polls_after_cancel = poll_counter.get();
-    composition.runtime_handle().drain_tasks();
-    composition.runtime_handle().drain_tasks();
-    assert_eq!(poll_counter.get(), polls_after_cancel);
+    tx.send(99).expect("send succeeds");
+    for _ in 0..5 {
+        composition
+            .process_invalid_scopes()
+            .expect("process succeeds");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(result_state.value(), 0);
 }
 
 #[test]
