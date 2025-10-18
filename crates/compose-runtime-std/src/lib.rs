@@ -43,7 +43,7 @@ impl RuntimeScheduler for StdScheduler {
     }
 
     fn spawn_task(&self, task: Box<dyn FnOnce() + Send + 'static>) {
-        std::thread::spawn(move || task());
+        task();
     }
 }
 

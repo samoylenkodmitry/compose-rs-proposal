@@ -159,7 +159,7 @@ impl RuntimeScheduler for DefaultScheduler {
     fn schedule_frame(&self) {}
 
     fn spawn_task(&self, task: Box<dyn FnOnce() + Send + 'static>) {
-        std::thread::spawn(move || task());
+        task();
     }
 }
 
@@ -172,7 +172,7 @@ impl RuntimeScheduler for TestScheduler {
     fn schedule_frame(&self) {}
 
     fn spawn_task(&self, task: Box<dyn FnOnce() + Send + 'static>) {
-        std::thread::spawn(move || task());
+        task();
     }
 }
 

@@ -13,7 +13,10 @@ pub trait RuntimeScheduler: Send + Sync {
     /// Request that the host schedule a new frame.
     fn schedule_frame(&self);
 
-    /// Spawn a task that will run asynchronously.
+    /// Spawn a task that will run on the runtime's execution thread.
+    ///
+    /// Implementations should ensure the task is executed on the same thread
+    /// that drives the runtime so callers can freely interact with UI state.
     fn spawn_task(&self, task: Box<dyn FnOnce() + Send + 'static>);
 }
 
