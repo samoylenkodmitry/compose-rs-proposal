@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell, RefMut};
 use std::rc::Rc;
 
 /// Single-threaded owner for values remembered by the Composer.
@@ -34,6 +34,16 @@ impl<T> Owned<T> {
     pub fn update<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
         let mut borrow = self.inner.borrow_mut();
         f(&mut *borrow)
+    }
+
+    /// Borrow the stored value immutably.
+    pub fn borrow(&self) -> Ref<'_, T> {
+        self.inner.borrow()
+    }
+
+    /// Borrow the stored value mutably.
+    pub fn borrow_mut(&self) -> RefMut<'_, T> {
+        self.inner.borrow_mut()
     }
 
     /// Replace the stored value entirely.

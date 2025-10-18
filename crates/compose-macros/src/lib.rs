@@ -283,16 +283,16 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 } else if is_fn_param(ty, &generics) {
                     // Fn-like params: take from ParamSlot (will be set again by param_setup)
                     Some(quote! {
-                        unsafe { (&mut *#handle_ident.as_ptr()).take() }
+                        #handle_ident.update(|slot| slot.take())
                     })
                 } else {
                     // Regular params: clone from ParamState
                     Some(quote! {
-                        unsafe {
-                            (&*#handle_ident.as_ptr())
+                        #handle_ident.with(|slot| {
+                            slot
                                 .value()
                                 .expect("composable parameter missing for recomposition")
-                        }
+                        })
                     })
                 }
             })
@@ -306,23 +306,21 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
             #(#param_setup)*
             let __result_slot_handle = __composer
                 .remember(|| compose_core::ReturnSlot::<#return_ty>::default());
-            let __result_slot_ptr: *mut compose_core::ReturnSlot<#return_ty> =
-                __result_slot_handle.as_ptr();
-            let __has_previous = unsafe { (&*__result_slot_ptr).get().is_some() };
+            let __has_previous = __result_slot_handle.with(|slot| slot.get().is_some());
             if !__changed && __has_previous {
                 __composer.skip_current_group();
-                let __result = unsafe {
-                    (&*__result_slot_ptr)
+                let __result = __result_slot_handle.with(|slot| {
+                    slot
                         .get()
                         .expect("composable return value missing during skip")
-                };
+                });
                 return __result;
             }
-            #(#rebinds)*
-            let __value: #return_ty = { #original_block };
-            unsafe {
-                (*__result_slot_ptr).store(__value.clone());
-            }
+            let __value: #return_ty = {
+                #(#rebinds)*
+                #original_block
+            };
+            __result_slot_handle.update(|slot| slot.store(__value.clone()));
             {
                 let __impl_fn = #helper_ident;
                 __composer.set_recompose_callback(move |
