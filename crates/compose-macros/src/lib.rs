@@ -252,22 +252,15 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
         let rebinds: Vec<TokenStream2> = param_info
             .iter()
             .zip(param_state_handles.iter())
-            .enumerate()
-            .map(|(index, ((ident, pat, ty), handle_ident))| {
+            .map(|((ident, pat, ty), handle_ident)| {
                 let is_impl_trait = matches!(**ty, Type::ImplTrait(_));
                 if is_impl_trait {
                     // impl Trait: no rebind needed, already has original name
                     quote! {}
                 } else if is_fn_param(ty, &generics) {
-                    // Fn-like param: rebind via safe RefCell borrowing
-                    let guard_ident =
-                        Ident::new(&format!("__param_slot_guard{}", index), Span::call_site());
+                    // Fn-like param: rebind as &mut from slot
                     quote! {
-                        let mut #guard_ident = std::cell::RefMut::map(
-                            #handle_ident.borrow_mut(),
-                            |slot| slot.as_mut(),
-                        );
-                        let #pat = &mut *#guard_ident;
+                        let #pat = unsafe { (&mut *#handle_ident.as_ptr()).as_mut() };
                     }
                 } else {
                     // Regular rebind
@@ -323,8 +316,10 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 });
                 return __result;
             }
-            #(#rebinds)*
-            let __value: #return_ty = { #original_block };
+            let __value: #return_ty = {
+                #(#rebinds)*
+                #original_block
+            };
             __result_slot_handle.update(|slot| slot.store(__value.clone()));
             {
                 let __impl_fn = #helper_ident;
