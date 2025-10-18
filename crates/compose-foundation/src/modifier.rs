@@ -11,7 +11,7 @@ use std::any::{type_name, Any, TypeId};
 use std::fmt;
 
 pub use compose_ui_graphics::Size;
-pub use compose_ui_layout::Constraints;
+pub use compose_ui_layout::{Constraints, Measurable as ModifierMeasurable};
 
 use crate::nodes::input::types::PointerEvent;
 
@@ -128,11 +128,15 @@ pub trait LayoutModifierNode: ModifierNode {
     fn measure(
         &mut self,
         _context: &mut dyn ModifierNodeContext,
-        _measurable: &dyn ModifierMeasurable,
-        _constraints: Constraints,
+        measurable: &dyn ModifierMeasurable,
+        constraints: Constraints,
     ) -> Size {
-        // Default: pass through to wrapped content
-        Size::default()
+        // Default: pass through to wrapped content by measuring the child.
+        let placeable = measurable.measure(constraints);
+        Size {
+            width: placeable.width(),
+            height: placeable.height(),
+        }
     }
 
     /// Returns the minimum intrinsic width of this modifier node.
@@ -207,16 +211,8 @@ pub trait SemanticsNode: ModifierNode {
     }
 }
 
-// Specialized node traits reuse the layout and geometry contracts directly.
-
-/// Trait for objects that can be measured by modifier nodes.
-pub trait ModifierMeasurable {
-    fn measure(&self, constraints: Constraints) -> Size;
-    fn min_intrinsic_width(&self, height: f32) -> f32;
-    fn max_intrinsic_width(&self, height: f32) -> f32;
-    fn min_intrinsic_height(&self, width: f32) -> f32;
-    fn max_intrinsic_height(&self, width: f32) -> f32;
-}
+// Specialized node traits reuse the layout and geometry contracts directly via
+// the compose-ui-layout Measurable trait.
 
 /// Drawing scope for draw operations triggered by modifier nodes.
 pub trait ModifierDrawScope {

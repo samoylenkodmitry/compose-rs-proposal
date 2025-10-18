@@ -98,12 +98,14 @@ impl LayoutModifierNode for PaddingNode {
         };
 
         // Measure the wrapped content
-        let inner_result = measurable.measure(inner_constraints);
+        let inner_placeable = measurable.measure(inner_constraints);
+        let inner_width = inner_placeable.width();
+        let inner_height = inner_placeable.height();
 
         // Add padding back to the result
         Size {
-            width: inner_result.width + horizontal_padding,
-            height: inner_result.height + vertical_padding,
+            width: inner_width + horizontal_padding,
+            height: inner_height + vertical_padding,
         }
     }
 
@@ -288,12 +290,14 @@ impl LayoutModifierNode for SizeNode {
         };
 
         // Measure wrapped content with size constraints
-        let result = measurable.measure(inner_constraints);
+        let placeable = measurable.measure(inner_constraints);
+        let measured_width = placeable.width();
+        let measured_height = placeable.height();
 
         // Return the specified size or the measured size when not overridden
         Size {
-            width: width.unwrap_or(result.width),
-            height: height.unwrap_or(result.height),
+            width: width.unwrap_or(measured_width),
+            height: height.unwrap_or(measured_height),
         }
     }
 
@@ -536,11 +540,35 @@ impl ModifierElement for AlphaElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use compose_core::NodeId;
     use compose_foundation::{
         modifier_element, BasicModifierNodeContext, ModifierNodeChain, PointerButton,
         PointerButtons, PointerPhase,
     };
+    use compose_ui_layout::Placeable;
     use std::cell::Cell;
+
+    struct TestPlaceable {
+        width: f32,
+        height: f32,
+        node_id: NodeId,
+    }
+
+    impl Placeable for TestPlaceable {
+        fn place(&self, _x: f32, _y: f32) {}
+
+        fn width(&self) -> f32 {
+            self.width
+        }
+
+        fn height(&self) -> f32 {
+            self.height
+        }
+
+        fn node_id(&self) -> NodeId {
+            self.node_id
+        }
+    }
 
     struct TestMeasurable {
         intrinsic_width: f32,
@@ -548,11 +576,12 @@ mod tests {
     }
 
     impl ModifierMeasurable for TestMeasurable {
-        fn measure(&self, constraints: Constraints) -> Size {
-            Size {
+        fn measure(&self, constraints: Constraints) -> Box<dyn Placeable> {
+            Box::new(TestPlaceable {
                 width: constraints.max_width.min(self.intrinsic_width),
                 height: constraints.max_height.min(self.intrinsic_height),
-            }
+                node_id: 0,
+            })
         }
 
         fn min_intrinsic_width(&self, _height: f32) -> f32 {
