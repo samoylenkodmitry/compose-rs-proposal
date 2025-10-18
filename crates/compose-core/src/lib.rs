@@ -973,6 +973,33 @@ impl SlotTable {
         }
     }
 
+    fn shift_group_frames(&mut self, index: usize, delta: isize) {
+        if delta == 0 {
+            return;
+        }
+        if delta > 0 {
+            let delta = delta as usize;
+            for frame in &mut self.group_stack {
+                if frame.start >= index {
+                    frame.start += delta;
+                    frame.end += delta;
+                } else if frame.end >= index {
+                    frame.end += delta;
+                }
+            }
+        } else {
+            let delta = (-delta) as usize;
+            for frame in &mut self.group_stack {
+                if frame.start >= index {
+                    frame.start = frame.start.saturating_sub(delta);
+                    frame.end = frame.end.saturating_sub(delta);
+                } else if frame.end > index {
+                    frame.end = frame.end.saturating_sub(delta);
+                }
+            }
+        }
+    }
+
     pub fn start(&mut self, key: Key) -> usize {
         let cursor = self.cursor;
         debug_assert!(
@@ -1002,14 +1029,56 @@ impl SlotTable {
             self.update_group_bounds();
             return cursor;
         }
-        if cursor < self.slots.len() {
-            self.slots.truncate(cursor);
+
+        let parent_end = self
+            .group_stack
+            .last()
+            .map(|frame| frame.end.min(self.slots.len()))
+            .unwrap_or(self.slots.len());
+        let mut search_index = cursor;
+        let mut found_group: Option<(usize, usize)> = None;
+        while search_index < parent_end {
+            match self.slots.get(search_index) {
+                Some(Slot::Group {
+                    key: existing_key,
+                    len,
+                }) => {
+                    let group_len = *len;
+                    if *existing_key == key {
+                        found_group = Some((search_index, group_len));
+                        break;
+                    }
+                    let advance = group_len.max(1);
+                    search_index = search_index.saturating_add(advance);
+                }
+                Some(_slot) => {
+                    search_index += 1;
+                }
+                None => break,
+            }
         }
-        if cursor == self.slots.len() {
-            self.slots.push(Slot::Group { key, len: 0 });
-        } else {
-            self.slots[cursor] = Slot::Group { key, len: 0 };
+
+        if let Some((found_index, group_len)) = found_group {
+            self.shift_group_frames(found_index, -(group_len as isize));
+            let moved: Vec<_> = self
+                .slots
+                .drain(found_index..found_index + group_len)
+                .collect();
+            self.shift_group_frames(cursor, group_len as isize);
+            self.slots.splice(cursor..cursor, moved);
+            let frame = GroupFrame {
+                key,
+                start: cursor,
+                end: cursor + group_len,
+            };
+            self.group_stack.push(frame);
+            self.cursor = cursor + 1;
+            self.update_group_bounds();
+            return cursor;
         }
+
+        self.shift_group_frames(cursor, 1);
+        self.slots.insert(cursor, Slot::Group { key, len: 0 });
         self.cursor = cursor + 1;
         self.group_stack.push(GroupFrame {
             key,
