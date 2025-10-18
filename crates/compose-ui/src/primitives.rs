@@ -347,8 +347,10 @@ mod tests {
             .expect("initial render");
 
         let root = composition.root().expect("root node");
-        let layout_tree = composition
-            .applier_mut()
+        let handle = composition.runtime_handle();
+        let applier = composition.applier_mut();
+        applier.set_runtime_handle(handle);
+        let layout_tree = applier
             .compute_layout(
                 root,
                 Size {
@@ -392,8 +394,10 @@ mod tests {
             .expect("initial render");
 
         let root = composition.root().expect("root node");
-        let layout_tree = composition
-            .applier_mut()
+        let handle = composition.runtime_handle();
+        let applier = composition.applier_mut();
+        applier.set_runtime_handle(handle);
+        let layout_tree = applier
             .compute_layout(
                 root,
                 Size {

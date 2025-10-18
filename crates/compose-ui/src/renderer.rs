@@ -1,11 +1,10 @@
-use compose_core::{MemoryApplier, Node, NodeError, NodeId};
-use compose_ui_graphics::DrawPrimitive;
 use crate::layout::{LayoutBox, LayoutTree};
 use crate::modifier::{
-    Brush, DrawCommand as ModifierDrawCommand, Modifier, Rect, RoundedCornerShape,
-    Size,
+    Brush, DrawCommand as ModifierDrawCommand, Modifier, Rect, RoundedCornerShape, Size,
 };
 use crate::primitives::{ButtonNode, LayoutNode, TextNode};
+use compose_core::{MemoryApplier, Node, NodeError, NodeId};
+use compose_ui_graphics::DrawPrimitive;
 
 /// Layer that a paint operation targets within the rendering pipeline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -242,8 +241,10 @@ mod tests {
     use compose_core::{location_key, MemoryApplier};
 
     fn compute_layout(composition: &mut Composition<MemoryApplier>, root: NodeId) -> LayoutTree {
-        composition
-            .applier_mut()
+        let handle = composition.runtime_handle();
+        let applier = composition.applier_mut();
+        applier.set_runtime_handle(handle);
+        applier
             .compute_layout(
                 root,
                 Size {

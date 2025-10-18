@@ -144,7 +144,9 @@ where
                 width: self.viewport.0,
                 height: self.viewport.1,
             };
+            let handle = self.composition.runtime_handle();
             let applier = self.composition.applier_mut();
+            applier.set_runtime_handle(handle);
             match applier.compute_layout(root, viewport_size) {
                 Ok(layout_tree) => {
                     let root_layout = layout_tree.into_root();
