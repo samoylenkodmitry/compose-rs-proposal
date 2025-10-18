@@ -1,20 +1,29 @@
 use super::*;
 use crate::modifier::{Brush, Color, Modifier};
-use crate::primitives::{Column, ColumnSpec, Text};
-use crate::{layout::LayoutEngine, Composition};
-use compose_core::{location_key, MemoryApplier};
+use crate::primitives::{Column, ColumnSpec, SubcomposeLayout, Text};
+use crate::{
+    layout::LayoutEngine, Composition, Placement, SubcomposeLayoutScope, SubcomposeMeasureScope,
+};
+use compose_core::{location_key, MemoryApplier, SlotId};
 
 fn compute_layout(composition: &mut Composition<MemoryApplier>, root: NodeId) -> LayoutTree {
-    composition
-        .applier_mut()
-        .compute_layout(
-            root,
-            Size {
-                width: 200.0,
-                height: 200.0,
-            },
-        )
-        .expect("layout")
+    let handle = composition.runtime_handle();
+    let layout = {
+        let applier = composition.applier_mut();
+        applier.set_runtime_handle(handle);
+        let result = applier
+            .compute_layout(
+                root,
+                Size {
+                    width: 200.0,
+                    height: 200.0,
+                },
+            )
+            .expect("layout");
+        applier.clear_runtime_handle();
+        result
+    };
+    layout
 }
 
 #[test]
@@ -132,4 +141,46 @@ fn renderer_translates_draw_commands() {
             }
         }
     }
+}
+
+#[test]
+fn renderer_renders_subcompose_background() {
+    let mut composition = Composition::new(MemoryApplier::new());
+    let key = location_key(file!(), line!(), column!());
+    composition
+        .render(key, || {
+            SubcomposeLayout(
+                Modifier::background(Color(0.4, 0.4, 0.4, 1.0)),
+                |scope, constraints| {
+                    let children = scope.subcompose(SlotId::new(0), || {
+                        Text("Subcomposed".to_string(), Modifier::empty());
+                    });
+                    let placements: Vec<_> = children
+                        .into_iter()
+                        .map(|child| Placement::new(child.node_id(), 0.0, 0.0, 0))
+                        .collect();
+                    let (width, height) = constraints.constrain(40.0, 20.0);
+                    scope.layout(width, height, placements)
+                },
+            );
+        })
+        .expect("initial render");
+
+    let root = composition.root().expect("subcompose root");
+    let layout = compute_layout(&mut composition, root);
+    let scene = {
+        let applier = composition.applier_mut();
+        let mut renderer = HeadlessRenderer::new(applier);
+        renderer.render(&layout).expect("render")
+    };
+
+    assert!(scene.operations().len() >= 2);
+    match &scene.operations()[0] {
+        RenderOp::Primitive { node_id, .. } => assert_eq!(*node_id, root),
+        other => panic!("unexpected first op: {other:?}"),
+    }
+    assert!(scene
+        .operations()
+        .iter()
+        .any(|op| matches!(op, RenderOp::Text { value, .. } if value == "Subcomposed")));
 }
