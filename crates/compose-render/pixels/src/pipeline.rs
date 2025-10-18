@@ -1,6 +1,8 @@
 use compose_core::{MemoryApplier, Node, NodeError, NodeId};
 use compose_render_common::Brush;
-use compose_ui::{ButtonNode, LayoutBox, LayoutNode, SpacerNode, TextNode};
+use compose_ui::{
+    ButtonNode, LayoutBox, LayoutNode, Modifier, SpacerNode, SubcomposeLayoutNode, TextNode,
+};
 use compose_ui_graphics::{Color, GraphicsLayer, Rect, RoundedCornerShape, Size};
 
 use crate::scene::{ClickAction, Scene};
@@ -36,6 +38,17 @@ pub(crate) fn render_layout_node(
         render_layout(applier, layout_node, layout, layer, scene);
         return;
     }
+    if let Some(subcompose_node) = try_node(
+        applier,
+        layout.node_id,
+        |node: &mut SubcomposeLayoutNode| SubcomposeNodeData {
+            modifier: node.modifier.clone(),
+            children: node.active_children(),
+        },
+    ) {
+        render_subcompose(applier, subcompose_node, layout, layer, scene);
+        return;
+    }
     if let Some(text_node) = try_node(applier, layout.node_id, |node: &mut TextNode| node.clone()) {
         render_text(text_node, layout, layer, scene);
         return;
@@ -53,9 +66,72 @@ pub(crate) fn render_layout_node(
     }
 }
 
+struct SubcomposeNodeData {
+    modifier: Modifier,
+    children: Vec<NodeId>,
+}
+
 fn render_layout(
     applier: &mut MemoryApplier,
     node: LayoutNode,
+    layout: &LayoutBox,
+    layer: GraphicsLayer,
+    scene: &mut Scene,
+) {
+    let style = NodeStyle::from_modifier(&node.modifier);
+    let node_layer = combine_layers(layer, style.graphics_layer);
+    let rect = layout.rect;
+    let size = Size {
+        width: rect.width,
+        height: rect.height,
+    };
+    let origin = (rect.x, rect.y);
+    apply_draw_commands(
+        &style.draw_commands,
+        DrawPlacement::Behind,
+        rect,
+        origin,
+        size,
+        node_layer,
+        scene,
+    );
+    let scaled_shape = style.shape.map(|shape| {
+        let resolved = shape.resolve(rect.width, rect.height);
+        RoundedCornerShape::with_radii(scale_corner_radii(resolved, node_layer.scale))
+    });
+    let transformed_rect = apply_layer_to_rect(rect, origin, node_layer);
+    if let Some(color) = style.background {
+        let brush = apply_layer_to_brush(Brush::solid(color), node_layer);
+        scene.push_shape(transformed_rect, brush, scaled_shape.clone());
+    }
+    let mut click_actions = Vec::new();
+    if let Some(handler) = style.clickable {
+        click_actions.push(ClickAction::WithPoint(handler));
+    }
+    scene.push_hit(
+        transformed_rect,
+        scaled_shape.clone(),
+        click_actions,
+        style.pointer_inputs.clone(),
+    );
+    for (child_id, child_layout) in node.children.iter().zip(&layout.children) {
+        debug_assert_eq!(*child_id, child_layout.node_id);
+        render_layout_node(applier, child_layout, node_layer, scene);
+    }
+    apply_draw_commands(
+        &style.draw_commands,
+        DrawPlacement::Overlay,
+        rect,
+        origin,
+        size,
+        node_layer,
+        scene,
+    );
+}
+
+fn render_subcompose(
+    applier: &mut MemoryApplier,
+    node: SubcomposeNodeData,
     layout: &LayoutBox,
     layer: GraphicsLayer,
     scene: &mut Scene,

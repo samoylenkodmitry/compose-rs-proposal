@@ -215,6 +215,7 @@ pub struct RecomposeOptions {
 pub enum NodeError {
     Missing { id: NodeId },
     TypeMismatch { id: NodeId, expected: &'static str },
+    MissingContext { id: NodeId, reason: &'static str },
 }
 
 impl std::fmt::Display for NodeError {
@@ -223,6 +224,9 @@ impl std::fmt::Display for NodeError {
             NodeError::Missing { id } => write!(f, "node {id} missing"),
             NodeError::TypeMismatch { id, expected } => {
                 write!(f, "node {id} type mismatch; expected {expected}")
+            }
+            NodeError::MissingContext { id, reason } => {
+                write!(f, "missing context for node {id}: {reason}")
             }
         }
     }
@@ -958,11 +962,15 @@ pub(crate) type Command = Box<dyn FnMut(&mut dyn Applier) -> Result<(), NodeErro
 #[derive(Default)]
 pub struct MemoryApplier {
     nodes: Vec<Option<Box<dyn Node>>>, // FUTURE(no_std): migrate to arena-backed node storage.
+    layout_runtime: Option<RuntimeHandle>,
 }
 
 impl MemoryApplier {
     pub fn new() -> Self {
-        Self { nodes: Vec::new() }
+        Self {
+            nodes: Vec::new(),
+            layout_runtime: None,
+        }
     }
 
     pub fn with_node<N: Node + 'static, R>(
@@ -988,6 +996,18 @@ impl MemoryApplier {
 
     pub fn len(&self) -> usize {
         self.nodes.iter().filter(|n| n.is_some()).count()
+    }
+
+    pub fn set_runtime_handle(&mut self, handle: RuntimeHandle) {
+        self.layout_runtime = Some(handle);
+    }
+
+    pub fn clear_runtime_handle(&mut self) {
+        self.layout_runtime = None;
+    }
+
+    pub fn runtime_handle(&self) -> Option<RuntimeHandle> {
+        self.layout_runtime.clone()
     }
 
     pub fn dump_tree(&self, root: Option<NodeId>) -> String {

@@ -1,6 +1,7 @@
 use std::rc::Rc;
 
 use compose_core::{Composer, NodeId, Phase, SlotId, SubcomposeState};
+use indexmap::IndexSet;
 
 use crate::modifier::Size;
 
@@ -96,6 +97,7 @@ pub struct SubcomposeLayoutNode {
     pub modifier: crate::modifier::Modifier,
     state: SubcomposeState,
     measure_policy: Rc<MeasurePolicy>,
+    children: IndexSet<NodeId>,
 }
 
 impl SubcomposeLayoutNode {
@@ -104,6 +106,7 @@ impl SubcomposeLayoutNode {
             modifier,
             state: SubcomposeState::default(),
             measure_policy,
+            children: IndexSet::new(),
         }
     }
 
@@ -140,9 +143,56 @@ impl SubcomposeLayoutNode {
         }
         result
     }
+
+    pub fn set_active_children<I>(&mut self, children: I)
+    where
+        I: IntoIterator<Item = NodeId>,
+    {
+        self.children.clear();
+        for child in children {
+            self.children.insert(child);
+        }
+    }
+
+    pub fn active_children(&self) -> Vec<NodeId> {
+        self.children.iter().copied().collect()
+    }
 }
 
-impl compose_core::Node for SubcomposeLayoutNode {}
+impl compose_core::Node for SubcomposeLayoutNode {
+    fn insert_child(&mut self, child: NodeId) {
+        self.children.insert(child);
+    }
+
+    fn remove_child(&mut self, child: NodeId) {
+        self.children.shift_remove(&child);
+    }
+
+    fn move_child(&mut self, from: usize, to: usize) {
+        if from == to || from >= self.children.len() {
+            return;
+        }
+        let mut ordered: Vec<NodeId> = self.children.iter().copied().collect();
+        let child = ordered.remove(from);
+        let target = to.min(ordered.len());
+        ordered.insert(target, child);
+        self.children.clear();
+        for id in ordered {
+            self.children.insert(id);
+        }
+    }
+
+    fn update_children(&mut self, children: &[NodeId]) {
+        self.children.clear();
+        for &child in children {
+            self.children.insert(child);
+        }
+    }
+
+    fn children(&self) -> Vec<NodeId> {
+        self.children.iter().copied().collect()
+    }
+}
 
 #[cfg(test)]
 #[path = "tests/subcompose_layout_tests.rs"]
