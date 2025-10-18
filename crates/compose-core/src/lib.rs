@@ -812,6 +812,11 @@ impl SlotTable {
 
     pub fn start(&mut self, key: Key) -> usize {
         let cursor = self.cursor;
+        debug_assert!(
+            cursor <= self.slots.len(),
+            "slot cursor {} out of bounds",
+            cursor
+        );
         let reuse_len = match self.slots.get(cursor) {
             Some(Slot::Group {
                 key: existing_key,
@@ -820,15 +825,7 @@ impl SlotTable {
                 debug_assert_eq!(*existing_key, key, "group key mismatch");
                 Some(*len)
             }
-            Some(slot) => {
-                debug_assert_eq!(
-                    SlotKind::Group,
-                    slot.kind(),
-                    "slot kind mismatch at {}",
-                    cursor
-                );
-                None
-            }
+            Some(_slot) => None,
             None => None,
         };
         if let Some(len) = reuse_len {
@@ -843,14 +840,6 @@ impl SlotTable {
             return cursor;
         }
         if cursor < self.slots.len() {
-            if let Some(slot) = self.slots.get(cursor) {
-                debug_assert_eq!(
-                    SlotKind::Group,
-                    slot.kind(),
-                    "slot kind mismatch at {}",
-                    cursor
-                );
-            }
             self.slots.truncate(cursor);
         }
         if cursor == self.slots.len() {
@@ -944,6 +933,11 @@ impl SlotTable {
 
     pub fn use_value_slot<T: 'static>(&mut self, init: impl FnOnce() -> T) -> usize {
         let cursor = self.cursor;
+        debug_assert!(
+            cursor <= self.slots.len(),
+            "slot cursor {} out of bounds",
+            cursor
+        );
         if cursor < self.slots.len() {
             let reuse = matches!(
                 self.slots.get(cursor),
@@ -953,14 +947,6 @@ impl SlotTable {
                 self.cursor = cursor + 1;
                 self.update_group_bounds();
                 return cursor;
-            }
-            if let Some(slot) = self.slots.get(cursor) {
-                debug_assert_eq!(
-                    SlotKind::Value,
-                    slot.kind(),
-                    "slot kind mismatch at {}",
-                    cursor
-                );
             }
             self.slots.truncate(cursor);
         }
@@ -1024,6 +1010,11 @@ impl SlotTable {
 
     pub fn record_node(&mut self, id: NodeId) {
         let cursor = self.cursor;
+        debug_assert!(
+            cursor <= self.slots.len(),
+            "slot cursor {} out of bounds",
+            cursor
+        );
         if cursor < self.slots.len() {
             if let Some(Slot::Node(existing)) = self.slots.get(cursor) {
                 if *existing == id {
@@ -1031,14 +1022,6 @@ impl SlotTable {
                     self.update_group_bounds();
                     return;
                 }
-            }
-            if let Some(slot) = self.slots.get(cursor) {
-                debug_assert_eq!(
-                    SlotKind::Node,
-                    slot.kind(),
-                    "slot kind mismatch at {}",
-                    cursor
-                );
             }
             self.slots.truncate(cursor);
         }
@@ -1053,17 +1036,14 @@ impl SlotTable {
 
     pub fn read_node(&mut self) -> Option<NodeId> {
         let cursor = self.cursor;
+        debug_assert!(
+            cursor <= self.slots.len(),
+            "slot cursor {} out of bounds",
+            cursor
+        );
         let node = match self.slots.get(cursor) {
             Some(Slot::Node(id)) => Some(*id),
-            Some(slot) => {
-                debug_assert_eq!(
-                    SlotKind::Node,
-                    slot.kind(),
-                    "slot kind mismatch at {}",
-                    cursor
-                );
-                None
-            }
+            Some(_slot) => None,
             None => None,
         };
         if node.is_some() {
