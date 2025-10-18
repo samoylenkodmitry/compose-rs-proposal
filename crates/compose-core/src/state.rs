@@ -103,8 +103,9 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
         let id = ObjectId::new(&state);
         Arc::get_mut(&mut state).expect("fresh Arc").id = id;
 
-        *state.weak_self.lock().unwrap() =
-            Some(Arc::downgrade(&(state.clone() as Arc<dyn StateObject>)));
+        let trait_object: Arc<dyn StateObject> = state.clone();
+        *state.weak_self.lock().unwrap() = Some(Arc::downgrade(&trait_object));
+        drop(trait_object);
 
         advance_global_snapshot(record_id);
 

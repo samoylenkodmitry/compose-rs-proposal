@@ -111,11 +111,6 @@ impl Snapshot {
     }
 
     #[inline]
-    pub(crate) fn is_valid(&self, id: SnapshotId) -> bool {
-        id <= self.id.get() && !self.invalid.lock().unwrap().contains(&id)
-    }
-
-    #[inline]
     pub(crate) fn id(&self) -> SnapshotId {
         self.id.get()
     }
@@ -123,6 +118,11 @@ impl Snapshot {
     #[inline]
     pub(crate) fn set_id(&self, id: SnapshotId) {
         self.id.set(id);
+    }
+
+    #[inline]
+    pub(crate) fn is_valid(&self, id: SnapshotId) -> bool {
+        id <= self.id.get() && !self.invalid.lock().unwrap().contains(&id)
     }
 
     #[inline]
@@ -182,8 +182,8 @@ impl Snapshot {
 
         parent.invalid.lock().unwrap().remove(&self.id.get());
 
-        let changed: Vec<Arc<dyn StateObject>> = modified.values().cloned().collect();
-        if !changed.is_empty() {
+        if !modified.is_empty() {
+            let changed: Vec<Arc<dyn StateObject>> = modified.values().cloned().collect();
             APPLY_OBSERVERS.with(|observers| {
                 for observer in observers.borrow().iter() {
                     observer(&changed);
@@ -241,7 +241,6 @@ where
 }
 
 pub(crate) fn advance_global_snapshot(id: SnapshotId) {
-    GLOBAL_SNAPSHOT.with(|global| {
-        global.borrow().set_id(id);
-    });
+    let snapshot = global_snapshot();
+    snapshot.set_id(id);
 }
