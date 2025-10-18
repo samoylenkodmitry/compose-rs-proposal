@@ -1,11 +1,9 @@
-use crate::layout::{LayoutBox, LayoutTree};
+use crate::layout::{LayoutBox, LayoutNodeKind, LayoutTree};
 use crate::modifier::{
     Brush, DrawCommand as ModifierDrawCommand, Modifier, Rect, RoundedCornerShape, Size,
 };
 use crate::modifier_bridge::{build_chain, ModifierNodeChainExt};
-use crate::primitives::{ButtonNode, LayoutNode, TextNode};
-use crate::SubcomposeLayoutNode;
-use compose_core::{MemoryApplier, Node, NodeError, NodeId};
+use compose_core::NodeId;
 use compose_foundation::BasicModifierNodeContext;
 use compose_ui_graphics::DrawPrimitive;
 
@@ -67,105 +65,45 @@ impl RecordedRenderScene {
 }
 
 /// A lightweight renderer that walks the layout tree and materialises paint commands.
-pub struct HeadlessRenderer<'a> {
-    applier: &'a mut MemoryApplier,
-}
+#[derive(Default)]
+pub struct HeadlessRenderer;
 
-impl<'a> HeadlessRenderer<'a> {
-    pub fn new(applier: &'a mut MemoryApplier) -> Self {
-        Self { applier }
+impl HeadlessRenderer {
+    pub fn new() -> Self {
+        Self
     }
 
-    pub fn render(&mut self, tree: &LayoutTree) -> Result<RecordedRenderScene, NodeError> {
+    pub fn render(&self, tree: &LayoutTree) -> RecordedRenderScene {
         let mut operations = Vec::new();
-        self.render_box(tree.root(), &mut operations)?;
-        Ok(RecordedRenderScene::new(operations))
+        self.render_box(tree.root(), &mut operations);
+        RecordedRenderScene::new(operations)
     }
 
-    fn render_box(
-        &mut self,
-        layout: &LayoutBox,
-        operations: &mut Vec<RenderOp>,
-    ) -> Result<(), NodeError> {
-        if let Some(snapshot) = self.text_snapshot(layout.node_id)? {
-            let rect = layout.rect;
-            let (mut behind, mut overlay) =
-                evaluate_modifier(layout.node_id, &snapshot.modifier, rect);
-            operations.append(&mut behind);
-            operations.push(RenderOp::Text {
-                node_id: layout.node_id,
-                rect,
-                value: snapshot.value,
-            });
-            operations.append(&mut overlay);
-            return Ok(());
-        }
-
+    fn render_box(&self, layout: &LayoutBox, operations: &mut Vec<RenderOp>) {
         let rect = layout.rect;
-        let mut behind = Vec::new();
-        let mut overlay = Vec::new();
-        if let Some(modifier) = self.container_modifier(layout.node_id)? {
-            let (b, o) = evaluate_modifier(layout.node_id, &modifier, rect);
-            behind = b;
-            overlay = o;
-        }
-        operations.append(&mut behind);
-        for child in &layout.children {
-            self.render_box(child, operations)?;
-        }
-        operations.append(&mut overlay);
-        Ok(())
-    }
-
-    fn container_modifier(&mut self, node_id: NodeId) -> Result<Option<Modifier>, NodeError> {
-        // Box, Row, and Column all use LayoutNode now
-        if let Some(modifier) =
-            self.read_node::<LayoutNode, _>(node_id, |node| node.modifier.clone())?
-        {
-            return Ok(Some(modifier));
-        }
-        if let Some(modifier) =
-            self.read_node::<SubcomposeLayoutNode, _>(node_id, |node| node.modifier.clone())?
-        {
-            return Ok(Some(modifier));
-        }
-        if let Some(modifier) =
-            self.read_node::<ButtonNode, _>(node_id, |node| node.modifier.clone())?
-        {
-            return Ok(Some(modifier));
-        }
-        Ok(None)
-    }
-
-    fn text_snapshot(&mut self, node_id: NodeId) -> Result<Option<TextSnapshot>, NodeError> {
-        match self
-            .applier
-            .with_node(node_id, |node: &mut TextNode| TextSnapshot {
-                modifier: node.modifier.clone(),
-                value: node.text.clone(),
-            }) {
-            Ok(snapshot) => Ok(Some(snapshot)),
-            Err(NodeError::TypeMismatch { .. }) => Ok(None),
-            Err(err) => Err(err),
+        match &layout.node_data.kind {
+            LayoutNodeKind::Text { value } => {
+                let (mut behind, mut overlay) =
+                    evaluate_modifier(layout.node_id, &layout.node_data.modifier, rect);
+                operations.append(&mut behind);
+                operations.push(RenderOp::Text {
+                    node_id: layout.node_id,
+                    rect,
+                    value: value.clone(),
+                });
+                operations.append(&mut overlay);
+            }
+            _ => {
+                let (mut behind, mut overlay) =
+                    evaluate_modifier(layout.node_id, &layout.node_data.modifier, rect);
+                operations.append(&mut behind);
+                for child in &layout.children {
+                    self.render_box(child, operations);
+                }
+                operations.append(&mut overlay);
+            }
         }
     }
-
-    fn read_node<T: Node + 'static, R>(
-        &mut self,
-        node_id: NodeId,
-        f: impl FnOnce(&T) -> R,
-    ) -> Result<Option<R>, NodeError> {
-        match self.applier.with_node(node_id, |node: &mut T| f(node)) {
-            Ok(value) => Ok(Some(value)),
-            Err(NodeError::TypeMismatch { .. }) => Ok(None),
-            Err(err) => Err(err),
-        }
-    }
-}
-
-struct TextSnapshot {
-    modifier: Modifier,
-    value: String,
 }
 
 fn evaluate_modifier(

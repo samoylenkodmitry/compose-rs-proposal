@@ -8,3 +8,4 @@ description = "Common rendering contracts for Compose-RS"
 [dependencies]
 compose-foundation = { path = "../../compose-foundation" }
 compose-ui-graphics = { path = "../../compose-ui-graphics" }
+compose-ui = { path = "../../compose-ui" }

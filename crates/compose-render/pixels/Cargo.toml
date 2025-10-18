@@ -7,7 +7,6 @@ description = "Pixels renderer backend for Compose-RS"
 
 [dependencies]
 compose-render-common = { path = "../common" }
-compose-core = { path = "../../compose-core" }
 compose-ui = { path = "../../compose-ui" }
 compose-ui-graphics = { path = "../../compose-ui-graphics" }
 compose-foundation = { path = "../../compose-foundation" }

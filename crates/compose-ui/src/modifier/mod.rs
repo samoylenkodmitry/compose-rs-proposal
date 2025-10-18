@@ -15,10 +15,10 @@ mod graphics_layer;
 mod padding;
 mod pointer_input;
 
+pub use crate::draw::{DrawCacheBuilder, DrawCommand};
 pub use compose_foundation::{PointerEvent, PointerEventKind};
-pub use compose_render_common::{Brush, DrawCacheBuilder, DrawCommand};
 pub use compose_ui_graphics::{
-    Color, CornerRadii, EdgeInsets, GraphicsLayer, Point, Rect, RoundedCornerShape, Size,
+    Brush, Color, CornerRadii, EdgeInsets, GraphicsLayer, Point, Rect, RoundedCornerShape, Size,
 };
 use compose_ui_layout::{Alignment, HorizontalAlignment, VerticalAlignment};
 

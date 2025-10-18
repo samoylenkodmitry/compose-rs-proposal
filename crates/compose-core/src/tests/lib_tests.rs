@@ -326,7 +326,7 @@ fn launched_effect_background_updates_ui() {
 
     tx.send(27).expect("send succeeds");
     for _ in 0..5 {
-        composition
+        let _ = composition
             .process_invalid_scopes()
             .expect("process succeeds");
         if state.value() == 27 {
@@ -396,7 +396,7 @@ fn launched_effect_background_ignores_late_result_after_cancel() {
 
     tx.send(99).expect("send succeeds");
     for _ in 0..5 {
-        composition
+        let _ = composition
             .process_invalid_scopes()
             .expect("process succeeds");
         std::thread::sleep(Duration::from_millis(10));
@@ -730,7 +730,7 @@ fn side_effect_runs_after_composition() {
         }
     });
     assert!(composition.should_render());
-    composition
+    let _ = composition
         .process_invalid_scopes()
         .expect("process invalid scopes succeeds");
     SIDE_EFFECT_LOG.with(|log| {
@@ -803,7 +803,7 @@ fn state_invalidation_skips_parent_scope() {
     state.set(1);
     assert!(composition.should_render());
 
-    composition
+    let _ = composition
         .process_invalid_scopes()
         .expect("process invalid scopes succeeds");
 
@@ -1091,7 +1091,7 @@ fn composition_local_provider_scopes_values() {
     assert_eq!(LAST_VALUE.with(|slot| slot.get()), 1);
 
     provided_state.set_value(5);
-    composition
+    let _ = composition
         .process_invalid_scopes()
         .expect("process local change");
 
@@ -1158,7 +1158,7 @@ fn composition_local_simple_subscription_test() {
 
     // Change trigger - should update the provided value and reader should see it
     trigger.set_value(20);
-    composition.process_invalid_scopes().expect("recomposition");
+    let _ = composition.process_invalid_scopes().expect("recomposition");
 
     // Reader should have recomposed and seen the new value
     assert_eq!(
@@ -1259,7 +1259,7 @@ fn composition_local_tracks_reads_and_recomposes_selectively() {
 
     // Change the trigger - this should update the provided value
     trigger.set_value(1);
-    composition
+    let _ = composition
         .process_invalid_scopes()
         .expect("process recomposition");
 
@@ -1291,7 +1291,7 @@ fn composition_local_tracks_reads_and_recomposes_selectively() {
 
     // Change again
     trigger.set_value(2);
-    composition
+    let _ = composition
         .process_invalid_scopes()
         .expect("process second recomposition");
 
@@ -1482,7 +1482,7 @@ fn inactive_scopes_delay_invalidation_until_reactivated() {
     scope.deactivate();
     state.set_value(1);
 
-    composition
+    let _ = composition
         .process_invalid_scopes()
         .expect("no recomposition while inactive");
 
@@ -1490,7 +1490,7 @@ fn inactive_scopes_delay_invalidation_until_reactivated() {
 
     scope.reactivate();
 
-    composition
+    let _ = composition
         .process_invalid_scopes()
         .expect("recomposition after reactivation");
 

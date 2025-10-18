@@ -395,6 +395,7 @@ name = "compose-render-common"
 version = "0.1.0"
 dependencies = [
  "compose-foundation",
+ "compose-ui",
  "compose-ui-graphics",
 ]
 
@@ -402,7 +403,6 @@ dependencies = [
 name = "compose-render-pixels"
 version = "0.1.0"
 dependencies = [
- "compose-core",
  "compose-foundation",
  "compose-render-common",
  "compose-ui",
@@ -417,6 +417,7 @@ version = "0.1.0"
 dependencies = [
  "compose-foundation",
  "compose-render-common",
+ "compose-ui",
  "compose-ui-graphics",
 ]
 
@@ -443,7 +444,6 @@ dependencies = [
  "compose-core",
  "compose-foundation",
  "compose-macros",
- "compose-render-common",
  "compose-runtime-std",
  "compose-testing",
  "compose-ui-graphics",

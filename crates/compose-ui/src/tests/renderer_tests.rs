@@ -41,11 +41,8 @@ fn renderer_emits_background_and_text() {
 
     let root = composition.root().expect("text root");
     let layout = compute_layout(&mut composition, root);
-    let scene = {
-        let applier = composition.applier_mut();
-        let mut renderer = HeadlessRenderer::new(applier);
-        renderer.render(&layout).expect("render")
-    };
+    let renderer = HeadlessRenderer::new();
+    let scene = renderer.render(&layout);
 
     assert_eq!(scene.operations().len(), 2);
     assert!(matches!(
@@ -91,11 +88,8 @@ fn renderer_translates_draw_commands() {
 
     let root = composition.root().expect("column root");
     let layout = compute_layout(&mut composition, root);
-    let scene = {
-        let applier = composition.applier_mut();
-        let mut renderer = HeadlessRenderer::new(applier);
-        renderer.render(&layout).expect("render")
-    };
+    let renderer = HeadlessRenderer::new();
+    let scene = renderer.render(&layout);
 
     let behind: Vec<_> = scene.primitives_for(PaintLayer::Behind).collect();
     assert_eq!(behind.len(), 3); // column background + column draw_behind + text draw_behind
@@ -168,11 +162,8 @@ fn renderer_renders_subcompose_background() {
 
     let root = composition.root().expect("subcompose root");
     let layout = compute_layout(&mut composition, root);
-    let scene = {
-        let applier = composition.applier_mut();
-        let mut renderer = HeadlessRenderer::new(applier);
-        renderer.render(&layout).expect("render")
-    };
+    let renderer = HeadlessRenderer::new();
+    let scene = renderer.render(&layout);
 
     assert!(scene.operations().len() >= 2);
     match &scene.operations()[0] {

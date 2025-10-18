@@ -5,6 +5,7 @@ pub use compose_core::{Composition, Key};
 pub use compose_macros::composable;
 
 mod debug;
+mod draw;
 mod layout;
 mod modifier;
 mod modifier_bridge;
@@ -12,19 +13,21 @@ mod modifier_nodes;
 mod primitives;
 mod renderer;
 mod subcompose_layout;
+mod text;
 pub mod widgets;
 
 pub use compose_ui_graphics::Dp;
+pub use draw::{execute_draw_commands, DrawCacheBuilder, DrawCommand};
 pub use layout::{
     core::{
         Alignment, Arrangement, HorizontalAlignment, LinearArrangement, Measurable, Placeable,
         VerticalAlignment,
     },
-    LayoutBox, LayoutEngine, LayoutTree,
+    LayoutBox, LayoutEngine, LayoutNodeKind, LayoutTree,
 };
 pub use modifier::{
-    Brush, Color, CornerRadii, DrawCommand, EdgeInsets, GraphicsLayer, IntrinsicSize, Modifier,
-    Point, PointerEvent, PointerEventKind, Rect, RoundedCornerShape, Size,
+    Brush, Color, CornerRadii, EdgeInsets, GraphicsLayer, IntrinsicSize, Modifier, Point,
+    PointerEvent, PointerEventKind, Rect, RoundedCornerShape, Size,
 };
 pub use modifier_nodes::{
     AlphaElement, AlphaNode, BackgroundElement, BackgroundNode, ClickableElement, ClickableNode,
@@ -40,6 +43,7 @@ pub use subcompose_layout::{
     Constraints, MeasureResult, Placement, SubcomposeLayoutNode, SubcomposeLayoutScope,
     SubcomposeMeasureScope, SubcomposeMeasureScopeImpl,
 };
+pub use text::{measure_text, set_text_measurer, TextMeasurer, TextMetrics};
 
 // Debug utilities
 pub use debug::{

@@ -1,10 +1,7 @@
 use once_cell::sync::Lazy;
 use rusttype::{point, Font, Scale};
 
-use compose_render_common::{
-    text::{TextMeasurer, TextMetrics},
-    Brush,
-};
+use compose_ui::{Brush, TextMeasurer, TextMetrics};
 use compose_ui_graphics::{Color, Rect};
 
 use crate::scene::{Scene, TextDraw};
