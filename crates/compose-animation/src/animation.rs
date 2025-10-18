@@ -10,7 +10,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use compose_core::{FrameCallbackRegistration, MutableState, RuntimeHandle, State};
+use compose_core::{
+    with_current_composer, FrameCallbackRegistration, MutableState, Owned, RuntimeHandle, State,
+};
 
 /// Trait for types that can be linearly interpolated.
 pub trait Lerp {
@@ -485,6 +487,31 @@ impl<T: SpringScalar + 'static> Animatable<T> {
             Self::schedule_frame(this);
         }
     }
+}
+
+#[allow(non_snake_case)]
+pub fn animateFloatAsState(target: f32, label: &str) -> State<f32> {
+    animateFloatAsStateWithSpec(target, AnimationType::default(), label)
+}
+
+#[allow(non_snake_case)]
+pub fn animateFloatAsStateWithSpec(
+    target: f32,
+    animation: AnimationType,
+    label: &str,
+) -> State<f32> {
+    let _ = label;
+    with_current_composer(|composer| {
+        let runtime = composer.runtime_handle();
+        let anim: Owned<Animatable<f32>> = composer.remember(|| Animatable::new(target, runtime));
+        anim.update(|animatable| {
+            let current = animatable.state().value();
+            if (current - target).abs() > f32::EPSILON {
+                animatable.animateTo(target, animation);
+            }
+        });
+        anim.with(|animatable| animatable.state())
+    })
 }
 
 impl<T: SpringScalar + 'static> Clone for Animatable<T> {

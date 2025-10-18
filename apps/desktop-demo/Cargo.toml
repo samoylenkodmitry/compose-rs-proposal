@@ -11,6 +11,7 @@ desktop = ["compose-platform-desktop-winit", "dep:winit"]
 
 [dependencies]
 compose-app-shell = { path = "../../crates/compose-app-shell" }
+compose-animation = { path = "../../crates/compose-animation" }
 compose-core = { path = "../../crates/compose-core" }
 compose-foundation = { path = "../../crates/compose-foundation" }
 compose-render-pixels = { path = "../../crates/compose-render/pixels", optional = true }
