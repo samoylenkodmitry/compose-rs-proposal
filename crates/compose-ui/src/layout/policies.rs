@@ -1,8 +1,8 @@
 use crate::layout::core::{
-    Alignment, Arrangement, HorizontalAlignment, LinearArrangement, Measurable, MeasurePolicy,
+    Alignment, Arrangement, HorizontalAlignment, LinearArrangement, Measurable,
     VerticalAlignment,
 };
-use compose_ui_layout::{Constraints, MeasureResult, Placement};
+use compose_ui_layout::{Constraints, MeasurePolicy, MeasureResult, Placement};
 
 /// MeasurePolicy for Box layout - overlays children according to alignment.
 #[derive(Clone, Debug, PartialEq)]

@@ -1,8 +1,8 @@
 use compose_core::{MemoryApplier, Node, NodeError, NodeId};
-
+use compose_ui_graphics::DrawPrimitive;
 use crate::layout::{LayoutBox, LayoutTree};
 use crate::modifier::{
-    Brush, DrawCommand as ModifierDrawCommand, DrawPrimitive, Modifier, Rect, RoundedCornerShape,
+    Brush, DrawCommand as ModifierDrawCommand, Modifier, Rect, RoundedCornerShape,
     Size,
 };
 use crate::primitives::{ButtonNode, LayoutNode, TextNode};
@@ -32,11 +32,11 @@ pub enum RenderOp {
 
 /// A collection of render operations for a composed scene.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct RenderScene {
+pub struct RecordedRenderScene {
     operations: Vec<RenderOp>,
 }
 
-impl RenderScene {
+impl RecordedRenderScene {
     pub fn new(operations: Vec<RenderOp>) -> Self {
         Self { operations }
     }
@@ -74,10 +74,10 @@ impl<'a> HeadlessRenderer<'a> {
         Self { applier }
     }
 
-    pub fn render(&mut self, tree: &LayoutTree) -> Result<RenderScene, NodeError> {
+    pub fn render(&mut self, tree: &LayoutTree) -> Result<RecordedRenderScene, NodeError> {
         let mut operations = Vec::new();
         self.render_box(tree.root(), &mut operations)?;
-        Ok(RenderScene::new(operations))
+        Ok(RecordedRenderScene::new(operations))
     }
 
     fn render_box(

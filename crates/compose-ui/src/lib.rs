@@ -16,13 +16,13 @@ pub mod widgets;
 pub use compose_ui_graphics::Dp;
 pub use layout::{
     core::{
-        Alignment, Arrangement, HorizontalAlignment, LinearArrangement, Measurable, MeasurePolicy,
+        Alignment, Arrangement, HorizontalAlignment, LinearArrangement, Measurable,
         Placeable, VerticalAlignment,
     },
     LayoutBox, LayoutEngine, LayoutTree,
 };
 pub use modifier::{
-    Brush, Color, CornerRadii, DrawCommand, DrawPrimitive, EdgeInsets, GraphicsLayer,
+    Brush, Color, CornerRadii, DrawCommand, EdgeInsets, GraphicsLayer,
     IntrinsicSize, Modifier, Point, PointerEvent, PointerEventKind, Rect, RoundedCornerShape, Size,
 };
 pub use modifier_nodes::{
@@ -34,10 +34,10 @@ pub use primitives::{
     BoxWithConstraintsScopeImpl, Button, ButtonNode, Column, ColumnSpec, ForEach, Layout,
     LayoutNode, Row, RowSpec, Spacer, SpacerNode, SubcomposeLayout, Text, TextNode,
 };
-pub use renderer::{HeadlessRenderer, PaintLayer, RenderOp, RenderScene};
+pub use renderer::{HeadlessRenderer, PaintLayer, RecordedRenderScene, RenderOp};
 pub use subcompose_layout::{
-    Constraints, MeasureResult, Placement, SubcomposeLayoutNode, SubcomposeMeasureScope,
-    SubcomposeMeasureScopeImpl,
+    Constraints, MeasureResult, Placement, SubcomposeLayoutNode, SubcomposeLayoutScope,
+    SubcomposeMeasureScope, SubcomposeMeasureScopeImpl,
 };
 
 // Debug utilities

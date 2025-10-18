@@ -22,7 +22,7 @@
 //! ```
 
 use crate::layout::{LayoutBox, LayoutTree};
-use crate::renderer::{RenderOp, RenderScene};
+use crate::renderer::{RecordedRenderScene, RenderOp};
 use std::fmt::Write;
 
 /// Logs the current layout tree to stdout with indentation showing hierarchy
@@ -47,7 +47,7 @@ fn log_layout_box(layout_box: &LayoutBox, depth: usize) {
 }
 
 /// Logs the current render scene to stdout showing all draw operations
-pub fn log_render_scene(scene: &RenderScene) {
+pub fn log_render_scene(scene: &RecordedRenderScene) {
     println!("\n=== RENDER SCENE (Current Screen) ===");
     println!("Total operations: {}", scene.operations().len());
 
@@ -104,7 +104,7 @@ fn format_layout_box(output: &mut String, layout_box: &LayoutBox, depth: usize) 
 }
 
 /// Returns a formatted string representation of the render scene
-pub fn format_render_scene(scene: &RenderScene) -> String {
+pub fn format_render_scene(scene: &RecordedRenderScene) -> String {
     let mut output = String::new();
     writeln!(output, "=== RENDER SCENE (Current Screen) ===").ok();
     writeln!(output, "Total operations: {}", scene.operations().len()).ok();
@@ -142,7 +142,7 @@ pub fn format_render_scene(scene: &RenderScene) -> String {
 }
 
 /// Logs a compact summary of what's on screen (counts by type)
-pub fn log_screen_summary(layout: &LayoutTree, scene: &RenderScene) {
+pub fn log_screen_summary(layout: &LayoutTree, scene: &RecordedRenderScene) {
     println!("\n=== SCREEN SUMMARY ===");
     println!("Total nodes in layout: {}", count_nodes(&layout.root()));
 

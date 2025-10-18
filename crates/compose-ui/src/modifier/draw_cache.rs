@@ -1,19 +1,20 @@
-use super::{DrawCacheBuilder, DrawCommand, DrawScope, ModOp, Modifier, Size};
+use super::{DrawCacheBuilder, DrawCommand, ModOp, Modifier, Size};
 use std::rc::Rc;
+use compose_ui_graphics::{DrawScope, DrawScopeDefault};
 
 impl Modifier {
-    pub fn draw_with_content(f: impl Fn(&mut DrawScope) + 'static) -> Self {
+    pub fn draw_with_content(f: impl Fn(&mut dyn DrawScope) + 'static) -> Self {
         let func = Rc::new(move |size: Size| {
-            let mut scope = DrawScope::new(size);
+            let mut scope = DrawScopeDefault::new(size);
             f(&mut scope);
             scope.into_primitives()
         });
         Self::with_op(ModOp::Draw(DrawCommand::Overlay(func)))
     }
 
-    pub fn draw_behind(f: impl Fn(&mut DrawScope) + 'static) -> Self {
+    pub fn draw_behind(f: impl Fn(&mut dyn DrawScope) + 'static) -> Self {
         let func = Rc::new(move |size: Size| {
-            let mut scope = DrawScope::new(size);
+            let mut scope = DrawScopeDefault::new(size);
             f(&mut scope);
             scope.into_primitives()
         });

@@ -748,9 +748,9 @@ mod tests {
     use std::rc::Rc;
 
     use crate::modifier::{Modifier, Size};
-    use compose_ui_layout::{MeasureResult, Placement};
+    use compose_ui_layout::{MeasurePolicy, MeasureResult, Placement};
 
-    use super::core::{Measurable, MeasurePolicy};
+    use super::core::{Measurable};
 
     #[derive(Clone, Copy)]
     struct VerticalStackPolicy;

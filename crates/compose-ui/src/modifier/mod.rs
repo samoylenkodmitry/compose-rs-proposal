@@ -16,21 +16,13 @@ mod padding;
 mod pointer_input;
 
 pub use compose_foundation::{PointerEvent, PointerEventKind};
-pub use compose_render_common::{Brush, DrawCacheBuilder, DrawCommand, DrawPrimitive, DrawScope};
+pub use compose_render_common::{Brush, DrawCacheBuilder, DrawCommand};
 pub use compose_ui_graphics::{
     Color, CornerRadii, EdgeInsets, GraphicsLayer, Point, Rect, RoundedCornerShape, Size,
 };
 use compose_ui_layout::{Alignment, HorizontalAlignment, VerticalAlignment};
 
-/// Specifies how to size a component based on its intrinsic measurements.
-/// Mirrors Jetpack Compose's IntrinsicSize API.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum IntrinsicSize {
-    /// Use the minimum intrinsic size of the content.
-    Min,
-    /// Use the maximum intrinsic size of the content.
-    Max,
-}
+pub use compose_ui_layout::IntrinsicSize;
 
 #[derive(Clone)]
 pub enum ModOp {

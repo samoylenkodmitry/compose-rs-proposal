@@ -23,7 +23,7 @@ impl SubcomposeChild {
 }
 
 /// Base trait for measurement scopes.
-pub trait MeasureScope {
+pub trait SubcomposeLayoutScope {
     fn constraints(&self) -> Constraints;
 
     fn layout<I>(&mut self, width: f32, height: f32, placements: I) -> MeasureResult
@@ -35,7 +35,7 @@ pub trait MeasureScope {
 }
 
 /// Public trait exposed to measure policies for subcomposition.
-pub trait SubcomposeMeasureScope: MeasureScope {
+pub trait SubcomposeMeasureScope: SubcomposeLayoutScope {
     fn subcompose<Content>(&mut self, slot_id: SlotId, content: Content) -> Vec<SubcomposeChild>
     where
         Content: FnOnce();
@@ -62,7 +62,7 @@ impl<'a> SubcomposeMeasureScopeImpl<'a> {
     }
 }
 
-impl<'a> MeasureScope for SubcomposeMeasureScopeImpl<'a> {
+impl<'a> SubcomposeLayoutScope for SubcomposeMeasureScopeImpl<'a> {
     fn constraints(&self) -> Constraints {
         self.constraints
     }

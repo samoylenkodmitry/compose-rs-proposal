@@ -1,11 +1,9 @@
 use std::rc::Rc;
 
 use compose_foundation::PointerEvent;
-use compose_render_common::{Brush, DrawCommand, DrawPrimitive};
+use compose_render_common::{Brush, DrawCommand};
 use compose_ui::Modifier;
-use compose_ui_graphics::{
-    Color, CornerRadii, GraphicsLayer, Point, Rect, RoundedCornerShape, Size,
-};
+use compose_ui_graphics::{Color, CornerRadii, DrawPrimitive, GraphicsLayer, Point, Rect, RoundedCornerShape, Size};
 
 use crate::scene::Scene;
 

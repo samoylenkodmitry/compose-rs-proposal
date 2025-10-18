@@ -10,6 +10,10 @@
 use std::any::{type_name, Any, TypeId};
 use std::fmt;
 
+pub use compose_ui_graphics::Size;
+pub use compose_ui_graphics::DrawScope;
+pub use compose_ui_layout::{Constraints, Measurable};
+
 use crate::nodes::input::types::PointerEvent;
 
 /// Identifies which part of the rendering pipeline should be invalidated
@@ -125,31 +129,35 @@ pub trait LayoutModifierNode: ModifierNode {
     fn measure(
         &mut self,
         _context: &mut dyn ModifierNodeContext,
-        _measurable: &dyn Measurable,
-        _constraints: Constraints,
-    ) -> MeasureResult {
-        // Default: pass through to wrapped content
-        MeasureResult::default()
+        measurable: &dyn Measurable,
+        constraints: Constraints,
+    ) -> Size {
+        // Default: pass through to wrapped content by measuring the child.
+        let placeable = measurable.measure(constraints);
+        Size {
+            width: placeable.width(),
+            height: placeable.height(),
+        }
     }
 
     /// Returns the minimum intrinsic width of this modifier node.
-    fn min_intrinsic_width(&self, _measurable: &dyn Measurable, _height: i32) -> i32 {
-        0
+    fn min_intrinsic_width(&self, _measurable: &dyn Measurable, _height: f32) -> f32 {
+        0.0
     }
 
     /// Returns the maximum intrinsic width of this modifier node.
-    fn max_intrinsic_width(&self, _measurable: &dyn Measurable, _height: i32) -> i32 {
-        0
+    fn max_intrinsic_width(&self, _measurable: &dyn Measurable, _height: f32) -> f32 {
+        0.0
     }
 
     /// Returns the minimum intrinsic height of this modifier node.
-    fn min_intrinsic_height(&self, _measurable: &dyn Measurable, _width: i32) -> i32 {
-        0
+    fn min_intrinsic_height(&self, _measurable: &dyn Measurable, _width: f32) -> f32 {
+        0.0
     }
 
     /// Returns the maximum intrinsic height of this modifier node.
-    fn max_intrinsic_height(&self, _measurable: &dyn Measurable, _width: i32) -> i32 {
-        0
+    fn max_intrinsic_height(&self, _measurable: &dyn Measurable, _width: f32) -> f32 {
+        0.0
     }
 }
 
@@ -160,7 +168,11 @@ pub trait LayoutModifierNode: ModifierNode {
 pub trait DrawModifierNode: ModifierNode {
     /// Draws this modifier node. The node can draw before and/or after
     /// calling `draw_content` to draw the wrapped content.
-    fn draw(&mut self, _context: &mut dyn ModifierNodeContext, _draw_scope: &mut dyn DrawScope) {
+    fn draw(
+        &mut self,
+        _context: &mut dyn ModifierNodeContext,
+        _draw_scope: &mut dyn DrawScope,
+    ) {
         // Default: draw wrapped content without modification
     }
 }
@@ -198,39 +210,6 @@ pub trait SemanticsNode: ModifierNode {
     fn merge_semantics(&self, _config: &mut SemanticsConfiguration) {
         // Default: no semantics added
     }
-}
-
-// Placeholder types for the specialized node traits.
-// These will be properly defined in the UI layer.
-
-/// Constraints passed to measure functions.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Constraints {
-    pub min_width: i32,
-    pub max_width: i32,
-    pub min_height: i32,
-    pub max_height: i32,
-}
-
-/// Result of a measure operation.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct MeasureResult {
-    pub width: i32,
-    pub height: i32,
-}
-
-/// Trait for objects that can be measured.
-pub trait Measurable {
-    fn measure(&self, constraints: Constraints) -> MeasureResult;
-    fn min_intrinsic_width(&self, height: i32) -> i32;
-    fn max_intrinsic_width(&self, height: i32) -> i32;
-    fn min_intrinsic_height(&self, width: i32) -> i32;
-    fn max_intrinsic_height(&self, width: i32) -> i32;
-}
-
-/// Drawing scope for draw operations.
-pub trait DrawScope {
-    fn draw_content(&mut self);
 }
 
 /// Semantics configuration for accessibility.
@@ -833,16 +812,16 @@ mod tests {
             _context: &mut dyn ModifierNodeContext,
             _measurable: &dyn Measurable,
             _constraints: Constraints,
-        ) -> MeasureResult {
+        ) -> Size {
             self.measure_count.set(self.measure_count.get() + 1);
-            MeasureResult {
-                width: 100,
-                height: 100,
+            Size {
+                width: 100.0,
+                height: 100.0,
             }
         }
 
-        fn min_intrinsic_width(&self, _measurable: &dyn Measurable, _height: i32) -> i32 {
-            50
+        fn min_intrinsic_width(&self, _measurable: &dyn Measurable, _height: f32) -> f32 {
+            50.0
         }
     }
 
