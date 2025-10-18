@@ -341,9 +341,8 @@ fn composition_local_example() {
 
 #[composable]
 fn composition_local_content() {
-    let r1 = random();
     Text(
-        format!("Outside provider (NOT reading): rand={}", r1),
+        format!("Outside provider (NOT reading): rand={}", random()),
         Modifier::padding(8.0)
             .then(Modifier::background(Color(0.3, 0.3, 0.3, 0.5)))
             .then(Modifier::rounded_corners(12.0)),
@@ -354,26 +353,29 @@ fn composition_local_content() {
         height: 8.0,
     });
 
-    let local = local_holder();
-    let holder = local.current();
-    let r2 = random();
-    Text(
-        format!("READING local: count={}, rand={}", holder.count, r2),
-        Modifier::padding(8.0)
-            .then(Modifier::background(Color(0.6, 0.9, 0.4, 0.7)))
-            .then(Modifier::rounded_corners(12.0)),
-    );
+    composition_local_content_inner();
 
     Spacer(Size {
         width: 0.0,
         height: 8.0,
     });
 
-    let r3 = random();
     Text(
-        format!("NOT reading local: rand={}", r3),
+        format!("NOT reading local: rand={}", random()),
         Modifier::padding(8.0)
             .then(Modifier::background(Color(0.9, 0.6, 0.4, 0.5)))
+            .then(Modifier::rounded_corners(12.0)),
+    );
+}
+
+#[composable]
+fn composition_local_content_inner() {
+    let local = local_holder();
+    let holder = local.current();
+    Text(
+        format!("READING local: count={}, rand={}", holder.count, random()),
+        Modifier::padding(8.0)
+            .then(Modifier::background(Color(0.6, 0.9, 0.4, 0.7)))
             .then(Modifier::rounded_corners(12.0)),
     );
 }
