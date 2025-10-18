@@ -1887,7 +1887,7 @@ impl<T> MutableStateInner<T> {
             value: RefCell::new(value),
             pending: RefCell::new(None),
             watchers: RefCell::new(Vec::new()),
-            _runtime: runtime,
+            runtime,
             active_borrow: Cell::new(None),
         }
     }
@@ -2019,11 +2019,7 @@ impl<T> Clone for MutableState<T> {
 impl<T> MutableState<T> {
     pub fn with_runtime(value: T, runtime: RuntimeHandle) -> Self {
         Self {
-            inner: Rc::new(MutableStateInner {
-                value: RefCell::new(value),
-                watchers: RefCell::new(Vec::new()),
-                runtime,
-            }),
+            inner: Rc::new(MutableStateInner::new(value, runtime)),
         }
     }
 
