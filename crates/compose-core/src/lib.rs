@@ -329,13 +329,19 @@ pub fn derivedStateOf<T: 'static + Clone>(compute: impl Fn() -> T + 'static) -> 
     with_current_composer(|composer| {
         let key = location_key(file!(), line!(), column!());
         composer.with_group(key, |composer| {
+            let should_recompute = composer
+                .current_recompose_scope()
+                .map(|scope| scope.should_recompose())
+                .unwrap_or(true);
             let runtime = composer.runtime_handle();
             let compute_rc: Rc<dyn Fn() -> T> = Rc::new(compute); // FUTURE(no_std): replace Rc with arena-managed callbacks.
             let derived =
                 composer.remember(|| DerivedState::new(runtime.clone(), compute_rc.clone()));
             derived.update(|derived| {
                 derived.set_compute(compute_rc.clone());
-                derived.recompute();
+                if should_recompute {
+                    derived.recompute();
+                }
             });
             derived.with(|derived| derived.state.as_state())
         })
