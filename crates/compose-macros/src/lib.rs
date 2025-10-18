@@ -252,15 +252,22 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
         let rebinds: Vec<TokenStream2> = param_info
             .iter()
             .zip(param_state_handles.iter())
-            .map(|((ident, pat, ty), handle_ident)| {
+            .enumerate()
+            .map(|(index, ((ident, pat, ty), handle_ident))| {
                 let is_impl_trait = matches!(**ty, Type::ImplTrait(_));
                 if is_impl_trait {
                     // impl Trait: no rebind needed, already has original name
                     quote! {}
                 } else if is_fn_param(ty, &generics) {
-                    // Fn-like param: rebind as &mut from slot
+                    // Fn-like param: rebind via safe RefCell borrowing
+                    let guard_ident =
+                        Ident::new(&format!("__param_slot_guard{}", index), Span::call_site());
                     quote! {
-                        let #pat = unsafe { (&mut *#handle_ident.as_ptr()).as_mut() };
+                        let mut #guard_ident = std::cell::RefMut::map(
+                            #handle_ident.borrow_mut(),
+                            |slot| slot.as_mut(),
+                        );
+                        let #pat = &mut *#guard_ident;
                     }
                 } else {
                     // Regular rebind
@@ -283,16 +290,16 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 } else if is_fn_param(ty, &generics) {
                     // Fn-like params: take from ParamSlot (will be set again by param_setup)
                     Some(quote! {
-                        unsafe { (&mut *#handle_ident.as_ptr()).take() }
+                        #handle_ident.update(|slot| slot.take())
                     })
                 } else {
                     // Regular params: clone from ParamState
                     Some(quote! {
-                        unsafe {
-                            (&*#handle_ident.as_ptr())
+                        #handle_ident.with(|slot| {
+                            slot
                                 .value()
                                 .expect("composable parameter missing for recomposition")
-                        }
+                        })
                     })
                 }
             })
@@ -306,23 +313,19 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
             #(#param_setup)*
             let __result_slot_handle = __composer
                 .remember(|| compose_core::ReturnSlot::<#return_ty>::default());
-            let __result_slot_ptr: *mut compose_core::ReturnSlot<#return_ty> =
-                __result_slot_handle.as_ptr();
-            let __has_previous = unsafe { (&*__result_slot_ptr).get().is_some() };
+            let __has_previous = __result_slot_handle.with(|slot| slot.get().is_some());
             if !__changed && __has_previous {
                 __composer.skip_current_group();
-                let __result = unsafe {
-                    (&*__result_slot_ptr)
+                let __result = __result_slot_handle.with(|slot| {
+                    slot
                         .get()
                         .expect("composable return value missing during skip")
-                };
+                });
                 return __result;
             }
             #(#rebinds)*
             let __value: #return_ty = { #original_block };
-            unsafe {
-                (*__result_slot_ptr).store(__value.clone());
-            }
+            __result_slot_handle.update(|slot| slot.store(__value.clone()));
             {
                 let __impl_fn = #helper_ident;
                 __composer.set_recompose_callback(move |
