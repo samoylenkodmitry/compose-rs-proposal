@@ -7,6 +7,7 @@ pub use compose_macros::composable;
 mod debug;
 mod layout;
 mod modifier;
+mod modifier_bridge;
 mod modifier_nodes;
 mod primitives;
 mod renderer;
@@ -16,14 +17,14 @@ pub mod widgets;
 pub use compose_ui_graphics::Dp;
 pub use layout::{
     core::{
-        Alignment, Arrangement, HorizontalAlignment, LinearArrangement, Measurable,
-        Placeable, VerticalAlignment,
+        Alignment, Arrangement, HorizontalAlignment, LinearArrangement, Measurable, Placeable,
+        VerticalAlignment,
     },
     LayoutBox, LayoutEngine, LayoutTree,
 };
 pub use modifier::{
-    Brush, Color, CornerRadii, DrawCommand, EdgeInsets, GraphicsLayer,
-    IntrinsicSize, Modifier, Point, PointerEvent, PointerEventKind, Rect, RoundedCornerShape, Size,
+    Brush, Color, CornerRadii, DrawCommand, EdgeInsets, GraphicsLayer, IntrinsicSize, Modifier,
+    Point, PointerEvent, PointerEventKind, Rect, RoundedCornerShape, Size,
 };
 pub use modifier_nodes::{
     AlphaElement, AlphaNode, BackgroundElement, BackgroundNode, ClickableElement, ClickableNode,

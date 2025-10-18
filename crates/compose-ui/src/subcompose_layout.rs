@@ -3,7 +3,9 @@ use std::rc::Rc;
 use compose_core::{Composer, NodeId, Phase, SlotId, SubcomposeState};
 use indexmap::IndexSet;
 
-use crate::modifier::Size;
+use crate::modifier::{Modifier, Size};
+use crate::modifier_bridge::build_chain;
+use compose_foundation::ModifierNodeChain;
 
 pub use compose_ui_layout::{Constraints, MeasureResult, Placement};
 
@@ -94,24 +96,33 @@ pub type MeasurePolicy =
 
 /// Node responsible for orchestrating measure-time subcomposition.
 pub struct SubcomposeLayoutNode {
-    pub modifier: crate::modifier::Modifier,
+    pub modifier: Modifier,
+    pub mods: ModifierNodeChain,
     state: SubcomposeState,
     measure_policy: Rc<MeasurePolicy>,
     children: IndexSet<NodeId>,
 }
 
 impl SubcomposeLayoutNode {
-    pub fn new(modifier: crate::modifier::Modifier, measure_policy: Rc<MeasurePolicy>) -> Self {
-        Self {
-            modifier,
+    pub fn new(modifier: Modifier, measure_policy: Rc<MeasurePolicy>) -> Self {
+        let mut node = Self {
+            modifier: Modifier::empty(),
+            mods: ModifierNodeChain::new(),
             state: SubcomposeState::default(),
             measure_policy,
             children: IndexSet::new(),
-        }
+        };
+        node.set_modifier(modifier);
+        node
     }
 
     pub fn set_measure_policy(&mut self, policy: Rc<MeasurePolicy>) {
         self.measure_policy = policy;
+    }
+
+    pub fn set_modifier(&mut self, modifier: Modifier) {
+        self.modifier = modifier;
+        self.mods = build_chain(&self.modifier);
     }
 
     pub fn state(&self) -> &SubcomposeState {

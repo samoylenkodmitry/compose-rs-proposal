@@ -203,6 +203,10 @@ impl Modifier {
         Modifier(Rc::new(ops))
     }
 
+    pub(crate) fn ops(&self) -> &[ModOp] {
+        &self.0
+    }
+
     pub fn total_padding(&self) -> f32 {
         let padding = self.padding_values();
         padding
