@@ -399,27 +399,30 @@ fn async_runtime_example() {
     let progress = compose_core::useState(|| 0.0f32);
     let frame_count = compose_core::useState(|| 0u32);
     let frame_duration_ms = compose_core::useState(|| 0.0f32);
-    let running_key = is_running.get();
+    let progress_direction = compose_core::useState(|| 1.0f32);
+    let reset_signal = compose_core::useState(|| 0u64);
+    let running_key = (is_running.get(), reset_signal.get());
 
     {
         let progress_state = progress.clone();
         let frame_count_state = frame_count.clone();
         let frame_duration_state = frame_duration_ms.clone();
+        let direction_state = progress_direction.clone();
         LaunchedEffectAsync!(running_key, move |scope| {
             let progress = progress_state.clone();
             let frame_count = frame_count_state.clone();
             let frame_duration = frame_duration_state.clone();
+            let direction = direction_state.clone();
+            let (is_animating, _reset_tick) = running_key;
             Box::pin(async move {
-                if !running_key {
-                    progress.set(0.0);
-                    frame_count.set(0);
-                    frame_duration.set(0.0);
+                frame_count.set(0);
+                frame_duration.set(0.0);
+
+                if !is_animating {
                     return;
                 }
 
                 let clock = scope.runtime().frame_clock();
-                let mut direction: f32 = 1.0;
-                let mut value = progress.get();
                 let mut last_time: Option<u64> = None;
 
                 loop {
@@ -431,25 +434,32 @@ fn async_runtime_example() {
                     if let Some(previous) = last_time {
                         let dt = (nanos - previous) as f32 / 1_000_000.0;
                         frame_duration.set(dt);
-                        value += direction * (dt / 600.0);
+                        let mut value = progress.get();
+                        let mut direction_value = direction.get();
+                        let old_direction = direction_value;
+
+                        value += direction_value * (dt / 600.0);
+
+                        if value >= 1.0 {
+                            value = 1.0;
+                            direction_value = -1.0;
+                        } else if value <= 0.0 {
+                            value = 0.0;
+                            direction_value = 1.0;
+                        }
+
+                        if (value - progress.get()).abs() > f32::EPSILON {
+                            progress.set(value);
+                        }
+                        if (direction_value - old_direction).abs() > f32::EPSILON {
+                            direction.set(direction_value);
+                        }
                     }
 
                     last_time = Some(nanos);
 
-                    if value >= 1.0 {
-                        value = 1.0;
-                        direction = -1.0;
-                    } else if value <= 0.0 {
-                        value = 0.0;
-                        direction = 1.0;
-                    }
-
-                    progress.set(value);
                     frame_count.update(|count| *count += 1);
                 }
-
-                progress.set(0.0);
-                frame_duration.set(0.0);
             })
         });
     }
@@ -570,6 +580,8 @@ fn async_runtime_example() {
                         let progress_state = progress.clone();
                         let frame_count_state = frame_count.clone();
                         let frame_duration_state = frame_duration_ms.clone();
+                        let direction_state = progress_direction.clone();
+                        let reset_state = reset_signal.clone();
                         move || {
                             let running = toggle_state.get();
                             let toggle_color = if running {
@@ -608,6 +620,8 @@ fn async_runtime_example() {
                             let reset_progress = progress_state.clone();
                             let reset_frames = frame_count_state.clone();
                             let reset_duration = frame_duration_state.clone();
+                            let reset_direction = direction_state.clone();
+                            let reset_tick_state = reset_state.clone();
                             Button(
                                 Modifier::rounded_corners(16.0)
                                     .then(Modifier::draw_behind(|scope| {
@@ -621,6 +635,8 @@ fn async_runtime_example() {
                                     reset_progress.set(0.0);
                                     reset_frames.set(0);
                                     reset_duration.set(0.0);
+                                    reset_direction.set(1.0);
+                                    reset_tick_state.update(|tick| *tick = tick.wrapping_add(1));
                                 },
                                 || {
                                     Text("Reset", Modifier::padding(6.0));
