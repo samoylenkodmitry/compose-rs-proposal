@@ -6,7 +6,7 @@ Goal: **1:1 Jetpack Compose user‑facing API parity** (names, semantics, behavi
 
 ## Milestones
 
-1. Finish **Modifier.Node** integration end‑to‑end
+1. Simplify **modifier architecture**
 2. Implement practical **intrinsics**
 3. Ship **LazyColumn/LazyRow** MVP via `SubcomposeLayout`
 4. Unify **animation model** (springs, transitions, virtual time)
@@ -21,40 +21,18 @@ Goal: **1:1 Jetpack Compose user‑facing API parity** (names, semantics, behavi
 
 ---
 
-## 1) Finish `Modifier.Node` Integration
+## 1) Simplify `Modifier` Architecture ✅
 
-### Tasks
+**Status: COMPLETED**
 
-* Layout engine delegates measurement via `ModifierNodeChain` in order of the chain.
-* Primitives (`Column/Row/Box/Text/Button`) build and reuse a `ModifierNodeChain`.
-* `Modifier::to_elements() -> Vec<DynModifierElement>` and `update_modifier_chain(id, elements)`.
-* Wire `DrawModifierNode` into the renderer; wire `PointerInputModifierNode` into dispatcher with coordinate transforms & consumption.
-* Deprecate value‑based internals; document migration; keep Kotlin‑parity names.
+### Summary
 
-### Implementation Notes
+* ✅ Removed dormant `ModifierNodeChain` scaffolding from `compose-foundation`.
+* ✅ Deleted unused `modifier_nodes` module in `compose-ui`.
 
-```rust
-// Measurement delegate in layout
-for node in modifier_chain.layout_nodes() {
-    measurable = node.measure(measurable, constraints);
-}
-```
+### Follow-ups
 
-```rust
-// Primitive migration pattern
-pub fn Column(modifier: Modifier, content: impl FnOnce()) -> NodeId {
-    let elements = modifier.to_elements();
-    let id = compose_node(|| ColumnNode { modifier_chain: ModifierNodeChain::new() });
-    update_modifier_chain(id, elements);
-    compose(content);
-    id
-}
-```
-
-### Verification
-
-* Unit tests for chain reuse and phase‑targeted invalidation.
-* Demo: `padding().background().clickable().drawBehind()` works; input dispatched once.
+* Reintroduce node-based modifiers once there's a concrete execution plan and runtime support.
 
 ---
 
@@ -315,13 +293,10 @@ Budgets enforced via CI benchmarks.
 
 ## 13) Checkbox Backlog (Issue Seeds)
 
-### Phase 2 – Modifier.Node
+### Phase 2 – Modifier Architecture (Deferred)
 
-* [ ] Migrate layout to `ModifierNodeChain`
-* [ ] Primitive migration (Column/Row/Box/Text/Button)
-* [ ] DrawModifierNode → renderer
-* [ ] PointerInputModifierNode → dispatcher
-* [ ] Value‑based internals deprecated
+* [ ] Design successor to the removed `ModifierNodeChain` system
+* [ ] Prototype integration plan before reintroducing node-based modifiers
 
 ### Phase 3 – Intrinsics & Lazy
 

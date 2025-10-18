@@ -750,7 +750,7 @@ mod tests {
     use crate::modifier::{Modifier, Size};
     use compose_ui_layout::{MeasurePolicy, MeasureResult, Placement};
 
-    use super::core::{Measurable};
+    use super::core::Measurable;
 
     #[derive(Clone, Copy)]
     struct VerticalStackPolicy;

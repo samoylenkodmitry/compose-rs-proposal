@@ -1,6 +1,5 @@
 use crate::layout::core::{
-    Alignment, Arrangement, HorizontalAlignment, LinearArrangement, Measurable,
-    VerticalAlignment,
+    Alignment, Arrangement, HorizontalAlignment, LinearArrangement, Measurable, VerticalAlignment,
 };
 use compose_ui_layout::{Constraints, MeasurePolicy, MeasureResult, Placement};
 

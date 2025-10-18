@@ -1,11 +1,10 @@
-use compose_core::{MemoryApplier, Node, NodeError, NodeId};
-use compose_ui_graphics::DrawPrimitive;
 use crate::layout::{LayoutBox, LayoutTree};
 use crate::modifier::{
-    Brush, DrawCommand as ModifierDrawCommand, Modifier, Rect, RoundedCornerShape,
-    Size,
+    Brush, DrawCommand as ModifierDrawCommand, Modifier, Rect, RoundedCornerShape, Size,
 };
 use crate::primitives::{ButtonNode, LayoutNode, TextNode};
+use compose_core::{MemoryApplier, Node, NodeError, NodeId};
+use compose_ui_graphics::DrawPrimitive;
 
 /// Layer that a paint operation targets within the rendering pipeline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
