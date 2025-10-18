@@ -740,11 +740,6 @@ pub fn pop_parent() {
     with_current_composer(|composer| composer.pop_parent());
 }
 
-#[allow(non_snake_case)]
-pub fn animateFloatAsState(target: f32, label: &str) -> State<f32> {
-    with_current_composer(|composer| composer.animateFloatAsState(target, label))
-}
-
 #[derive(Default)]
 struct GroupEntry {
     key: Key,
@@ -1390,16 +1385,6 @@ impl<'a> Composer<'a> {
         state.with(|state| state.clone())
     }
 
-    #[allow(non_snake_case)]
-    pub fn animateFloatAsState(&mut self, target: f32, label: &str) -> State<f32> {
-        let runtime = self.runtime.clone();
-        let animated = self
-            .slots
-            .remember(|| AnimatedFloatState::new(target, runtime));
-        animated.update(|animated| animated.update(target, label));
-        animated.with(|animated| animated.state())
-    }
-
     pub fn emit_node<N: Node + 'static>(&mut self, init: impl FnOnce() -> N) -> NodeId {
         if let Some(id) = self.slots.read_node() {
             self.commands
@@ -1832,124 +1817,6 @@ impl<T> Default for ParamState<T> {
 impl<T> Default for ReturnSlot<T> {
     fn default() -> Self {
         Self { value: None }
-    }
-}
-
-struct AnimatedFloatState {
-    inner: Rc<RefCell<AnimatedFloatStateInner>>,
-}
-
-struct AnimatedFloatStateInner {
-    state: MutableState<f32>,
-    runtime: RuntimeHandle,
-    current: f32,
-    start: f32,
-    target: f32,
-    start_time_nanos: Option<u64>,
-    duration_nanos: u64,
-    registration: Option<FrameCallbackRegistration>,
-}
-
-impl AnimatedFloatState {
-    fn new(initial: f32, runtime: RuntimeHandle) -> Self {
-        let inner = AnimatedFloatStateInner {
-            state: MutableState::with_runtime(initial, runtime.clone()),
-            runtime,
-            current: initial,
-            start: initial,
-            target: initial,
-            start_time_nanos: None,
-            duration_nanos: 300_000_000,
-            registration: None,
-        };
-        Self {
-            inner: Rc::new(RefCell::new(inner)),
-        }
-    }
-
-    fn update(&mut self, target: f32, _label: &str) {
-        let should_schedule = {
-            let mut inner = self.inner.borrow_mut();
-            if target == inner.target {
-                return;
-            }
-            if let Some(registration) = inner.registration.take() {
-                registration.cancel();
-            }
-            inner.start = inner.current;
-            inner.target = target;
-            inner.start_time_nanos = None;
-            if inner.start == inner.target {
-                inner.current = inner.target;
-                inner.state.set_value(inner.target);
-                false
-            } else {
-                true
-            }
-        };
-
-        if should_schedule {
-            AnimatedFloatStateInner::schedule_frame(&self.inner);
-        }
-    }
-
-    fn state(&self) -> State<f32> {
-        self.inner.borrow().state.as_state()
-    }
-}
-
-impl AnimatedFloatStateInner {
-    fn schedule_frame(this: &Rc<RefCell<Self>>) {
-        let runtime = {
-            let inner = this.borrow();
-            if inner.registration.is_some() {
-                return;
-            }
-            inner.runtime.clone()
-        };
-        let weak = Rc::downgrade(this);
-        let registration = runtime.frame_clock().with_frame_nanos(move |time| {
-            if let Some(strong) = weak.upgrade() {
-                AnimatedFloatStateInner::on_frame(&strong, time);
-            }
-        });
-        this.borrow_mut().registration = Some(registration);
-    }
-
-    fn on_frame(this: &Rc<RefCell<Self>>, frame_time_nanos: u64) {
-        let mut schedule_next = false;
-        {
-            let mut inner = this.borrow_mut();
-            inner.registration = None;
-
-            if inner.current == inner.target {
-                inner.start = inner.target;
-                inner.start_time_nanos = None;
-                return;
-            }
-
-            let start_time = inner.start_time_nanos.get_or_insert(frame_time_nanos);
-            let elapsed = frame_time_nanos.saturating_sub(*start_time);
-            let duration = inner.duration_nanos.max(1);
-            let progress = (elapsed as f32 / duration as f32).clamp(0.0, 1.0);
-            let delta = inner.target - inner.start;
-            let new_value = inner.start + delta * progress;
-            inner.current = new_value;
-            inner.state.set_value(new_value);
-
-            if progress >= 1.0 {
-                inner.current = inner.target;
-                inner.start = inner.target;
-                inner.start_time_nanos = None;
-                inner.state.set_value(inner.target);
-            } else {
-                schedule_next = true;
-            }
-        }
-
-        if schedule_next {
-            AnimatedFloatStateInner::schedule_frame(this);
-        }
     }
 }
 

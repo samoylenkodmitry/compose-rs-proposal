@@ -595,6 +595,7 @@ dependencies = [
 name = "desktop-app"
 version = "0.1.0"
 dependencies = [
+ "compose-animation",
  "compose-app-shell",
  "compose-core",
  "compose-foundation",

@@ -1,3 +1,4 @@
+use compose_animation::animateFloatAsState;
 use compose_app_shell::{default_root_key, AppShell};
 use compose_core::{
     self, compositionLocalOf, CompositionLocal, CompositionLocalProvider, DisposableEffect,
@@ -389,7 +390,7 @@ fn counter_app() {
     } else {
         pointer_wave * 0.6
     };
-    let wave = compose_core::animateFloatAsState(target_wave, "wave").value();
+    let wave = animateFloatAsState(target_wave, "wave").value();
     LaunchedEffect!(counter.get(), |_| println!("effect call"));
 
     Column(

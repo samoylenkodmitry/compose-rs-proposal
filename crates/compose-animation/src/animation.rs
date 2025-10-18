@@ -10,7 +10,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use compose_core::{FrameCallbackRegistration, MutableState, RuntimeHandle, State};
+use compose_core::{
+    with_current_composer, FrameCallbackRegistration, MutableState, Owned, RuntimeHandle, State,
+};
 
 /// Trait for types that can be linearly interpolated.
 pub trait Lerp {
@@ -339,6 +341,16 @@ impl<T: SpringScalar + 'static> Animatable<T> {
         }
     }
 
+    /// Return the current animation target.
+    pub fn target(&self) -> T {
+        self.inner.borrow().target.clone()
+    }
+
+    /// Return the animation spec currently driving this animatable.
+    pub fn animation_type(&self) -> AnimationType {
+        self.inner.borrow().animation_type
+    }
+
     /// Get the current state.
     pub fn state(&self) -> State<T> {
         self.inner.borrow().state.as_state()
@@ -485,6 +497,32 @@ impl<T: SpringScalar + 'static> Animatable<T> {
             Self::schedule_frame(this);
         }
     }
+}
+
+#[allow(non_snake_case)]
+pub fn animateFloatAsState(target: f32, label: &str) -> State<f32> {
+    animateFloatAsStateWithSpec(target, AnimationType::default(), label)
+}
+
+#[allow(non_snake_case)]
+pub fn animateFloatAsStateWithSpec(
+    target: f32,
+    animation: AnimationType,
+    label: &str,
+) -> State<f32> {
+    let _ = label;
+    with_current_composer(|composer| {
+        let runtime = composer.runtime_handle();
+        let anim: Owned<Animatable<f32>> = composer.remember(|| Animatable::new(target, runtime));
+        anim.update(|animatable| {
+            let is_new_target = (animatable.target() - target).abs() > f32::EPSILON;
+            let is_new_animation = animatable.animation_type() != animation;
+            if is_new_target || is_new_animation {
+                animatable.animateTo(target, animation);
+            }
+        });
+        anim.with(|animatable| animatable.state())
+    })
 }
 
 impl<T: SpringScalar + 'static> Clone for Animatable<T> {
