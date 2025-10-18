@@ -1712,8 +1712,46 @@ impl<'a> Composer<'a> {
 
 struct MutableStateInner<T> {
     value: RefCell<T>,
+    pending: RefCell<Option<T>>,
     watchers: RefCell<Vec<Weak<RecomposeScopeInner>>>, // FUTURE(no_std): move to stack-allocated subscription list.
     _runtime: RuntimeHandle,
+}
+
+impl<T> MutableStateInner<T> {
+    fn new(value: T, runtime: RuntimeHandle) -> Self {
+        Self {
+            value: RefCell::new(value),
+            pending: RefCell::new(None),
+            watchers: RefCell::new(Vec::new()),
+            _runtime: runtime,
+        }
+    }
+
+    fn flush_pending(&self) -> bool {
+        let pending = {
+            let mut slot = self.pending.borrow_mut();
+            slot.take()
+        };
+        if let Some(value) = pending {
+            match self.value.try_borrow_mut() {
+                Ok(mut current) => {
+                    *current = value;
+                    true
+                }
+                Err(_) => {
+                    let mut slot = self.pending.borrow_mut();
+                    *slot = Some(value);
+                    false
+                }
+            }
+        } else {
+            false
+        }
+    }
+
+    fn store_pending(&self, value: T) {
+        *self.pending.borrow_mut() = Some(value);
+    }
 }
 
 pub struct State<T> {
@@ -1759,11 +1797,7 @@ impl<T> Clone for MutableState<T> {
 impl<T> MutableState<T> {
     pub fn with_runtime(value: T, runtime: RuntimeHandle) -> Self {
         Self {
-            inner: Rc::new(MutableStateInner {
-                value: RefCell::new(value),
-                watchers: RefCell::new(Vec::new()),
-                _runtime: runtime,
-            }),
+            inner: Rc::new(MutableStateInner::new(value, runtime)),
         }
     }
 
@@ -1774,10 +1808,12 @@ impl<T> MutableState<T> {
     }
 
     pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
+        self.inner.flush_pending();
         self.as_state().with(f)
     }
 
     pub fn update<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        self.inner.flush_pending();
         let result = {
             let mut value = self.inner.value.borrow_mut();
             f(&mut *value)
@@ -1787,8 +1823,21 @@ impl<T> MutableState<T> {
     }
 
     pub fn replace(&self, value: T) {
-        *self.inner.value.borrow_mut() = value;
+        let applied_now = if let Ok(mut current) = self.inner.value.try_borrow_mut() {
+            *current = value;
+            // Clear any stale pending value now that we've applied the latest update.
+            self.inner.pending.borrow_mut().take();
+            true
+        } else {
+            self.inner.store_pending(value);
+            false
+        };
         self.notify_watchers();
+        if !applied_now {
+            // If we couldn't apply immediately, try to flush any pending value eagerly so
+            // the next read observes the latest state.
+            self.inner.flush_pending();
+        }
     }
 
     pub fn set_value(&self, value: T) {
@@ -1879,6 +1928,7 @@ impl<T> State<T> {
 
     pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
         self.subscribe_current_scope();
+        self.inner.flush_pending();
         let value = self.inner.value.borrow();
         f(&value)
     }
