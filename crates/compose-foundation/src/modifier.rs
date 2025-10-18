@@ -10,8 +10,8 @@
 use std::any::{type_name, Any, TypeId};
 use std::fmt;
 
-use compose_ui_graphics::Size;
-use compose_ui_layout::Constraints;
+pub use compose_ui_graphics::Size;
+pub use compose_ui_layout::Constraints;
 
 use crate::nodes::input::types::PointerEvent;
 
@@ -129,10 +129,10 @@ pub trait LayoutModifierNode: ModifierNode {
         &mut self,
         _context: &mut dyn ModifierNodeContext,
         _measurable: &dyn ModifierMeasurable,
-        _constraints: ModifierConstraints,
-    ) -> ModifierMeasure {
+        _constraints: Constraints,
+    ) -> Size {
         // Default: pass through to wrapped content
-        ModifierMeasure::default()
+        Size::default()
     }
 
     /// Returns the minimum intrinsic width of this modifier node.
@@ -207,18 +207,11 @@ pub trait SemanticsNode: ModifierNode {
     }
 }
 
-// Bridge types for the specialized node traits.
-// These reuse the layout and geometry contracts instead of defining duplicates.
-
-/// Constraints passed to measure functions within modifier nodes.
-pub type ModifierConstraints = Constraints;
-
-/// Result of a measure operation performed by modifier nodes.
-pub type ModifierMeasure = Size;
+// Specialized node traits reuse the layout and geometry contracts directly.
 
 /// Trait for objects that can be measured by modifier nodes.
 pub trait ModifierMeasurable {
-    fn measure(&self, constraints: ModifierConstraints) -> ModifierMeasure;
+    fn measure(&self, constraints: Constraints) -> Size;
     fn min_intrinsic_width(&self, height: f32) -> f32;
     fn max_intrinsic_width(&self, height: f32) -> f32;
     fn min_intrinsic_height(&self, width: f32) -> f32;
@@ -829,10 +822,10 @@ mod tests {
             &mut self,
             _context: &mut dyn ModifierNodeContext,
             _measurable: &dyn ModifierMeasurable,
-            _constraints: ModifierConstraints,
-        ) -> ModifierMeasure {
+            _constraints: Constraints,
+        ) -> Size {
             self.measure_count.set(self.measure_count.get() + 1);
-            ModifierMeasure {
+            Size {
                 width: 100.0,
                 height: 100.0,
             }

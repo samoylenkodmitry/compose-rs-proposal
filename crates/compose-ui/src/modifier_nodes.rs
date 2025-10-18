@@ -48,9 +48,9 @@
 //! the migration is complete.
 
 use compose_foundation::{
-    DrawModifierNode, LayoutModifierNode, ModifierConstraints, ModifierDrawScope, ModifierElement,
-    ModifierMeasurable, ModifierMeasure, ModifierNode, ModifierNodeContext, NodeCapabilities,
-    PointerEvent, PointerEventKind, PointerInputNode,
+    Constraints, DrawModifierNode, LayoutModifierNode, ModifierDrawScope, ModifierElement,
+    ModifierMeasurable, ModifierNode, ModifierNodeContext, NodeCapabilities, PointerEvent,
+    PointerEventKind, PointerInputNode, Size,
 };
 use std::rc::Rc;
 
@@ -83,14 +83,14 @@ impl LayoutModifierNode for PaddingNode {
         &mut self,
         _context: &mut dyn ModifierNodeContext,
         measurable: &dyn ModifierMeasurable,
-        constraints: ModifierConstraints,
-    ) -> ModifierMeasure {
+        constraints: Constraints,
+    ) -> Size {
         // Convert padding to floating point values
         let horizontal_padding = self.padding.horizontal_sum();
         let vertical_padding = self.padding.vertical_sum();
 
         // Subtract padding from available space
-        let inner_constraints = ModifierConstraints {
+        let inner_constraints = Constraints {
             min_width: (constraints.min_width - horizontal_padding).max(0.0),
             max_width: (constraints.max_width - horizontal_padding).max(0.0),
             min_height: (constraints.min_height - vertical_padding).max(0.0),
@@ -101,7 +101,7 @@ impl LayoutModifierNode for PaddingNode {
         let inner_result = measurable.measure(inner_constraints);
 
         // Add padding back to the result
-        ModifierMeasure {
+        Size {
             width: inner_result.width + horizontal_padding,
             height: inner_result.height + vertical_padding,
         }
@@ -270,8 +270,8 @@ impl LayoutModifierNode for SizeNode {
         &mut self,
         _context: &mut dyn ModifierNodeContext,
         measurable: &dyn ModifierMeasurable,
-        constraints: ModifierConstraints,
-    ) -> ModifierMeasure {
+        constraints: Constraints,
+    ) -> Size {
         // Override constraints with explicit sizes if specified
         let width = self
             .width
@@ -280,7 +280,7 @@ impl LayoutModifierNode for SizeNode {
             .height
             .map(|value| value.clamp(constraints.min_height, constraints.max_height));
 
-        let inner_constraints = ModifierConstraints {
+        let inner_constraints = Constraints {
             min_width: width.unwrap_or(constraints.min_width),
             max_width: width.unwrap_or(constraints.max_width),
             min_height: height.unwrap_or(constraints.min_height),
@@ -291,7 +291,7 @@ impl LayoutModifierNode for SizeNode {
         let result = measurable.measure(inner_constraints);
 
         // Return the specified size or the measured size when not overridden
-        ModifierMeasure {
+        Size {
             width: width.unwrap_or(result.width),
             height: height.unwrap_or(result.height),
         }
@@ -548,8 +548,8 @@ mod tests {
     }
 
     impl ModifierMeasurable for TestMeasurable {
-        fn measure(&self, constraints: ModifierConstraints) -> ModifierMeasure {
-            ModifierMeasure {
+        fn measure(&self, constraints: Constraints) -> Size {
+            Size {
                 width: constraints.max_width.min(self.intrinsic_width),
                 height: constraints.max_height.min(self.intrinsic_height),
             }
@@ -590,7 +590,7 @@ mod tests {
             intrinsic_width: 50.0,
             intrinsic_height: 50.0,
         };
-        let constraints = ModifierConstraints {
+        let constraints = Constraints {
             min_width: 0.0,
             max_width: 200.0,
             min_height: 0.0,
@@ -674,7 +674,7 @@ mod tests {
             intrinsic_width: 50.0,
             intrinsic_height: 50.0,
         };
-        let constraints = ModifierConstraints {
+        let constraints = Constraints {
             min_width: 0.0,
             max_width: 500.0,
             min_height: 0.0,
