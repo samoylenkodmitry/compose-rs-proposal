@@ -48,8 +48,8 @@
 //! the migration is complete.
 
 use compose_foundation::{
-    Constraints, DrawModifierNode, LayoutModifierNode, ModifierDrawScope, ModifierElement,
-    ModifierMeasurable, ModifierNode, ModifierNodeContext, NodeCapabilities, PointerEvent,
+    Constraints, DrawModifierNode, LayoutModifierNode, DrawScope, ModifierElement,
+    Measurable, ModifierNode, ModifierNodeContext, NodeCapabilities, PointerEvent,
     PointerEventKind, PointerInputNode, Size,
 };
 use std::rc::Rc;
@@ -82,7 +82,7 @@ impl LayoutModifierNode for PaddingNode {
     fn measure(
         &mut self,
         _context: &mut dyn ModifierNodeContext,
-        measurable: &dyn ModifierMeasurable,
+        measurable: &dyn Measurable,
         constraints: Constraints,
     ) -> Size {
         // Convert padding to floating point values
@@ -109,28 +109,28 @@ impl LayoutModifierNode for PaddingNode {
         }
     }
 
-    fn min_intrinsic_width(&self, measurable: &dyn ModifierMeasurable, height: f32) -> f32 {
+    fn min_intrinsic_width(&self, measurable: &dyn Measurable, height: f32) -> f32 {
         let vertical_padding = self.padding.vertical_sum();
         let inner_height = (height - vertical_padding).max(0.0);
         let inner_width = measurable.min_intrinsic_width(inner_height);
         inner_width + self.padding.horizontal_sum()
     }
 
-    fn max_intrinsic_width(&self, measurable: &dyn ModifierMeasurable, height: f32) -> f32 {
+    fn max_intrinsic_width(&self, measurable: &dyn Measurable, height: f32) -> f32 {
         let vertical_padding = self.padding.vertical_sum();
         let inner_height = (height - vertical_padding).max(0.0);
         let inner_width = measurable.max_intrinsic_width(inner_height);
         inner_width + self.padding.horizontal_sum()
     }
 
-    fn min_intrinsic_height(&self, measurable: &dyn ModifierMeasurable, width: f32) -> f32 {
+    fn min_intrinsic_height(&self, measurable: &dyn Measurable, width: f32) -> f32 {
         let horizontal_padding = self.padding.horizontal_sum();
         let inner_width = (width - horizontal_padding).max(0.0);
         let inner_height = measurable.min_intrinsic_height(inner_width);
         inner_height + self.padding.vertical_sum()
     }
 
-    fn max_intrinsic_height(&self, measurable: &dyn ModifierMeasurable, width: f32) -> f32 {
+    fn max_intrinsic_height(&self, measurable: &dyn Measurable, width: f32) -> f32 {
         let horizontal_padding = self.padding.horizontal_sum();
         let inner_width = (width - horizontal_padding).max(0.0);
         let inner_height = measurable.max_intrinsic_height(inner_width);
@@ -200,7 +200,7 @@ impl DrawModifierNode for BackgroundNode {
     fn draw(
         &mut self,
         _context: &mut dyn ModifierNodeContext,
-        _draw_scope: &mut dyn ModifierDrawScope,
+        _draw_scope: &mut dyn DrawScope,
     ) {
         // In a full implementation, this would draw the background color
         // using the draw scope. For now, this is a placeholder.
@@ -271,7 +271,7 @@ impl LayoutModifierNode for SizeNode {
     fn measure(
         &mut self,
         _context: &mut dyn ModifierNodeContext,
-        measurable: &dyn ModifierMeasurable,
+        measurable: &dyn Measurable,
         constraints: Constraints,
     ) -> Size {
         // Override constraints with explicit sizes if specified
@@ -301,19 +301,19 @@ impl LayoutModifierNode for SizeNode {
         }
     }
 
-    fn min_intrinsic_width(&self, _measurable: &dyn ModifierMeasurable, _height: f32) -> f32 {
+    fn min_intrinsic_width(&self, _measurable: &dyn Measurable, _height: f32) -> f32 {
         self.width.unwrap_or(0.0)
     }
 
-    fn max_intrinsic_width(&self, _measurable: &dyn ModifierMeasurable, _height: f32) -> f32 {
+    fn max_intrinsic_width(&self, _measurable: &dyn Measurable, _height: f32) -> f32 {
         self.width.unwrap_or(f32::INFINITY)
     }
 
-    fn min_intrinsic_height(&self, _measurable: &dyn ModifierMeasurable, _width: f32) -> f32 {
+    fn min_intrinsic_height(&self, _measurable: &dyn Measurable, _width: f32) -> f32 {
         self.height.unwrap_or(0.0)
     }
 
-    fn max_intrinsic_height(&self, _measurable: &dyn ModifierMeasurable, _width: f32) -> f32 {
+    fn max_intrinsic_height(&self, _measurable: &dyn Measurable, _width: f32) -> f32 {
         self.height.unwrap_or(f32::INFINITY)
     }
 }
@@ -486,7 +486,7 @@ impl DrawModifierNode for AlphaNode {
     fn draw(
         &mut self,
         _context: &mut dyn ModifierNodeContext,
-        _draw_scope: &mut dyn ModifierDrawScope,
+        _draw_scope: &mut dyn DrawScope,
     ) {
         // In a full implementation, this would:
         // 1. Save the current alpha/layer state
@@ -575,7 +575,7 @@ mod tests {
         intrinsic_height: f32,
     }
 
-    impl ModifierMeasurable for TestMeasurable {
+    impl Measurable for TestMeasurable {
         fn measure(&self, constraints: Constraints) -> Box<dyn Placeable> {
             Box::new(TestPlaceable {
                 width: constraints.max_width.min(self.intrinsic_width),

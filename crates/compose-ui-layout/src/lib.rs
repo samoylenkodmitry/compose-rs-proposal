@@ -18,5 +18,5 @@ pub mod prelude {
     pub use crate::alignment::{Alignment, HorizontalAlignment, VerticalAlignment};
     pub use crate::arrangement::LinearArrangement;
     pub use crate::constraints::Constraints;
-    pub use crate::core::{Measurable, MeasurePolicy, MeasureScope, Placeable};
+    pub use crate::core::{Measurable, MeasureScope, Placeable};
 }

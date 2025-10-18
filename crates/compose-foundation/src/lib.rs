@@ -14,7 +14,7 @@ pub use nodes::input::{
 pub mod prelude {
     pub use crate::modifier::{
         BasicModifierNodeContext, Constraints, DrawModifierNode, InvalidationKind,
-        LayoutModifierNode, ModifierDrawScope, ModifierElement, ModifierMeasurable, ModifierNode,
+        LayoutModifierNode, ModifierElement, Measurable, ModifierNode,
         ModifierNodeChain, ModifierNodeContext, PointerInputNode, SemanticsNode, Size,
     };
     pub use crate::nodes::input::prelude::*;

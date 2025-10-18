@@ -11,7 +11,8 @@ use std::any::{type_name, Any, TypeId};
 use std::fmt;
 
 pub use compose_ui_graphics::Size;
-pub use compose_ui_layout::{Constraints, Measurable as ModifierMeasurable};
+pub use compose_ui_graphics::DrawScope;
+pub use compose_ui_layout::{Constraints, Measurable};
 
 use crate::nodes::input::types::PointerEvent;
 
@@ -128,7 +129,7 @@ pub trait LayoutModifierNode: ModifierNode {
     fn measure(
         &mut self,
         _context: &mut dyn ModifierNodeContext,
-        measurable: &dyn ModifierMeasurable,
+        measurable: &dyn Measurable,
         constraints: Constraints,
     ) -> Size {
         // Default: pass through to wrapped content by measuring the child.
@@ -140,22 +141,22 @@ pub trait LayoutModifierNode: ModifierNode {
     }
 
     /// Returns the minimum intrinsic width of this modifier node.
-    fn min_intrinsic_width(&self, _measurable: &dyn ModifierMeasurable, _height: f32) -> f32 {
+    fn min_intrinsic_width(&self, _measurable: &dyn Measurable, _height: f32) -> f32 {
         0.0
     }
 
     /// Returns the maximum intrinsic width of this modifier node.
-    fn max_intrinsic_width(&self, _measurable: &dyn ModifierMeasurable, _height: f32) -> f32 {
+    fn max_intrinsic_width(&self, _measurable: &dyn Measurable, _height: f32) -> f32 {
         0.0
     }
 
     /// Returns the minimum intrinsic height of this modifier node.
-    fn min_intrinsic_height(&self, _measurable: &dyn ModifierMeasurable, _width: f32) -> f32 {
+    fn min_intrinsic_height(&self, _measurable: &dyn Measurable, _width: f32) -> f32 {
         0.0
     }
 
     /// Returns the maximum intrinsic height of this modifier node.
-    fn max_intrinsic_height(&self, _measurable: &dyn ModifierMeasurable, _width: f32) -> f32 {
+    fn max_intrinsic_height(&self, _measurable: &dyn Measurable, _width: f32) -> f32 {
         0.0
     }
 }
@@ -170,7 +171,7 @@ pub trait DrawModifierNode: ModifierNode {
     fn draw(
         &mut self,
         _context: &mut dyn ModifierNodeContext,
-        _draw_scope: &mut dyn ModifierDrawScope,
+        _draw_scope: &mut dyn DrawScope,
     ) {
         // Default: draw wrapped content without modification
     }
@@ -209,14 +210,6 @@ pub trait SemanticsNode: ModifierNode {
     fn merge_semantics(&self, _config: &mut SemanticsConfiguration) {
         // Default: no semantics added
     }
-}
-
-// Specialized node traits reuse the layout and geometry contracts directly via
-// the compose-ui-layout Measurable trait.
-
-/// Drawing scope for draw operations triggered by modifier nodes.
-pub trait ModifierDrawScope {
-    fn draw_content(&mut self);
 }
 
 /// Semantics configuration for accessibility.
@@ -817,7 +810,7 @@ mod tests {
         fn measure(
             &mut self,
             _context: &mut dyn ModifierNodeContext,
-            _measurable: &dyn ModifierMeasurable,
+            _measurable: &dyn Measurable,
             _constraints: Constraints,
         ) -> Size {
             self.measure_count.set(self.measure_count.get() + 1);
@@ -827,7 +820,7 @@ mod tests {
             }
         }
 
-        fn min_intrinsic_width(&self, _measurable: &dyn ModifierMeasurable, _height: f32) -> f32 {
+        fn min_intrinsic_width(&self, _measurable: &dyn Measurable, _height: f32) -> f32 {
             50.0
         }
     }
@@ -865,7 +858,7 @@ mod tests {
         fn draw(
             &mut self,
             _context: &mut dyn ModifierNodeContext,
-            _draw_scope: &mut dyn ModifierDrawScope,
+            _draw_scope: &mut dyn DrawScope,
         ) {
             self.draw_count.set(self.draw_count.get() + 1);
         }

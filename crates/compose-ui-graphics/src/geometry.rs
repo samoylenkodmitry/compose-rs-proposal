@@ -1,6 +1,7 @@
 //! Geometric primitives: Point, Size, Rect, Insets, Path
 
 use std::ops::AddAssign;
+use crate::Brush;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Point {
@@ -227,5 +228,68 @@ impl Default for GraphicsLayer {
             translation_x: 0.0,
             translation_y: 0.0,
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum DrawPrimitive {
+    Rect {
+        rect: Rect,
+        brush: Brush,
+    },
+    RoundRect {
+        rect: Rect,
+        brush: Brush,
+        radii: CornerRadii,
+    },
+}
+
+pub trait DrawScope {
+    fn size(&self) -> Size;
+    fn draw_content(&self);
+    fn draw_rect(&mut self, brush: Brush);
+    fn draw_round_rect(&mut self, brush: Brush, radii: CornerRadii);
+    fn into_primitives(self) -> Vec<DrawPrimitive>;
+}
+
+#[derive(Default)]
+pub struct DrawScopeDefault {
+    size: Size,
+    primitives: Vec<DrawPrimitive>,
+}
+
+impl DrawScopeDefault {
+    pub fn new(size: Size) -> Self {
+        Self {
+            size,
+            primitives: Vec::new(),
+        }
+    }
+}
+
+impl DrawScope for DrawScopeDefault {
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn draw_content(&self) {}
+
+    fn draw_rect(&mut self, brush: Brush) {
+        self.primitives.push(DrawPrimitive::Rect {
+            rect: Rect::from_size(self.size),
+            brush,
+        });
+    }
+
+    fn draw_round_rect(&mut self, brush: Brush, radii: CornerRadii) {
+        self.primitives.push(DrawPrimitive::RoundRect {
+            rect: Rect::from_size(self.size),
+            brush,
+            radii,
+        });
+    }
+
+    fn into_primitives(self) -> Vec<DrawPrimitive> {
+        self.primitives
     }
 }

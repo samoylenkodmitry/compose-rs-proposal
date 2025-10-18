@@ -16,7 +16,7 @@ mod padding;
 mod pointer_input;
 
 pub use compose_foundation::{PointerEvent, PointerEventKind};
-pub use compose_render_common::{Brush, DrawCacheBuilder, DrawCommand, DrawPrimitive, DrawScope};
+pub use compose_render_common::{Brush, DrawCacheBuilder, DrawCommand};
 pub use compose_ui_graphics::{
     Color, CornerRadii, EdgeInsets, GraphicsLayer, Point, Rect, RoundedCornerShape, Size,
 };

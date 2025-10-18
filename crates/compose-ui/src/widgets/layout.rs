@@ -11,8 +11,7 @@ use crate::subcompose_layout::{
     SubcomposeLayoutScope, SubcomposeMeasureScope, SubcomposeMeasureScopeImpl,
 };
 use compose_core::{NodeId, SlotId};
-use compose_ui_layout::MeasurePolicy;
-use compose_ui_layout::Placement;
+use compose_ui_layout::{MeasurePolicy, Placement};
 use std::cell::RefCell;
 use std::rc::Rc;
 

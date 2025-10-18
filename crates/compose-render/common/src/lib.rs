@@ -3,7 +3,7 @@
 use std::rc::Rc;
 
 use compose_foundation::nodes::input::PointerEventKind;
-use compose_ui_graphics::{CornerRadii, Rect, Size};
+use compose_ui_graphics::{DrawPrimitive, DrawScope, DrawScopeDefault, Rect, Size};
 
 pub use compose_ui_graphics::Brush;
 
@@ -39,65 +39,12 @@ pub trait Renderer {
     ) -> Result<(), Self::Error>;
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum DrawPrimitive {
-    Rect {
-        rect: Rect,
-        brush: Brush,
-    },
-    RoundRect {
-        rect: Rect,
-        brush: Brush,
-        radii: CornerRadii,
-    },
-}
-
 pub type DrawCommandFn = Rc<dyn Fn(Size) -> Vec<DrawPrimitive>>;
 
 #[derive(Clone)]
 pub enum DrawCommand {
     Behind(DrawCommandFn),
     Overlay(DrawCommandFn),
-}
-
-#[derive(Default)]
-pub struct DrawScope {
-    size: Size,
-    primitives: Vec<DrawPrimitive>,
-}
-
-impl DrawScope {
-    pub fn new(size: Size) -> Self {
-        Self {
-            size,
-            primitives: Vec::new(),
-        }
-    }
-
-    pub fn size(&self) -> Size {
-        self.size
-    }
-
-    pub fn draw_content(&self) {}
-
-    pub fn draw_rect(&mut self, brush: Brush) {
-        self.primitives.push(DrawPrimitive::Rect {
-            rect: Rect::from_size(self.size),
-            brush,
-        });
-    }
-
-    pub fn draw_round_rect(&mut self, brush: Brush, radii: CornerRadii) {
-        self.primitives.push(DrawPrimitive::RoundRect {
-            rect: Rect::from_size(self.size),
-            brush,
-            radii,
-        });
-    }
-
-    pub fn into_primitives(self) -> Vec<DrawPrimitive> {
-        self.primitives
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -134,18 +81,18 @@ pub struct DrawCacheBuilder {
 }
 
 impl DrawCacheBuilder {
-    pub fn on_draw_behind(&mut self, f: impl Fn(&mut DrawScope) + 'static) {
+    pub fn on_draw_behind(&mut self, f: impl Fn(&mut dyn DrawScope) + 'static) {
         let func = Rc::new(move |size: Size| {
-            let mut scope = DrawScope::new(size);
+            let mut scope = DrawScopeDefault::new(size);
             f(&mut scope);
             scope.into_primitives()
         });
         self.behind.push(func);
     }
 
-    pub fn on_draw_with_content(&mut self, f: impl Fn(&mut DrawScope) + 'static) {
+    pub fn on_draw_with_content(&mut self, f: impl Fn(&mut dyn DrawScope) + 'static) {
         let func = Rc::new(move |size: Size| {
-            let mut scope = DrawScope::new(size);
+            let mut scope = DrawScopeDefault::new(size);
             f(&mut scope);
             scope.into_primitives()
         });
