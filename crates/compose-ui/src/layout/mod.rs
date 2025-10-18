@@ -3,7 +3,9 @@ pub mod policies;
 
 use std::{cell::RefCell, collections::HashMap, marker::PhantomData, rc::Rc};
 
-use compose_core::{MemoryApplier, Node, NodeError, NodeId};
+use compose_core::{
+    Applier, Composer, MemoryApplier, Node, NodeError, NodeId, Phase, RuntimeHandle, SlotTable,
+};
 
 use self::core::{
     HorizontalAlignment, LinearArrangement, Measurable, Placeable, VerticalAlignment,
@@ -12,6 +14,7 @@ use crate::modifier::{
     DimensionConstraint, EdgeInsets, Modifier, Point, Rect as GeometryRect, Size,
 };
 use crate::primitives::{ButtonNode, LayoutNode, SpacerNode, TextNode};
+use crate::subcompose_layout::SubcomposeLayoutNode;
 use compose_ui_layout::Constraints;
 
 /// Result of running layout for a Compose tree.
@@ -74,6 +77,8 @@ impl LayoutEngine for MemoryApplier {
 
 struct LayoutBuilder<'a> {
     applier: *mut MemoryApplier,
+    runtime_handle: Option<RuntimeHandle>,
+    slots: SlotTable,
     _marker: PhantomData<&'a mut MemoryApplier>,
 }
 
@@ -81,6 +86,8 @@ impl<'a> LayoutBuilder<'a> {
     fn new(applier: &'a mut MemoryApplier) -> Self {
         Self {
             applier,
+            runtime_handle: applier.runtime_handle(),
+            slots: SlotTable::new(),
             _marker: PhantomData,
         }
     }
@@ -95,6 +102,9 @@ impl<'a> LayoutBuilder<'a> {
         constraints: Constraints,
     ) -> Result<MeasuredNode, NodeError> {
         let constraints = normalize_constraints(constraints);
+        if let Some(subcompose) = self.try_measure_subcompose(node_id, constraints)? {
+            return Ok(subcompose);
+        }
         if let Some(layout) = try_clone::<LayoutNode>(self.applier_mut(), node_id)? {
             return self.measure_layout_node(node_id, layout, constraints);
         }
@@ -114,6 +124,113 @@ impl<'a> LayoutBuilder<'a> {
             Modifier::empty(),
             Vec::new(),
         ))
+    }
+
+    fn try_measure_subcompose(
+        &mut self,
+        node_id: NodeId,
+        constraints: Constraints,
+    ) -> Result<Option<MeasuredNode>, NodeError> {
+        let node_ptr = {
+            let applier = self.applier_mut();
+            let node = match applier.get_mut(node_id) {
+                Ok(node) => node,
+                Err(err) => return Err(err),
+            };
+            let any = node.as_any_mut();
+            if let Some(subcompose) = any.downcast_mut::<SubcomposeLayoutNode>() {
+                subcompose as *mut SubcomposeLayoutNode
+            } else {
+                return Ok(None);
+            }
+        };
+
+        let runtime_handle = self
+            .runtime_handle
+            .clone()
+            .or_else(|| unsafe { (*self.applier).runtime_handle() });
+        let runtime_handle = match runtime_handle {
+            Some(handle) => handle,
+            None => {
+                return Err(NodeError::MissingContext {
+                    id: node_id,
+                    reason: "runtime handle required for subcomposition",
+                })
+            }
+        };
+        self.runtime_handle = Some(runtime_handle.clone());
+
+        let props = unsafe { (&*node_ptr).modifier.layout_properties() };
+        let padding = props.padding();
+        let offset = unsafe { (&*node_ptr).modifier.total_offset() };
+        let inner_constraints = normalize_constraints(subtract_padding(constraints, padding));
+
+        self.slots.reset();
+        let mut composer = Composer::new(
+            &mut self.slots,
+            unsafe { &mut *self.applier },
+            runtime_handle,
+            Some(node_id),
+        );
+        composer.enter_phase(Phase::Measure);
+
+        let (modifier, measure_result) = {
+            let node = unsafe { &mut *node_ptr };
+            let modifier = node.modifier.clone();
+            let result = node.measure(&mut composer, inner_constraints);
+            (modifier, result)
+        };
+
+        let node_ids: Vec<NodeId> = measure_result
+            .placements
+            .iter()
+            .map(|placement| placement.node_id)
+            .collect();
+        unsafe {
+            let node = &mut *node_ptr;
+            node.set_active_children(node_ids.iter().copied());
+        }
+
+        let mut width = measure_result.size.width + padding.horizontal_sum();
+        let mut height = measure_result.size.height + padding.vertical_sum();
+
+        width = resolve_dimension(
+            width,
+            props.width(),
+            props.min_width(),
+            props.max_width(),
+            constraints.min_width,
+            constraints.max_width,
+        );
+        height = resolve_dimension(
+            height,
+            props.height(),
+            props.min_height(),
+            props.max_height(),
+            constraints.min_height,
+            constraints.max_height,
+        );
+
+        let mut children = Vec::new();
+        for placement in measure_result.placements {
+            let child = self.measure_node(placement.node_id, inner_constraints)?;
+            let position = Point {
+                x: padding.left + placement.x,
+                y: padding.top + placement.y,
+            };
+            children.push(MeasuredChild {
+                node: child,
+                offset: position,
+            });
+        }
+
+        Ok(Some(MeasuredNode::new(
+            node_id,
+            Size { width, height },
+            offset,
+            modifier,
+            children,
+        )))
     }
 
     fn measure_layout_node(
@@ -146,6 +263,7 @@ impl<'a> LayoutBuilder<'a> {
                 measured,
                 position,
                 Rc::clone(&error),
+                self.runtime_handle.clone(),
             )));
         }
 
@@ -282,6 +400,7 @@ struct LayoutChildMeasurable {
     measured: Rc<RefCell<Option<MeasuredNode>>>,
     last_position: Rc<RefCell<Option<Point>>>,
     error: Rc<RefCell<Option<NodeError>>>,
+    runtime_handle: Option<RuntimeHandle>,
 }
 
 impl LayoutChildMeasurable {
@@ -291,6 +410,7 @@ impl LayoutChildMeasurable {
         measured: Rc<RefCell<Option<MeasuredNode>>>,
         last_position: Rc<RefCell<Option<Point>>>,
         error: Rc<RefCell<Option<NodeError>>>,
+        runtime_handle: Option<RuntimeHandle>,
     ) -> Self {
         Self {
             applier,
@@ -298,6 +418,7 @@ impl LayoutChildMeasurable {
             measured,
             last_position,
             error,
+            runtime_handle,
         }
     }
 
@@ -309,7 +430,14 @@ impl LayoutChildMeasurable {
     }
 
     fn intrinsic_measure(&self, constraints: Constraints) -> Option<MeasuredNode> {
-        match unsafe { measure_node_via_ptr(self.applier, self.node_id, constraints) } {
+        match unsafe {
+            measure_node_via_ptr(
+                self.applier,
+                self.runtime_handle.clone(),
+                self.node_id,
+                constraints,
+            )
+        } {
             Ok(measured) => Some(measured),
             Err(err) => {
                 self.record_error(err);
@@ -321,7 +449,14 @@ impl LayoutChildMeasurable {
 
 impl Measurable for LayoutChildMeasurable {
     fn measure(&self, constraints: Constraints) -> Box<dyn Placeable> {
-        match unsafe { measure_node_via_ptr(self.applier, self.node_id, constraints) } {
+        match unsafe {
+            measure_node_via_ptr(
+                self.applier,
+                self.runtime_handle.clone(),
+                self.node_id,
+                constraints,
+            )
+        } {
             Ok(measured) => {
                 *self.measured.borrow_mut() = Some(measured);
             }
@@ -430,11 +565,15 @@ impl Placeable for LayoutChildPlaceable {
 
 unsafe fn measure_node_via_ptr(
     applier: *mut MemoryApplier,
+    runtime_handle: Option<RuntimeHandle>,
     node_id: NodeId,
     constraints: Constraints,
 ) -> Result<MeasuredNode, NodeError> {
+    let runtime_handle = runtime_handle.or_else(|| (*applier).runtime_handle());
     let mut builder = LayoutBuilder {
         applier,
+        runtime_handle,
+        slots: SlotTable::new(),
         _marker: PhantomData,
     };
     builder.measure_node(node_id, constraints)
@@ -742,180 +881,5 @@ fn try_clone<T: Node + Clone + 'static>(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use compose_core::Applier;
-    use std::rc::Rc;
-
-    use crate::modifier::{Modifier, Size};
-    use compose_ui_layout::{MeasurePolicy, MeasureResult, Placement};
-
-    use super::core::{Measurable};
-
-    #[derive(Clone, Copy)]
-    struct VerticalStackPolicy;
-
-    impl MeasurePolicy for VerticalStackPolicy {
-        fn measure(
-            &self,
-            measurables: &[Box<dyn Measurable>],
-            constraints: Constraints,
-        ) -> MeasureResult {
-            let mut y: f32 = 0.0;
-            let mut width: f32 = 0.0;
-            let mut placements = Vec::new();
-            for measurable in measurables {
-                let placeable = measurable.measure(constraints);
-                width = width.max(placeable.width());
-                let height = placeable.height();
-                placements.push(Placement::new(placeable.node_id(), 0.0, y, 0));
-                y += height;
-            }
-            let width = width.clamp(constraints.min_width, constraints.max_width);
-            let height = y.clamp(constraints.min_height, constraints.max_height);
-            MeasureResult::new(Size { width, height }, placements)
-        }
-
-        fn min_intrinsic_width(&self, measurables: &[Box<dyn Measurable>], height: f32) -> f32 {
-            measurables
-                .iter()
-                .map(|m| m.min_intrinsic_width(height))
-                .fold(0.0, f32::max)
-        }
-
-        fn max_intrinsic_width(&self, measurables: &[Box<dyn Measurable>], height: f32) -> f32 {
-            measurables
-                .iter()
-                .map(|m| m.max_intrinsic_width(height))
-                .fold(0.0, f32::max)
-        }
-
-        fn min_intrinsic_height(&self, measurables: &[Box<dyn Measurable>], width: f32) -> f32 {
-            measurables
-                .iter()
-                .map(|m| m.min_intrinsic_height(width))
-                .fold(0.0, |acc, h| acc + h)
-        }
-
-        fn max_intrinsic_height(&self, measurables: &[Box<dyn Measurable>], width: f32) -> f32 {
-            measurables
-                .iter()
-                .map(|m| m.max_intrinsic_height(width))
-                .fold(0.0, |acc, h| acc + h)
-        }
-    }
-
-    #[derive(Clone)]
-    struct MaxSizePolicy;
-
-    impl MeasurePolicy for MaxSizePolicy {
-        fn measure(
-            &self,
-            _measurables: &[Box<dyn Measurable>],
-            constraints: Constraints,
-        ) -> MeasureResult {
-            let width = if constraints.max_width.is_finite() {
-                constraints.max_width
-            } else {
-                constraints.min_width
-            };
-            let height = if constraints.max_height.is_finite() {
-                constraints.max_height
-            } else {
-                constraints.min_height
-            };
-            MeasureResult::new(Size { width, height }, Vec::new())
-        }
-
-        fn min_intrinsic_width(&self, _measurables: &[Box<dyn Measurable>], _height: f32) -> f32 {
-            0.0
-        }
-
-        fn max_intrinsic_width(&self, _measurables: &[Box<dyn Measurable>], _height: f32) -> f32 {
-            0.0
-        }
-
-        fn min_intrinsic_height(&self, _measurables: &[Box<dyn Measurable>], _width: f32) -> f32 {
-            0.0
-        }
-
-        fn max_intrinsic_height(&self, _measurables: &[Box<dyn Measurable>], _width: f32) -> f32 {
-            0.0
-        }
-    }
-
-    #[test]
-    fn clamp_dimension_respects_infinite_max() {
-        let clamped = clamp_dimension(50.0, 10.0, f32::INFINITY);
-        assert_eq!(clamped, 50.0);
-    }
-
-    // Note: Weight distribution tests removed - weights are not yet implemented
-    // in the new MeasurePolicy-based system. They were part of the old
-    // ColumnNode/RowNode implementation that has been replaced.
-
-    #[test]
-    fn resolve_dimension_applies_explicit_points() {
-        let size = resolve_dimension(
-            10.0,
-            DimensionConstraint::Points(20.0),
-            None,
-            None,
-            0.0,
-            100.0,
-        );
-        assert_eq!(size, 20.0);
-    }
-
-    #[test]
-    fn align_helpers_respect_available_space() {
-        assert_eq!(
-            align_horizontal(HorizontalAlignment::CenterHorizontally, 100.0, 40.0),
-            30.0
-        );
-        assert_eq!(align_vertical(VerticalAlignment::Bottom, 50.0, 10.0), 40.0);
-    }
-
-    // Note: box_respects_child_alignment test removed - it tested the old BoxNode
-    // implementation. Box now uses LayoutNode with BoxMeasurePolicy.
-
-    #[test]
-    fn layout_node_uses_measure_policy() -> Result<(), NodeError> {
-        let mut applier = MemoryApplier::new();
-        let child_a = applier.create(Box::new(SpacerNode {
-            size: Size {
-                width: 10.0,
-                height: 20.0,
-            },
-        }));
-        let child_b = applier.create(Box::new(SpacerNode {
-            size: Size {
-                width: 5.0,
-                height: 30.0,
-            },
-        }));
-
-        let mut layout_node = LayoutNode::new(Modifier::empty(), Rc::new(VerticalStackPolicy));
-        layout_node.children.insert(child_a);
-        layout_node.children.insert(child_b);
-        let layout_id = applier.create(Box::new(layout_node));
-
-        let mut builder = LayoutBuilder::new(&mut applier);
-        let measured = builder.measure_node(
-            layout_id,
-            Constraints {
-                min_width: 0.0,
-                max_width: 200.0,
-                min_height: 0.0,
-                max_height: 200.0,
-            },
-        )?;
-
-        assert_eq!(measured.size.width, 10.0);
-        assert_eq!(measured.size.height, 50.0);
-        assert_eq!(measured.children.len(), 2);
-        assert_eq!(measured.children[0].offset, Point { x: 0.0, y: 0.0 });
-        assert_eq!(measured.children[1].offset, Point { x: 0.0, y: 20.0 });
-        Ok(())
-    }
-}
+#[path = "tests/layout_tests.rs"]
+mod tests;

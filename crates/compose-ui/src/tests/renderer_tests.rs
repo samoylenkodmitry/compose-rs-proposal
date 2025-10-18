@@ -1,0 +1,135 @@
+use super::*;
+use crate::modifier::{Brush, Color, Modifier};
+use crate::primitives::{Column, ColumnSpec, Text};
+use crate::{layout::LayoutEngine, Composition};
+use compose_core::{location_key, MemoryApplier};
+
+fn compute_layout(composition: &mut Composition<MemoryApplier>, root: NodeId) -> LayoutTree {
+    composition
+        .applier_mut()
+        .compute_layout(
+            root,
+            Size {
+                width: 200.0,
+                height: 200.0,
+            },
+        )
+        .expect("layout")
+}
+
+#[test]
+fn renderer_emits_background_and_text() {
+    let mut composition = Composition::new(MemoryApplier::new());
+    let key = location_key(file!(), line!(), column!());
+    composition
+        .render(key, || {
+            Text(
+                "Hello".to_string(),
+                Modifier::background(Color(0.1, 0.2, 0.3, 1.0)),
+            );
+        })
+        .expect("initial render");
+
+    let root = composition.root().expect("text root");
+    let layout = compute_layout(&mut composition, root);
+    let scene = {
+        let applier = composition.applier_mut();
+        let mut renderer = HeadlessRenderer::new(applier);
+        renderer.render(&layout).expect("render")
+    };
+
+    assert_eq!(scene.operations().len(), 2);
+    assert!(matches!(
+        scene.operations()[0],
+        RenderOp::Primitive {
+            layer: PaintLayer::Behind,
+            ..
+        }
+    ));
+    match &scene.operations()[1] {
+        RenderOp::Text { value, .. } => assert_eq!(value, "Hello"),
+        other => panic!("unexpected op: {other:?}"),
+    }
+}
+
+#[test]
+fn renderer_translates_draw_commands() {
+    let mut composition = Composition::new(MemoryApplier::new());
+    let key = location_key(file!(), line!(), column!());
+    composition
+        .render(key, || {
+            Column(
+                Modifier::padding(10.0)
+                    .then(Modifier::background(Color(0.3, 0.3, 0.9, 1.0)))
+                    .then(Modifier::draw_behind(|scope| {
+                        scope.draw_rect(Brush::solid(Color(0.8, 0.0, 0.0, 1.0)));
+                    })),
+                ColumnSpec::default(),
+                || {
+                    Text(
+                        "Content".to_string(),
+                        Modifier::draw_behind(|scope| {
+                            scope.draw_rect(Brush::solid(Color(0.2, 0.2, 0.2, 1.0)));
+                        })
+                        .then(Modifier::draw_with_content(|scope| {
+                            scope.draw_rect(Brush::solid(Color(0.0, 0.0, 0.0, 1.0)));
+                        })),
+                    );
+                },
+            );
+        })
+        .expect("initial render");
+
+    let root = composition.root().expect("column root");
+    let layout = compute_layout(&mut composition, root);
+    let scene = {
+        let applier = composition.applier_mut();
+        let mut renderer = HeadlessRenderer::new(applier);
+        renderer.render(&layout).expect("render")
+    };
+
+    let behind: Vec<_> = scene.primitives_for(PaintLayer::Behind).collect();
+    assert_eq!(behind.len(), 3); // column background + column draw_behind + text draw_behind
+    let mut saw_translated = false;
+    for primitive in behind {
+        match primitive {
+            DrawPrimitive::Rect { rect, .. } => {
+                if rect.x >= 10.0 && rect.y >= 10.0 {
+                    saw_translated = true;
+                }
+            }
+            DrawPrimitive::RoundRect { rect, .. } => {
+                if rect.x >= 10.0 && rect.y >= 10.0 {
+                    saw_translated = true;
+                }
+            }
+        }
+    }
+    assert!(
+        saw_translated,
+        "expected a translated primitive for padded text"
+    );
+
+    let overlay_ops: Vec<_> = scene
+        .operations()
+        .iter()
+        .filter(|op| {
+            matches!(
+                op,
+                RenderOp::Primitive {
+                    layer: PaintLayer::Overlay,
+                    ..
+                }
+            )
+        })
+        .collect();
+    assert_eq!(overlay_ops.len(), 1);
+    if let RenderOp::Primitive { primitive, .. } = overlay_ops[0] {
+        match primitive {
+            DrawPrimitive::Rect { rect, .. } | DrawPrimitive::RoundRect { rect, .. } => {
+                assert!(rect.x >= 10.0);
+                assert!(rect.y >= 10.0);
+            }
+        }
+    }
+}
