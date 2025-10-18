@@ -1867,7 +1867,16 @@ impl<T> MutableState<T> {
 
 impl<T: Clone> MutableState<T> {
     pub fn value(&self) -> T {
-        self.as_state().value()
+        let state = self.as_state();
+        state.subscribe_current_scope();
+        self.inner.flush_pending();
+        if let Some(pending) = self.inner.pending.borrow().as_ref() {
+            pending.clone()
+        } else if let Ok(value) = self.inner.value.try_borrow() {
+            value.clone()
+        } else {
+            panic!("state value unavailable: pending update missing")
+        }
     }
 
     pub fn get(&self) -> T {
@@ -1936,7 +1945,15 @@ impl<T> State<T> {
 
 impl<T: Clone> State<T> {
     pub fn value(&self) -> T {
-        self.with(|value| value.clone())
+        self.subscribe_current_scope();
+        self.inner.flush_pending();
+        if let Some(pending) = self.inner.pending.borrow().as_ref() {
+            pending.clone()
+        } else if let Ok(value) = self.inner.value.try_borrow() {
+            value.clone()
+        } else {
+            panic!("state value unavailable: pending update missing")
+        }
     }
 
     pub fn get(&self) -> T {

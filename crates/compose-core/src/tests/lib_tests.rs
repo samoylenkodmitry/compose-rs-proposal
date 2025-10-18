@@ -87,6 +87,22 @@ fn subcompose_reuses_nodes_across_calls() {
 }
 
 #[test]
+fn mutable_state_exposes_pending_value_while_borrowed() {
+    let (runtime_handle, _runtime) = runtime_handle();
+    let state = MutableState::with_runtime(0, runtime_handle);
+    let observed = Cell::new(0);
+
+    state.with(|value| {
+        assert_eq!(*value, 0);
+        state.set(1);
+        observed.set(state.get());
+    });
+
+    assert_eq!(observed.get(), 1);
+    state.with(|value| assert_eq!(*value, 1));
+}
+
+#[test]
 fn launched_effect_runs_and_cancels() {
     let mut composition = Composition::new(MemoryApplier::new());
     let runtime = composition.runtime_handle();
