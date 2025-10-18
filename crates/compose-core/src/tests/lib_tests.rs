@@ -1,9 +1,11 @@
 use super::*;
 use crate as compose_core;
 use compose_macros::composable;
-use std::cell::Cell;
+use futures_util::future::poll_fn;
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::task::Poll;
 use std::time::Duration;
 
 #[derive(Default)]
@@ -92,42 +94,48 @@ fn launched_effect_runs_and_cancels() {
     let runtime = composition.runtime_handle();
     let state = MutableState::with_runtime(0i32, runtime.clone());
     let runs = Arc::new(AtomicUsize::new(0));
-    let cancels = Arc::new(AtomicUsize::new(0));
+    let captured_scopes: Rc<RefCell<Vec<LaunchedEffectScope>>> = Rc::new(RefCell::new(Vec::new()));
 
     let render = |composition: &mut Composition<MemoryApplier>, key_state: &MutableState<i32>| {
         let runs = Arc::clone(&runs);
-        let cancels = Arc::clone(&cancels);
+        let scopes_for_render = Rc::clone(&captured_scopes);
         let state = key_state.clone();
         composition
             .render(0, move || {
                 let key = state.value();
                 let runs = Arc::clone(&runs);
-                let cancels = Arc::clone(&cancels);
+                let captured_scopes = Rc::clone(&scopes_for_render);
                 LaunchedEffect!(key, move |scope| {
                     runs.fetch_add(1, Ordering::SeqCst);
-                    while scope.is_active() {
-                        std::thread::sleep(Duration::from_millis(5));
-                    }
-                    cancels.fetch_add(1, Ordering::SeqCst);
+                    captured_scopes.borrow_mut().push(scope);
                 });
             })
             .expect("render succeeds");
     };
 
     render(&mut composition, &state);
-    std::thread::sleep(Duration::from_millis(50));
     assert_eq!(runs.load(Ordering::SeqCst), 1);
-    assert_eq!(cancels.load(Ordering::SeqCst), 0);
+    {
+        let scopes = captured_scopes.borrow();
+        assert_eq!(scopes.len(), 1);
+        assert!(scopes[0].is_active());
+    }
 
     state.set_value(1);
     render(&mut composition, &state);
-    std::thread::sleep(Duration::from_millis(50));
     assert_eq!(runs.load(Ordering::SeqCst), 2);
-    assert_eq!(cancels.load(Ordering::SeqCst), 1);
+    {
+        let scopes = captured_scopes.borrow();
+        assert_eq!(scopes.len(), 2);
+        assert!(!scopes[0].is_active(), "previous scope should be cancelled");
+        assert!(scopes[1].is_active(), "latest scope remains active");
+    }
 
     drop(composition);
-    std::thread::sleep(Duration::from_millis(50));
-    assert_eq!(cancels.load(Ordering::SeqCst), 2);
+    {
+        let scopes = captured_scopes.borrow();
+        assert!(!scopes.last().expect("scope available").is_active());
+    }
 }
 
 #[test]
@@ -136,25 +144,123 @@ fn launched_effect_runs_side_effect_body() {
     let runtime = composition.runtime_handle();
     let state = MutableState::with_runtime(0i32, runtime);
     let (tx, rx) = std::sync::mpsc::channel();
+    let captured_scopes: Rc<RefCell<Vec<LaunchedEffectScope>>> = Rc::new(RefCell::new(Vec::new()));
 
-    composition
-        .render(0, move || {
-            let key = state.value();
-            let tx = tx.clone();
-            LaunchedEffect!(key, move |scope| {
-                let _ = tx.send("start");
-                while scope.is_active() {
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                let _ = tx.send("cancel");
-            });
-        })
-        .expect("render succeeds");
+    {
+        let captured_scopes = Rc::clone(&captured_scopes);
+        composition
+            .render(0, move || {
+                let key = state.value();
+                let tx = tx.clone();
+                let captured_scopes = Rc::clone(&captured_scopes);
+                LaunchedEffect!(key, move |scope| {
+                    let _ = tx.send("start");
+                    captured_scopes.borrow_mut().push(scope);
+                });
+            })
+            .expect("render succeeds");
+    }
 
     assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap(), "start");
+    {
+        let scopes = captured_scopes.borrow();
+        assert_eq!(scopes.len(), 1);
+        assert!(scopes[0].is_active());
+    }
 
     drop(composition);
-    assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap(), "cancel");
+    {
+        let scopes = captured_scopes.borrow();
+        assert!(!scopes.last().expect("scope available").is_active());
+    }
+}
+
+#[test]
+fn launched_effect_launch_future_runs() {
+    let mut composition = Composition::new(MemoryApplier::new());
+    let runtime = composition.runtime_handle();
+    let state = MutableState::with_runtime(0i32, runtime.clone());
+    let completed = Rc::new(Cell::new(0));
+
+    {
+        let completed = Rc::clone(&completed);
+        let state = state.clone();
+        composition
+            .render(0, move || {
+                let completed = Rc::clone(&completed);
+                let state = state.clone();
+                LaunchedEffect!(state.value(), move |scope| {
+                    scope.launch_future({
+                        let completed = Rc::clone(&completed);
+                        let state = state.clone();
+                        async move {
+                            completed.set(completed.get() + 1);
+                            state.set_value(42);
+                        }
+                    });
+                });
+            })
+            .expect("render succeeds");
+    }
+
+    assert_eq!(completed.get(), 1);
+    assert_eq!(state.value(), 42);
+}
+
+#[test]
+fn launched_effect_future_stops_after_cancellation() {
+    let mut composition = Composition::new(MemoryApplier::new());
+    let runtime = composition.runtime_handle();
+    let key_state = MutableState::with_runtime(0i32, runtime.clone());
+    let poll_counter = Rc::new(Cell::new(0usize));
+
+    {
+        let poll_counter = Rc::clone(&poll_counter);
+        let key_state = key_state.clone();
+        composition
+            .render(0, move || {
+                let key = key_state.value();
+                let poll_counter = Rc::clone(&poll_counter);
+                LaunchedEffect!(key, move |scope| {
+                    scope.launch_future({
+                        let poll_counter = Rc::clone(&poll_counter);
+                        async move {
+                            poll_fn(move |cx| {
+                                let count = poll_counter.get();
+                                poll_counter.set(count + 1);
+                                if count < 32 {
+                                    cx.waker().wake_by_ref();
+                                    Poll::<()>::Pending
+                                } else {
+                                    Poll::<()>::Ready(())
+                                }
+                            })
+                            .await;
+                        }
+                    });
+                });
+            })
+            .expect("render succeeds");
+    }
+
+    assert!(poll_counter.get() > 0);
+
+    key_state.set_value(1);
+
+    {
+        let key_state = key_state.clone();
+        composition
+            .render(0, move || {
+                let key = key_state.value();
+                LaunchedEffect!(key, move |_scope| {});
+            })
+            .expect("render succeeds");
+    }
+
+    let polls_after_cancel = poll_counter.get();
+    composition.runtime_handle().drain_tasks();
+    composition.runtime_handle().drain_tasks();
+    assert_eq!(poll_counter.get(), polls_after_cancel);
 }
 
 #[test]
@@ -165,32 +271,27 @@ fn launched_effect_relaunches_on_branch_change() {
     let runtime = composition.runtime_handle();
     let _state = MutableState::with_runtime(false, runtime.clone());
     let runs = Arc::new(AtomicUsize::new(0));
-    let cancels = Arc::new(AtomicUsize::new(0));
+    let recorded_scopes: Rc<RefCell<Vec<(bool, LaunchedEffectScope)>>> =
+        Rc::new(RefCell::new(Vec::new()));
 
     let render = |composition: &mut Composition<MemoryApplier>, show_first: bool| {
         let runs = Arc::clone(&runs);
-        let cancels = Arc::clone(&cancels);
+        let recorded_scopes = Rc::clone(&recorded_scopes);
         composition
             .render(0, move || {
                 let runs = Arc::clone(&runs);
-                let cancels = Arc::clone(&cancels);
+                let recorded_scopes = Rc::clone(&recorded_scopes);
                 if show_first {
                     // Branch A with LaunchedEffect("") - macro captures call site location
                     LaunchedEffect!("", move |scope| {
                         runs.fetch_add(1, Ordering::SeqCst);
-                        while scope.is_active() {
-                            std::thread::sleep(Duration::from_millis(5));
-                        }
-                        cancels.fetch_add(1, Ordering::SeqCst);
+                        recorded_scopes.borrow_mut().push((true, scope));
                     });
                 } else {
                     // Branch B with LaunchedEffect("") - different call site, separate group
                     LaunchedEffect!("", move |scope| {
                         runs.fetch_add(1, Ordering::SeqCst);
-                        while scope.is_active() {
-                            std::thread::sleep(Duration::from_millis(5));
-                        }
-                        cancels.fetch_add(1, Ordering::SeqCst);
+                        recorded_scopes.borrow_mut().push((false, scope));
                     });
                 }
             })
@@ -199,31 +300,41 @@ fn launched_effect_relaunches_on_branch_change() {
 
     // First render - branch A
     render(&mut composition, true);
-    std::thread::sleep(Duration::from_millis(50));
     assert_eq!(runs.load(Ordering::SeqCst), 1, "First effect should run");
-    assert_eq!(cancels.load(Ordering::SeqCst), 0, "No cancellations yet");
+    {
+        let scopes = recorded_scopes.borrow();
+        assert_eq!(scopes.len(), 1);
+        assert!(scopes[0].0, "first entry should come from branch A");
+        assert!(scopes[0].1.is_active());
+    }
 
     // Switch to branch B - should relaunch even with same key
     render(&mut composition, false);
-    std::thread::sleep(Duration::from_millis(50));
     assert_eq!(
         runs.load(Ordering::SeqCst),
         2,
         "Second effect should run after branch switch"
     );
-    assert_eq!(
-        cancels.load(Ordering::SeqCst),
-        1,
-        "First effect should be cancelled"
-    );
+    {
+        let scopes = recorded_scopes.borrow();
+        assert_eq!(scopes.len(), 2);
+        assert!(scopes[0].0);
+        assert!(
+            !scopes[0].1.is_active(),
+            "branch A scope should be cancelled"
+        );
+        assert!(!scopes[1].0);
+        assert!(
+            scopes[1].1.is_active(),
+            "branch B scope should remain active"
+        );
+    }
 
     drop(composition);
-    std::thread::sleep(Duration::from_millis(50));
-    assert_eq!(
-        cancels.load(Ordering::SeqCst),
-        2,
-        "Second effect should be cancelled on dispose"
-    );
+    {
+        let scopes = recorded_scopes.borrow();
+        assert!(!scopes.last().expect("branch B scope").1.is_active());
+    }
 }
 
 #[test]

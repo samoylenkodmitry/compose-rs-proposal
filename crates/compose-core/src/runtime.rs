@@ -16,6 +16,7 @@ struct RuntimeInner {
     scope_queue: RefCell<Vec<(ScopeId, Weak<RecomposeScopeInner>)>>, // FUTURE(no_std): use smallvec-backed queue.
     frame_callbacks: RefCell<VecDeque<FrameCallbackEntry>>, // FUTURE(no_std): migrate to ring buffer.
     next_frame_callback_id: Cell<u64>,
+    pending_tasks: RefCell<VecDeque<Box<dyn FnOnce() + 'static>>>,
 }
 
 impl RuntimeInner {
@@ -28,6 +29,7 @@ impl RuntimeInner {
             scope_queue: RefCell::new(Vec::new()),
             frame_callbacks: RefCell::new(VecDeque::new()),
             next_frame_callback_id: Cell::new(1),
+            pending_tasks: RefCell::new(VecDeque::new()),
         }
     }
 
@@ -74,8 +76,23 @@ impl RuntimeInner {
         !self.frame_callbacks.borrow().is_empty()
     }
 
-    fn spawn_task(&self, task: Box<dyn FnOnce() + Send + 'static>) {
-        self.scheduler.spawn_task(task);
+    fn enqueue_task(&self, task: Box<dyn FnOnce() + 'static>) {
+        self.pending_tasks.borrow_mut().push_back(task);
+        self.schedule();
+    }
+
+    fn drain_tasks(&self) {
+        let mut tasks: Vec<Box<dyn FnOnce() + 'static>> = {
+            let mut pending = self.pending_tasks.borrow_mut();
+            pending.drain(..).collect()
+        };
+        for task in tasks.drain(..) {
+            task();
+        }
+    }
+
+    fn has_tasks(&self) -> bool {
+        !self.pending_tasks.borrow().is_empty()
     }
 
     fn register_frame_callback(&self, callback: Box<dyn FnOnce(u64) + 'static>) -> FrameCallbackId {
@@ -157,10 +174,6 @@ pub struct DefaultScheduler;
 
 impl RuntimeScheduler for DefaultScheduler {
     fn schedule_frame(&self) {}
-
-    fn spawn_task(&self, task: Box<dyn FnOnce() + Send + 'static>) {
-        std::thread::spawn(move || task());
-    }
 }
 
 #[cfg(test)]
@@ -170,10 +183,6 @@ pub struct TestScheduler;
 #[cfg(test)]
 impl RuntimeScheduler for TestScheduler {
     fn schedule_frame(&self) {}
-
-    fn spawn_task(&self, task: Box<dyn FnOnce() + Send + 'static>) {
-        std::thread::spawn(move || task());
-    }
 }
 
 #[cfg(test)]
@@ -210,12 +219,25 @@ impl RuntimeHandle {
         }
     }
 
-    pub fn spawn_task(&self, task: Box<dyn FnOnce() + Send + 'static>) {
+    pub fn spawn_task(&self, task: Box<dyn FnOnce() + 'static>) {
         if let Some(inner) = self.0.upgrade() {
-            inner.spawn_task(task);
+            inner.enqueue_task(task);
         } else {
             task();
         }
+    }
+
+    pub fn drain_tasks(&self) {
+        if let Some(inner) = self.0.upgrade() {
+            inner.drain_tasks();
+        }
+    }
+
+    pub fn has_pending_tasks(&self) -> bool {
+        self.0
+            .upgrade()
+            .map(|inner| inner.has_tasks())
+            .unwrap_or(false)
     }
 
     pub fn register_frame_callback(

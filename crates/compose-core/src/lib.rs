@@ -20,11 +20,14 @@ use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet}; // FUTURE(no_std): replace HashMap/HashSet with arena-backed maps.
 use std::fmt;
+use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::mem;
+use std::pin::Pin;
 use std::rc::{Rc, Weak}; // FUTURE(no_std): replace Rc/Weak with arena-managed handles.
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use std::thread_local;
 
 pub type Key = u64;
@@ -608,12 +611,13 @@ impl LaunchedEffectState {
     fn launch(
         &mut self,
         runtime: RuntimeHandle,
-        effect: impl FnOnce(LaunchedEffectScope) + Send + 'static,
+        effect: impl FnOnce(LaunchedEffectScope) + 'static,
     ) {
         self.cancel_current();
         let active = Arc::new(AtomicBool::new(true));
         let scope = LaunchedEffectScope {
             active: Arc::clone(&active),
+            runtime: runtime.clone(),
         };
         self.cancel_flag = Some(active);
         runtime.spawn_task(Box::new(move || effect(scope)));
@@ -635,12 +639,114 @@ impl Drop for LaunchedEffectState {
 #[derive(Clone)]
 pub struct LaunchedEffectScope {
     active: Arc<AtomicBool>,
+    runtime: RuntimeHandle,
 }
 
 impl LaunchedEffectScope {
     pub fn is_active(&self) -> bool {
         self.active.load(Ordering::SeqCst)
     }
+
+    pub fn runtime(&self) -> RuntimeHandle {
+        self.runtime.clone()
+    }
+
+    pub fn launch(&self, task: impl FnOnce(LaunchedEffectScope) + 'static) {
+        if !self.is_active() {
+            return;
+        }
+        let scope = self.clone();
+        self.runtime.spawn_task(Box::new(move || {
+            if scope.is_active() {
+                task(scope);
+            }
+        }));
+    }
+
+    pub fn launch_future<Fut>(&self, future: Fut)
+    where
+        Fut: Future<Output = ()> + 'static,
+    {
+        if !self.is_active() {
+            return;
+        }
+        let task = Rc::new(LaunchedEffectFutureTask {
+            scope: self.clone(),
+            future: RefCell::new(Some(Box::pin(future))),
+        });
+        task.schedule();
+    }
+}
+
+struct LaunchedEffectFutureTask {
+    scope: LaunchedEffectScope,
+    future: RefCell<Option<Pin<Box<dyn Future<Output = ()> + 'static>>>>,
+}
+
+impl LaunchedEffectFutureTask {
+    fn poll(self: Rc<Self>) {
+        if !self.scope.is_active() {
+            self.future.borrow_mut().take();
+            return;
+        }
+        let future_opt = self.future.borrow_mut().take();
+        if let Some(mut future) = future_opt {
+            let waker = self.waker();
+            let mut cx = Context::from_waker(&waker);
+            match future.as_mut().poll(&mut cx) {
+                Poll::Ready(()) => {}
+                Poll::Pending => {
+                    *self.future.borrow_mut() = Some(future);
+                }
+            }
+        }
+    }
+
+    fn schedule(self: Rc<Self>) {
+        if !self.scope.is_active() {
+            return;
+        }
+        let scope = self.scope.clone();
+        let task = self.clone();
+        self.scope.runtime.spawn_task(Box::new(move || {
+            if scope.is_active() {
+                task.poll();
+            }
+        }));
+    }
+    fn waker(self: &Rc<Self>) -> Waker {
+        let ptr = Rc::into_raw(self.clone()) as *const ();
+        unsafe { Waker::from_raw(RawWaker::new(ptr, &Self::VTABLE)) }
+    }
+
+    unsafe fn clone_waker(data: *const ()) -> RawWaker {
+        Rc::increment_strong_count(data as *const LaunchedEffectFutureTask);
+        RawWaker::new(data, &Self::VTABLE)
+    }
+
+    unsafe fn wake(data: *const ()) {
+        let task = Rc::from_raw(data as *const LaunchedEffectFutureTask);
+        task.clone().schedule();
+    }
+
+    unsafe fn wake_by_ref(data: *const ()) {
+        let task = Rc::from_raw(data as *const LaunchedEffectFutureTask);
+        task.clone().schedule();
+        let _ = Rc::into_raw(task);
+    }
+
+    unsafe fn drop_waker(data: *const ()) {
+        Rc::from_raw(data as *const LaunchedEffectFutureTask);
+    }
+}
+
+impl LaunchedEffectFutureTask {
+    const VTABLE: RawWakerVTable = RawWakerVTable::new(
+        Self::clone_waker,
+        Self::wake,
+        Self::wake_by_ref,
+        Self::drop_waker,
+    );
 }
 
 #[allow(non_snake_case)]
@@ -691,7 +797,7 @@ macro_rules! DisposableEffect {
 pub fn __launched_effect_impl<K, F>(group_key: Key, keys: K, effect: F)
 where
     K: Hash,
-    F: FnOnce(LaunchedEffectScope) + Send + 'static,
+    F: FnOnce(LaunchedEffectScope) + 'static,
 {
     // Create a group using the caller's location to ensure each LaunchedEffect
     // gets its own slot table entry, even in conditional branches
@@ -1868,12 +1974,14 @@ impl<A: Applier> Composition<A> {
         for effect in side_effects {
             effect();
         }
+        runtime_handle.drain_tasks();
         self.root = root;
         self.slots.trim_to_cursor();
         self.process_invalid_scopes()?;
         if !self.runtime.has_updates()
             && !runtime_handle.has_invalid_scopes()
             && !runtime_handle.has_frame_callbacks()
+            && !runtime_handle.has_pending_tasks()
         {
             self.runtime.set_needs_frame(false);
         }
@@ -1899,6 +2007,7 @@ impl<A: Applier> Composition<A> {
     pub fn process_invalid_scopes(&mut self) -> Result<(), NodeError> {
         let runtime_handle = self.runtime_handle();
         loop {
+            runtime_handle.drain_tasks();
             let pending = runtime_handle.take_invalidated_scopes();
             if pending.is_empty() {
                 break;
@@ -1936,10 +2045,12 @@ impl<A: Applier> Composition<A> {
             for effect in side_effects {
                 effect();
             }
+            runtime_handle.drain_tasks();
         }
         if !self.runtime.has_updates()
             && !runtime_handle.has_invalid_scopes()
             && !runtime_handle.has_frame_callbacks()
+            && !runtime_handle.has_pending_tasks()
         {
             self.runtime.set_needs_frame(false);
         }

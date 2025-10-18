@@ -7,6 +7,7 @@ description = "Core runtime for a Jetpack Compose inspired UI framework in Rust"
 
 [dependencies]
 anyhow = "1.0"
+futures-util = { version = "0.3", default-features = true }
 
 [features]
 default = []
