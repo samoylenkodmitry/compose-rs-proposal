@@ -103,6 +103,24 @@ fn mutable_state_exposes_pending_value_while_borrowed() {
 }
 
 #[test]
+fn mutable_state_reads_during_update_return_current_value() {
+    let (runtime_handle, _runtime) = runtime_handle();
+    let state = MutableState::with_runtime(0, runtime_handle);
+    let before = Cell::new(-1);
+    let after = Cell::new(-1);
+
+    state.update(|value| {
+        before.set(state.get());
+        *value = 7;
+        after.set(state.get());
+    });
+
+    assert_eq!(before.get(), 0);
+    assert_eq!(after.get(), 7);
+    assert_eq!(state.get(), 7);
+}
+
+#[test]
 fn launched_effect_runs_and_cancels() {
     let mut composition = Composition::new(MemoryApplier::new());
     let runtime = composition.runtime_handle();

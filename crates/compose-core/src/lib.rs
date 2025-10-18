@@ -22,6 +22,7 @@ use std::collections::{hash_map::DefaultHasher, HashMap, HashSet}; // FUTURE(no_
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::mem;
+use std::ptr::{self, NonNull};
 use std::rc::{Rc, Weak}; // FUTURE(no_std): replace Rc/Weak with arena-managed handles.
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -1715,6 +1716,7 @@ struct MutableStateInner<T> {
     pending: RefCell<Option<T>>,
     watchers: RefCell<Vec<Weak<RecomposeScopeInner>>>, // FUTURE(no_std): move to stack-allocated subscription list.
     _runtime: RuntimeHandle,
+    active_borrow: Cell<Option<NonNull<T>>>,
 }
 
 impl<T> MutableStateInner<T> {
@@ -1724,7 +1726,53 @@ impl<T> MutableStateInner<T> {
             pending: RefCell::new(None),
             watchers: RefCell::new(Vec::new()),
             _runtime: runtime,
+            active_borrow: Cell::new(None),
         }
+    }
+
+    fn begin_active_borrow(&self, ptr: NonNull<T>) -> ActiveBorrowGuard<'_, T> {
+        debug_assert!(self.active_borrow.get().is_none());
+        self.active_borrow.set(Some(ptr));
+        ActiveBorrowGuard { inner: self }
+    }
+
+    fn active_value(&self) -> Option<T>
+    where
+        T: Clone,
+    {
+        self.active_borrow
+            .get()
+            .map(|ptr| unsafe { Self::clone_from_active(ptr) })
+    }
+
+    unsafe fn clone_from_active(slot: NonNull<T>) -> T
+    where
+        T: Clone,
+    {
+        struct Restore<T> {
+            ptr: *mut T,
+            value: Option<T>,
+        }
+
+        impl<T> Drop for Restore<T> {
+            fn drop(&mut self) {
+                if let Some(value) = self.value.take() {
+                    unsafe {
+                        ptr::write(self.ptr, value);
+                    }
+                }
+            }
+        }
+
+        let ptr = slot.as_ptr();
+        let mut restore = Restore {
+            ptr,
+            value: Some(ptr::read(ptr)),
+        };
+        let clone = restore.value.as_ref().unwrap().clone();
+        let value = restore.value.take().unwrap();
+        ptr::write(ptr, value);
+        clone
     }
 
     fn flush_pending(&self) -> bool {
@@ -1751,6 +1799,16 @@ impl<T> MutableStateInner<T> {
 
     fn store_pending(&self, value: T) {
         *self.pending.borrow_mut() = Some(value);
+    }
+}
+
+struct ActiveBorrowGuard<'a, T> {
+    inner: &'a MutableStateInner<T>,
+}
+
+impl<'a, T> Drop for ActiveBorrowGuard<'a, T> {
+    fn drop(&mut self) {
+        self.inner.active_borrow.set(None);
     }
 }
 
@@ -1816,7 +1874,12 @@ impl<T> MutableState<T> {
         self.inner.flush_pending();
         let result = {
             let mut value = self.inner.value.borrow_mut();
-            f(&mut *value)
+            let value_ref: &mut T = &mut *value;
+            let ptr = NonNull::from(&mut *value_ref);
+            let guard = self.inner.begin_active_borrow(ptr);
+            let result = f(value_ref);
+            drop(guard);
+            result
         };
         self.notify_watchers();
         result
@@ -1874,6 +1937,8 @@ impl<T: Clone> MutableState<T> {
             pending.clone()
         } else if let Ok(value) = self.inner.value.try_borrow() {
             value.clone()
+        } else if let Some(active) = self.inner.active_value() {
+            active
         } else {
             panic!("state value unavailable: pending update missing")
         }
@@ -1951,6 +2016,8 @@ impl<T: Clone> State<T> {
             pending.clone()
         } else if let Ok(value) = self.inner.value.try_borrow() {
             value.clone()
+        } else if let Some(active) = self.inner.active_value() {
+            active
         } else {
             panic!("state value unavailable: pending update missing")
         }
