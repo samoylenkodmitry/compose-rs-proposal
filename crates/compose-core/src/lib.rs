@@ -816,7 +816,10 @@ impl SlotTable {
             Some(Slot::Group {
                 key: existing_key,
                 len,
-            }) if *existing_key == key => Some(*len),
+            }) if *existing_key == key => {
+                debug_assert_eq!(*existing_key, key, "group key mismatch");
+                Some(*len)
+            }
             Some(slot) => {
                 debug_assert_eq!(
                     SlotKind::Group,
@@ -824,12 +827,6 @@ impl SlotTable {
                     "slot kind mismatch at {}",
                     cursor
                 );
-                if let Slot::Group {
-                    key: existing_key, ..
-                } = slot
-                {
-                    debug_assert_eq!(*existing_key, key, "group key mismatch");
-                }
                 None
             }
             None => None,
