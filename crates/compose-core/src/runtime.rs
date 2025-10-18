@@ -171,6 +171,10 @@ impl RuntimeInner {
         !self.frame_callbacks.borrow().is_empty()
     }
 
+    /// Queues a closure that is already bound to the UI thread's local queue.
+    ///
+    /// The closure may capture `Rc`/`RefCell` values because it never leaves the
+    /// runtime thread. Callers must only invoke this from the runtime thread.
     fn enqueue_ui_task(&self, task: Box<dyn FnOnce() + 'static>) {
         self.local_tasks.borrow_mut().push_back(task);
         self.schedule();
@@ -394,6 +398,12 @@ impl RuntimeHandle {
         }
     }
 
+    /// Schedules work that must run on the runtime thread.
+    ///
+    /// The closure executes on the UI thread immediately when the runtime
+    /// drains its local queue, so it may capture `Rc`/`RefCell` values. Calling
+    /// this from any other thread is a logic error and will panic in debug
+    /// builds via the inner assertion.
     pub fn enqueue_ui_task(&self, task: Box<dyn FnOnce() + 'static>) {
         if let Some(inner) = self.inner.upgrade() {
             inner.enqueue_ui_task(task);
@@ -402,6 +412,10 @@ impl RuntimeHandle {
         }
     }
 
+    /// Enqueues work from any thread to run on the UI thread.
+    ///
+    /// The closure must be `Send` because it may cross threads before executing
+    /// on the runtime thread. Use this when posting from background work.
     pub fn post_ui(&self, task: impl FnOnce() + Send + 'static) {
         self.dispatcher.post(task);
     }

@@ -684,6 +684,11 @@ impl LaunchedEffectScope {
         self.runtime.clone()
     }
 
+    /// Runs a follow-up `LaunchedEffect` task on the UI thread.
+    ///
+    /// The provided closure executes on the runtime thread and may freely
+    /// capture `Rc`/`RefCell` state. This must only be called from the UI
+    /// thread, typically inside another effect callback.
     pub fn launch(&self, task: impl FnOnce(LaunchedEffectScope) + 'static) {
         if !self.is_active() {
             return;
@@ -696,6 +701,10 @@ impl LaunchedEffectScope {
         }));
     }
 
+    /// Posts UI-only work that will execute on the runtime thread.
+    ///
+    /// The closure never crosses threads, so it may capture non-`Send` values.
+    /// Callers must invoke this from the UI thread.
     pub fn post_ui(&self, task: impl FnOnce() + 'static) {
         if !self.is_active() {
             return;
@@ -708,6 +717,11 @@ impl LaunchedEffectScope {
         }));
     }
 
+    /// Posts work from any thread to run on the UI thread.
+    ///
+    /// The closure must be `Send` because it may be sent across threads before
+    /// running on the runtime thread. Use this helper when posting from
+    /// background threads that need to interact with UI state.
     pub fn post_ui_send(&self, task: impl FnOnce() + Send + 'static) {
         if !self.is_active() {
             return;
@@ -720,6 +734,11 @@ impl LaunchedEffectScope {
         });
     }
 
+    /// Runs background work on a worker thread and delivers results to the UI.
+    ///
+    /// `work` executes on a background thread, receives a cooperative
+    /// [`CancelToken`], and must produce a `Send` value. The `on_ui` continuation
+    /// runs on the runtime thread, so it may capture `Rc`/`RefCell` state safely.
     pub fn launch_background<T, Work, Ui>(&self, work: Work, on_ui: Ui)
     where
         T: Send + 'static,
@@ -775,10 +794,12 @@ impl CancelToken {
         Self { active }
     }
 
+    /// Returns `true` once the associated scope has been cancelled.
     pub fn is_cancelled(&self) -> bool {
         !self.active.load(Ordering::SeqCst)
     }
 
+    /// Returns whether the scope is still active.
     pub fn is_active(&self) -> bool {
         self.active.load(Ordering::SeqCst)
     }
