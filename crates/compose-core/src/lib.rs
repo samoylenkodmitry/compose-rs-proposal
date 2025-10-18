@@ -17,7 +17,7 @@ pub use runtime::{schedule_frame, schedule_node_update, DefaultScheduler, Runtim
 pub use runtime::{TestRuntime, TestScheduler};
 
 use std::any::Any;
-use std::cell::{Cell, RefCell, UnsafeCell};
+use std::cell::{Cell, RefCell};
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet}; // FUTURE(no_std): replace HashMap/HashSet with arena-backed maps.
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -25,7 +25,6 @@ use std::mem;
 use std::rc::{Rc, Weak}; // FUTURE(no_std): replace Rc/Weak with arena-managed handles.
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::thread::ThreadId;
 use std::thread_local;
 
 pub type Key = u64;
@@ -588,10 +587,24 @@ impl Default for DisposableEffectResult {
     }
 }
 
-#[derive(Default)]
 struct LaunchedEffectState {
     key: Option<Key>,
-    cancel_flag: Option<Arc<AtomicBool>>,
+    cancel: Option<LaunchedEffectCancellation>,
+}
+
+impl Default for LaunchedEffectState {
+    fn default() -> Self {
+        Self {
+            key: None,
+            cancel: None,
+        }
+    }
+}
+
+struct LaunchedEffectCancellation {
+    runtime: RuntimeHandle,
+    active: Arc<AtomicBool>,
+    continuations: Rc<RefCell<Vec<u64>>>,
 }
 
 impl LaunchedEffectState {
@@ -613,17 +626,27 @@ impl LaunchedEffectState {
     ) {
         self.cancel_current();
         let active = Arc::new(AtomicBool::new(true));
+        let continuations = Rc::new(RefCell::new(Vec::new()));
+        self.cancel = Some(LaunchedEffectCancellation {
+            runtime: runtime.clone(),
+            active: Arc::clone(&active),
+            continuations: Rc::clone(&continuations),
+        });
         let scope = LaunchedEffectScope {
             active: Arc::clone(&active),
             runtime: runtime.clone(),
+            continuations,
         };
-        self.cancel_flag = Some(active);
         runtime.enqueue_ui_task(Box::new(move || effect(scope)));
     }
 
     fn cancel_current(&mut self) {
-        if let Some(flag) = self.cancel_flag.take() {
-            flag.store(false, Ordering::SeqCst);
+        if let Some(cancel) = self.cancel.take() {
+            cancel.active.store(false, Ordering::SeqCst);
+            let mut pending = cancel.continuations.borrow_mut();
+            for id in pending.drain(..) {
+                cancel.runtime.cancel_ui_cont(id);
+            }
         }
     }
 }
@@ -638,9 +661,21 @@ impl Drop for LaunchedEffectState {
 pub struct LaunchedEffectScope {
     active: Arc<AtomicBool>,
     runtime: RuntimeHandle,
+    continuations: Rc<RefCell<Vec<u64>>>,
 }
 
 impl LaunchedEffectScope {
+    fn track_continuation(&self, id: u64) {
+        self.continuations.borrow_mut().push(id);
+    }
+
+    fn release_continuation(&self, id: u64) {
+        let mut continuations = self.continuations.borrow_mut();
+        if let Some(index) = continuations.iter().position(|entry| *entry == id) {
+            continuations.remove(index);
+        }
+    }
+
     pub fn is_active(&self) -> bool {
         self.active.load(Ordering::SeqCst)
     }
@@ -694,26 +729,43 @@ impl LaunchedEffectScope {
         if !self.is_active() {
             return;
         }
-        let active = Arc::clone(&self.active);
         let dispatcher = self.runtime.dispatcher();
-        let ui_thread = self.runtime.ui_thread_id();
-        let callback = Arc::new(UiCallback::new(on_ui, ui_thread));
+        let active_for_thread = Arc::clone(&self.active);
+        let continuation_scope = self.clone();
+        let continuation_active = Arc::clone(&self.active);
+        let id_cell = Rc::new(Cell::new(0));
+        let id_for_closure = Rc::clone(&id_cell);
+        let continuation = move |value: T| {
+            let id = id_for_closure.get();
+            continuation_scope.release_continuation(id);
+            if continuation_active.load(Ordering::SeqCst) {
+                on_ui(value);
+            }
+        };
+
+        let Some(cont_id) = self.runtime.register_ui_cont(continuation) else {
+            return;
+        };
+        id_cell.set(cont_id);
+        self.track_continuation(cont_id);
+
         std::thread::spawn(move || {
-            let token = CancelToken::new(Arc::clone(&active));
+            let token = CancelToken::new(Arc::clone(&active_for_thread));
             let value = work(token.clone());
             if token.is_cancelled() {
                 return;
             }
-            dispatcher.post(move || {
-                if active.load(Ordering::SeqCst) {
-                    callback.run(value);
-                }
-            });
+            dispatcher.post_invoke(cont_id, value);
         });
     }
 }
 
 #[derive(Clone)]
+/// Cooperative cancellation token passed into background `LaunchedEffect` work.
+///
+/// The token flips to "cancelled" when the associated scope leaves composition.
+/// Callers should periodically check [`CancelToken::is_cancelled`] in long-running
+/// operations and exit early; blocking I/O will not be interrupted automatically.
 pub struct CancelToken {
     active: Arc<AtomicBool>,
 }
@@ -731,35 +783,6 @@ impl CancelToken {
         self.active.load(Ordering::SeqCst)
     }
 }
-
-struct UiCallback<T> {
-    callback: UnsafeCell<Option<Box<dyn FnOnce(T) + 'static>>>,
-    ui_thread: ThreadId,
-}
-
-impl<T> UiCallback<T> {
-    fn new(callback: impl FnOnce(T) + 'static, ui_thread: ThreadId) -> Self {
-        Self {
-            callback: UnsafeCell::new(Some(Box::new(callback))),
-            ui_thread,
-        }
-    }
-
-    fn run(&self, value: T) {
-        debug_assert_eq!(
-            std::thread::current().id(),
-            self.ui_thread,
-            "UI callback invoked off the runtime thread"
-        );
-        let slot = unsafe { &mut *self.callback.get() };
-        if let Some(callback) = slot.take() {
-            callback(value);
-        }
-    }
-}
-
-unsafe impl<T> Send for UiCallback<T> {}
-unsafe impl<T> Sync for UiCallback<T> {}
 
 #[allow(non_snake_case)]
 pub fn SideEffect(effect: impl FnOnce() + 'static) {

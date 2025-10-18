@@ -1,5 +1,6 @@
+use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
@@ -10,17 +11,19 @@ use crate::frame_clock::FrameClock;
 use crate::platform::RuntimeScheduler;
 use crate::{Applier, Command, FrameCallbackId, NodeError, RecomposeScopeInner, ScopeId};
 
+enum UiMessage {
+    Task(Box<dyn FnOnce() + Send + 'static>),
+    Invoke { id: u64, value: Box<dyn Any + Send> },
+}
+
 struct UiDispatcherInner {
     scheduler: Arc<dyn RuntimeScheduler>,
-    tx: mpsc::Sender<Box<dyn FnOnce() + Send + 'static>>,
+    tx: mpsc::Sender<UiMessage>,
     pending: AtomicUsize,
 }
 
 impl UiDispatcherInner {
-    fn new(
-        scheduler: Arc<dyn RuntimeScheduler>,
-        tx: mpsc::Sender<Box<dyn FnOnce() + Send + 'static>>,
-    ) -> Self {
+    fn new(scheduler: Arc<dyn RuntimeScheduler>, tx: mpsc::Sender<UiMessage>) -> Self {
         Self {
             scheduler,
             tx,
@@ -28,14 +31,37 @@ impl UiDispatcherInner {
         }
     }
 
-    fn post(&self, task: Box<dyn FnOnce() + Send + 'static>) {
+    fn post(&self, task: impl FnOnce() + Send + 'static) {
         self.pending.fetch_add(1, Ordering::SeqCst);
-        let _ = self.tx.send(task);
+        let _ = self.tx.send(UiMessage::Task(Box::new(task)));
+        self.scheduler.schedule_frame();
+    }
+
+    fn post_invoke(&self, id: u64, value: Box<dyn Any + Send>) {
+        self.pending.fetch_add(1, Ordering::SeqCst);
+        let _ = self.tx.send(UiMessage::Invoke { id, value });
         self.scheduler.schedule_frame();
     }
 
     fn has_pending(&self) -> bool {
         self.pending.load(Ordering::SeqCst) > 0
+    }
+}
+
+struct PendingGuard<'a> {
+    counter: &'a AtomicUsize,
+}
+
+impl<'a> PendingGuard<'a> {
+    fn new(counter: &'a AtomicUsize) -> Self {
+        Self { counter }
+    }
+}
+
+impl<'a> Drop for PendingGuard<'a> {
+    fn drop(&mut self) {
+        let previous = self.counter.fetch_sub(1, Ordering::SeqCst);
+        debug_assert!(previous > 0, "UI dispatcher pending count underflowed");
     }
 }
 
@@ -50,7 +76,14 @@ impl UiDispatcher {
     }
 
     pub fn post(&self, task: impl FnOnce() + Send + 'static) {
-        self.inner.post(Box::new(task));
+        self.inner.post(task);
+    }
+
+    pub fn post_invoke<T>(&self, id: u64, value: T)
+    where
+        T: Send + 'static,
+    {
+        self.inner.post_invoke(id, Box::new(value));
     }
 
     pub fn has_pending(&self) -> bool {
@@ -67,8 +100,10 @@ struct RuntimeInner {
     frame_callbacks: RefCell<VecDeque<FrameCallbackEntry>>, // FUTURE(no_std): migrate to ring buffer.
     next_frame_callback_id: Cell<u64>,
     ui_dispatcher: Arc<UiDispatcherInner>,
-    ui_rx: RefCell<mpsc::Receiver<Box<dyn FnOnce() + Send + 'static>>>,
+    ui_rx: RefCell<mpsc::Receiver<UiMessage>>,
     local_tasks: RefCell<VecDeque<Box<dyn FnOnce() + 'static>>>,
+    ui_conts: RefCell<HashMap<u64, Box<dyn Fn(Box<dyn Any>) + 'static>>>,
+    next_cont_id: Cell<u64>,
     ui_thread_id: ThreadId,
 }
 
@@ -87,6 +122,8 @@ impl RuntimeInner {
             ui_dispatcher: dispatcher,
             ui_rx: RefCell::new(rx),
             local_tasks: RefCell::new(VecDeque::new()),
+            ui_conts: RefCell::new(HashMap::new()),
+            next_cont_id: Cell::new(1),
             ui_thread_id: std::thread::current().id(),
         }
     }
@@ -145,11 +182,17 @@ impl RuntimeInner {
 
             {
                 let rx = &mut *self.ui_rx.borrow_mut();
-                for task in rx.try_iter() {
+                for message in rx.try_iter() {
                     executed = true;
-                    task();
-                    let prev = self.ui_dispatcher.pending.fetch_sub(1, Ordering::SeqCst);
-                    debug_assert!(prev > 0, "UI dispatcher pending count underflowed");
+                    let _guard = PendingGuard::new(&self.ui_dispatcher.pending);
+                    match message {
+                        UiMessage::Task(task) => {
+                            task();
+                        }
+                        UiMessage::Invoke { id, value } => {
+                            self.invoke_ui_cont(id, value);
+                        }
+                    }
                 }
             }
 
@@ -176,6 +219,47 @@ impl RuntimeInner {
 
     fn has_pending_ui(&self) -> bool {
         !self.local_tasks.borrow().is_empty() || self.ui_dispatcher.has_pending()
+    }
+
+    fn register_ui_cont<T: 'static>(&self, f: impl FnOnce(T) + 'static) -> u64 {
+        debug_assert_eq!(
+            std::thread::current().id(),
+            self.ui_thread_id,
+            "UI continuation registered off the runtime thread",
+        );
+        let id = self.next_cont_id.get();
+        self.next_cont_id.set(id + 1);
+        let callback = RefCell::new(Some(f));
+        self.ui_conts.borrow_mut().insert(
+            id,
+            Box::new(move |value: Box<dyn Any>| {
+                let slot = callback
+                    .borrow_mut()
+                    .take()
+                    .expect("UI continuation invoked more than once");
+                let value = value
+                    .downcast::<T>()
+                    .expect("UI continuation type mismatch");
+                slot(*value);
+            }),
+        );
+        id
+    }
+
+    fn invoke_ui_cont(&self, id: u64, value: Box<dyn Any + Send>) {
+        debug_assert_eq!(
+            std::thread::current().id(),
+            self.ui_thread_id,
+            "UI continuation invoked off the runtime thread",
+        );
+        if let Some(callback) = self.ui_conts.borrow_mut().remove(&id) {
+            let value: Box<dyn Any> = value;
+            callback(value);
+        }
+    }
+
+    fn cancel_ui_cont(&self, id: u64) {
+        self.ui_conts.borrow_mut().remove(&id);
     }
 
     fn register_frame_callback(&self, callback: Box<dyn FnOnce(u64) + 'static>) -> FrameCallbackId {
@@ -322,6 +406,16 @@ impl RuntimeHandle {
         self.dispatcher.post(task);
     }
 
+    pub fn register_ui_cont<T: 'static>(&self, f: impl FnOnce(T) + 'static) -> Option<u64> {
+        self.inner.upgrade().map(|inner| inner.register_ui_cont(f))
+    }
+
+    pub fn cancel_ui_cont(&self, id: u64) {
+        if let Some(inner) = self.inner.upgrade() {
+            inner.cancel_ui_cont(id);
+        }
+    }
+
     pub fn drain_ui(&self) {
         if let Some(inner) = self.inner.upgrade() {
             inner.drain_ui();
@@ -413,14 +507,6 @@ impl RuntimeHandle {
             .upgrade()
             .map(|inner| inner.has_frame_callbacks())
             .unwrap_or(false)
-    }
-
-    pub(crate) fn ui_thread_id(&self) -> ThreadId {
-        if let Some(inner) = self.inner.upgrade() {
-            inner.ui_thread_id
-        } else {
-            std::thread::current().id()
-        }
     }
 
     pub fn assert_ui_thread(&self) {
