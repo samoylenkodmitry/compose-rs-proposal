@@ -152,5 +152,3 @@ fn spring_spec_stiff_has_high_stiffness() {
     assert_eq!(spec.stiffness, 3000.0);
     assert!(spec.stiffness > SpringSpec::default().stiffness);
 }
-
-

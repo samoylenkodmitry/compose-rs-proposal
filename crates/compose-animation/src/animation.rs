@@ -285,7 +285,7 @@ pub struct Animatable<T: SpringScalar + 'static> {
     inner: Rc<RefCell<AnimatableInner<T>>>,
 }
 
-struct AnimatableInner<T: SpringScalar> {
+struct AnimatableInner<T: SpringScalar + 'static> {
     state: MutableState<T>,
     runtime: RuntimeHandle,
     current: T,
