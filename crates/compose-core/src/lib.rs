@@ -1776,18 +1776,20 @@ impl<T> MutableStateInner<T> {
     }
 
     fn flush_pending(&self) -> bool {
-        let pending = {
-            let mut slot = self.pending.borrow_mut();
-            slot.take()
+        let mut slot = match self.pending.try_borrow_mut() {
+            Ok(slot) => slot,
+            Err(_) => return false,
         };
-        if let Some(value) = pending {
+        if let Some(value) = slot.take() {
             match self.value.try_borrow_mut() {
                 Ok(mut current) => {
+                    let ptr = NonNull::from(&mut *current);
+                    let guard = self.begin_active_borrow(ptr);
                     *current = value;
+                    drop(guard);
                     true
                 }
                 Err(_) => {
-                    let mut slot = self.pending.borrow_mut();
                     *slot = Some(value);
                     false
                 }
@@ -1933,9 +1935,12 @@ impl<T: Clone> MutableState<T> {
         let state = self.as_state();
         state.subscribe_current_scope();
         self.inner.flush_pending();
-        if let Some(pending) = self.inner.pending.borrow().as_ref() {
-            pending.clone()
-        } else if let Ok(value) = self.inner.value.try_borrow() {
+        if let Ok(pending) = self.inner.pending.try_borrow() {
+            if let Some(pending) = pending.as_ref() {
+                return pending.clone();
+            }
+        }
+        if let Ok(value) = self.inner.value.try_borrow() {
             value.clone()
         } else if let Some(active) = self.inner.active_value() {
             active
@@ -2012,9 +2017,12 @@ impl<T: Clone> State<T> {
     pub fn value(&self) -> T {
         self.subscribe_current_scope();
         self.inner.flush_pending();
-        if let Some(pending) = self.inner.pending.borrow().as_ref() {
-            pending.clone()
-        } else if let Ok(value) = self.inner.value.try_borrow() {
+        if let Ok(pending) = self.inner.pending.try_borrow() {
+            if let Some(pending) = pending.as_ref() {
+                return pending.clone();
+            }
+        }
+        if let Ok(value) = self.inner.value.try_borrow() {
             value.clone()
         } else if let Some(active) = self.inner.active_value() {
             active
