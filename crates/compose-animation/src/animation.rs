@@ -71,17 +71,69 @@ impl Easing {
 }
 
 /// Cubic bezier curve approximation for easing.
-fn cubic_bezier(_x1: f32, y1: f32, _x2: f32, y2: f32, t: f32) -> f32 {
-    // Simple approximation using the parametric form
-    // For production, we'd use Newton-Raphson to solve for t given x
-    let t2 = t * t;
-    let t3 = t2 * t;
-    let mt = 1.0 - t;
-    let mt2 = mt * mt;
+fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32, fraction: f32) -> f32 {
+    if fraction <= 0.0 {
+        return 0.0;
+    }
+    if fraction >= 1.0 {
+        return 1.0;
+    }
 
-    // Bezier curve: B(t) = (1-t)^3 * P0 + 3(1-t)^2 * t * P1 + 3(1-t) * t^2 * P2 + t^3 * P3
-    // Where P0 = (0,0), P1 = (x1,y1), P2 = (x2,y2), P3 = (1,1)
-    3.0 * mt2 * t * y1 + 3.0 * mt * t2 * y2 + t3
+    let cx = 3.0 * x1;
+    let bx = 3.0 * (x2 - x1) - cx;
+    let ax = 1.0 - cx - bx;
+
+    let cy = 3.0 * y1;
+    let by = 3.0 * (y2 - y1) - cy;
+    let ay = 1.0 - cy - by;
+
+    fn sample_curve(a: f32, b: f32, c: f32, t: f32) -> f32 {
+        ((a * t + b) * t + c) * t
+    }
+
+    fn sample_derivative(a: f32, b: f32, c: f32, t: f32) -> f32 {
+        (3.0 * a * t + 2.0 * b) * t + c
+    }
+
+    // Use Newton-Raphson iterations to solve for the parametric value `t`
+    // corresponding to the provided x fraction. Clamp to [0, 1] to keep the
+    // solution within bounds.
+    let mut t = fraction;
+    let mut newton_success = false;
+    for _ in 0..8 {
+        let x = sample_curve(ax, bx, cx, t) - fraction;
+        if x.abs() < 1e-6 {
+            newton_success = true;
+            break;
+        }
+        let dx = sample_derivative(ax, bx, cx, t);
+        if dx.abs() < 1e-6 {
+            break;
+        }
+        t = (t - x / dx).clamp(0.0, 1.0);
+    }
+
+    if !newton_success {
+        // Fall back to a binary subdivision if Newton-Raphson did not converge.
+        let mut t0 = 0.0;
+        let mut t1 = 1.0;
+        t = fraction;
+        for _ in 0..16 {
+            let x = sample_curve(ax, bx, cx, t);
+            let delta = x - fraction;
+            if delta.abs() < 1e-6 {
+                break;
+            }
+            if delta > 0.0 {
+                t1 = t;
+            } else {
+                t0 = t;
+            }
+            t = 0.5 * (t0 + t1);
+        }
+    }
+
+    sample_curve(ay, by, cy, t)
 }
 
 /// Helper to extract f32 from generic types for spring physics calculations.
