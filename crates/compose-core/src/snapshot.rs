@@ -30,7 +30,10 @@ pub fn current_snapshot() -> Arc<dyn Snapshot> {
         if let Some(snapshot) = slot.borrow().clone() {
             snapshot
         } else {
-            global_snapshot_lock().read().unwrap().clone()
+            global_snapshot_lock()
+                .read()
+                .expect("global snapshot poisoned while reading current snapshot")
+                .clone()
         }
     })
 }
@@ -45,7 +48,9 @@ pub fn with_snapshot<T>(snapshot: Arc<dyn Snapshot>, f: impl FnOnce() -> T) -> T
 }
 
 pub fn advance_global_snapshot() -> Arc<dyn Snapshot> {
-    let mut guard = global_snapshot_lock().write().unwrap();
+    let mut guard = global_snapshot_lock()
+        .write()
+        .expect("global snapshot poisoned while advancing snapshot");
     let id = NEXT_SNAPSHOT_ID.fetch_add(1, Ordering::Relaxed);
     let snapshot = Arc::new(MutableSnapshot::new(id, SnapshotIdSet::new(), false));
     *guard = snapshot.clone();
@@ -80,7 +85,11 @@ impl MutableSnapshot {
     }
 
     pub fn has_pending_changes(&self) -> bool {
-        !self.modified.lock().unwrap().is_empty()
+        !self
+            .modified
+            .lock()
+            .expect("mutable snapshot modified set poisoned while checking pending changes")
+            .is_empty()
     }
 }
 
@@ -105,7 +114,10 @@ impl Snapshot for MutableSnapshot {
         if self.disposed.load(Ordering::SeqCst) {
             return;
         }
-        self.modified.lock().unwrap().insert(object_id);
+        self.modified
+            .lock()
+            .expect("mutable snapshot modified set poisoned while recording modification")
+            .insert(object_id);
     }
 }
 

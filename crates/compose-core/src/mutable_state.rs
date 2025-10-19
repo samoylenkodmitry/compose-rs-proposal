@@ -25,12 +25,24 @@ impl<T: Clone + 'static> MutableStateInner<T> {
     }
 
     fn first_state_record(&self) -> Arc<StateRecord<T>> {
-        let guard = self.head.read().unwrap_or_else(|e| e.into_inner());
+        let guard = self.head.read().unwrap_or_else(|err| {
+            panic!(
+                "MutableStateInner::first_state_record poisoned RwLock (object_id={:#x}): {}",
+                self.object_id(),
+                err
+            )
+        });
         Arc::clone(&*guard)
     }
 
     fn set_first_state_record(&self, record: Arc<StateRecord<T>>) {
-        let mut guard = self.head.write().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.head.write().unwrap_or_else(|err| {
+            panic!(
+                "MutableStateInner::set_first_state_record poisoned RwLock (object_id={:#x}): {}",
+                self.object_id(),
+                err
+            )
+        });
         *guard = record;
     }
 
