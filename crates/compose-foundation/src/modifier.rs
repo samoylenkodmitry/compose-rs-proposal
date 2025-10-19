@@ -9,6 +9,7 @@
 
 use std::any::{type_name, Any, TypeId};
 use std::fmt;
+use std::rc::Rc;
 
 pub use compose_ui_graphics::DrawScope;
 pub use compose_ui_graphics::Size;
@@ -328,11 +329,11 @@ where
 /// Convenience helper for callers to construct a type-erased modifier
 /// element without having to mention the internal wrapper type.
 pub fn modifier_element<E: ModifierElement>(element: E) -> DynModifierElement {
-    Box::new(TypedModifierElement::new(element))
+    Rc::new(TypedModifierElement::new(element))
 }
 
 /// Boxed type-erased modifier element.
-pub type DynModifierElement = Box<dyn AnyModifierElement>;
+pub type DynModifierElement = Rc<dyn AnyModifierElement>;
 
 struct ModifierNodeEntry {
     type_id: TypeId,

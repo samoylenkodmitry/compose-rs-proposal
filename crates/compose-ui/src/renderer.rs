@@ -2,9 +2,7 @@ use crate::layout::{LayoutBox, LayoutNodeKind, LayoutTree};
 use crate::modifier::{
     Brush, DrawCommand as ModifierDrawCommand, Modifier, Rect, RoundedCornerShape, Size,
 };
-use crate::modifier_bridge::{build_chain, ModifierNodeChainExt};
 use compose_core::NodeId;
-use compose_foundation::BasicModifierNodeContext;
 use compose_ui_graphics::DrawPrimitive;
 
 /// Layer that a paint operation targets within the rendering pipeline.
@@ -114,13 +112,9 @@ fn evaluate_modifier(
     let mut behind = Vec::new();
     let mut overlay = Vec::new();
 
-    let mut chain = build_chain(modifier);
-    let mut context = BasicModifierNodeContext::new();
-    let draw_snapshot = chain.draw(&mut context, modifier);
-
-    if let Some(color) = draw_snapshot.background {
+    if let Some(color) = modifier.background_color() {
         let brush = Brush::solid(color);
-        let primitive = if let Some(shape) = draw_snapshot.corner_shape {
+        let primitive = if let Some(shape) = modifier.corner_shape() {
             let radii = resolve_radii(shape, rect);
             DrawPrimitive::RoundRect { rect, brush, radii }
         } else {
@@ -138,7 +132,7 @@ fn evaluate_modifier(
         height: rect.height,
     };
 
-    for command in draw_snapshot.commands {
+    for command in modifier.draw_commands() {
         match command {
             ModifierDrawCommand::Behind(func) => {
                 for primitive in func(size) {

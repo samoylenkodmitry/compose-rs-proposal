@@ -1,4 +1,4 @@
-use super::{DrawCacheBuilder, DrawCommand, ModOp, Modifier, Size};
+use super::{DrawCacheBuilder, DrawCommand, Modifier, Size};
 use compose_ui_graphics::{DrawScope, DrawScopeDefault};
 use std::rc::Rc;
 
@@ -9,7 +9,9 @@ impl Modifier {
             f(&mut scope);
             scope.into_primitives()
         });
-        Self::with_op(ModOp::Draw(DrawCommand::Overlay(func)))
+        Self::with_state(move |state| {
+            state.draw_commands.push(DrawCommand::Overlay(func.clone()));
+        })
     }
 
     pub fn draw_behind(f: impl Fn(&mut dyn DrawScope) + 'static) -> Self {
@@ -18,24 +20,17 @@ impl Modifier {
             f(&mut scope);
             scope.into_primitives()
         });
-        Self::with_op(ModOp::Draw(DrawCommand::Behind(func)))
+        Self::with_state(move |state| {
+            state.draw_commands.push(DrawCommand::Behind(func.clone()));
+        })
     }
 
     pub fn draw_with_cache(build: impl FnOnce(&mut DrawCacheBuilder)) -> Self {
         let mut builder = DrawCacheBuilder::default();
         build(&mut builder);
         let commands = builder.finish();
-        let ops = commands.into_iter().map(ModOp::Draw).collect();
-        Self::with_ops(ops)
-    }
-
-    pub fn draw_commands(&self) -> Vec<DrawCommand> {
-        self.0
-            .iter()
-            .filter_map(|op| match op {
-                ModOp::Draw(cmd) => Some(cmd.clone()),
-                _ => None,
-            })
-            .collect()
+        Self::with_state(move |state| {
+            state.draw_commands.extend(commands.iter().cloned());
+        })
     }
 }
