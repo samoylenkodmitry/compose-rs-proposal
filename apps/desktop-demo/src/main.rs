@@ -797,3 +797,51 @@ fn composition_local_observer() {
         DisposableEffectResult::default()
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use compose_app_shell::{default_root_key, AppShell};
+    use compose_render_pixels::PixelsRenderer;
+
+    #[test]
+    fn fast_pointer_simulation() {
+        let mut app = AppShell::new(PixelsRenderer::new(), default_root_key(), combined_app);
+        app.set_viewport(800.0, 600.0);
+        for _ in 0..5 {
+            app.update();
+        }
+
+        let scene = app.scene();
+        let show_button = scene
+            .hits
+            .iter()
+            .find(|hit| !hit.click_actions.is_empty())
+            .expect("show counter button");
+        let bx = show_button.rect.x + show_button.rect.width * 0.5;
+        let by = show_button.rect.y + show_button.rect.height * 0.5;
+        app.set_cursor(bx, by);
+        app.pointer_pressed();
+        app.update();
+        app.pointer_released();
+        app.update();
+
+        let scene = app.scene();
+        let hit = scene
+            .hits
+            .iter()
+            .find(|hit| !hit.pointer_inputs.is_empty())
+            .expect("pointer input region");
+        let x = hit.rect.x + hit.rect.width * 0.5;
+        let y = hit.rect.y + hit.rect.height * 0.5;
+
+        for i in 0..200 {
+            let offset = (i % 40) as f32;
+            app.set_cursor(x + offset, y + offset * 0.5);
+            app.pointer_pressed();
+            app.update();
+            app.pointer_released();
+            app.update();
+        }
+    }
+}

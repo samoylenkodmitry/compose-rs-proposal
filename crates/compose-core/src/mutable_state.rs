@@ -236,7 +236,6 @@ impl<T: Clone + 'static> MutableState<T> {
             self.inner.object_id(),
             new_id
         );
-        record.set_next(Some(previous));
         self.inner.set_first_state_record(record.clone());
         snapshot.record_modified(self.inner.object_id());
         self.notify_watchers();
@@ -331,7 +330,7 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn installing_new_record_links_previous_head() {
+    fn installing_new_record_replaces_head() {
         let runtime = Runtime::new(Arc::new(DefaultScheduler));
         let handle = runtime.handle();
         let state = MutableState::with_runtime(0, handle);
@@ -342,15 +341,14 @@ mod tests {
 
         assert_eq!(head.value(), 1);
         assert_ne!(head.snapshot_id(), previous.snapshot_id());
-        let next = head
-            .next()
-            .expect("new state record should retain previous head");
-        assert!(Arc::ptr_eq(&next, &previous));
-        assert_eq!(next.value(), 0);
+        assert!(
+            head.next().is_none(),
+            "head should not retain prior records"
+        );
     }
 
     #[test]
-    fn subsequent_writes_chain_records_in_order() {
+    fn subsequent_writes_replace_previous_values() {
         let runtime = Runtime::new(Arc::new(DefaultScheduler));
         let handle = runtime.handle();
         let state = MutableState::with_runtime(0, handle);
@@ -360,13 +358,9 @@ mod tests {
 
         let head = state.inner.first_state_record();
         assert_eq!(head.value(), 2);
-        let second = head
-            .next()
-            .expect("second record should exist after two writes");
-        assert_eq!(second.value(), 1);
-        let third = second
-            .next()
-            .expect("third record should preserve initial value");
-        assert_eq!(third.value(), 0);
+        assert!(
+            head.next().is_none(),
+            "no additional state records should remain"
+        );
     }
 }
