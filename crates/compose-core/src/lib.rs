@@ -1949,7 +1949,7 @@ impl<'a> Composer<'a> {
 struct MutableStateInner<T> {
     value: RefCell<T>,
     pending: RefCell<Option<T>>,
-    staged: RefCell<Option<T>>,
+    staged: UnsafeCell<Option<T>>,
     staged_read: Cell<bool>,
     watchers: RefCell<Vec<Weak<RecomposeScopeInner>>>, // FUTURE(no_std): move to stack-allocated subscription list.
     runtime: RuntimeHandle,
@@ -1961,7 +1961,7 @@ impl<T> MutableStateInner<T> {
         Self {
             value: RefCell::new(value),
             pending: RefCell::new(None),
-            staged: RefCell::new(None),
+            staged: UnsafeCell::new(None),
             staged_read: Cell::new(false),
             watchers: RefCell::new(Vec::new()),
             runtime,
@@ -2039,10 +2039,9 @@ impl<T> MutableStateInner<T> {
     }
 
     fn stage(&self, value: T) {
-        *self
-            .staged
-            .try_borrow_mut()
-            .expect("mutable state staged slot borrow should succeed") = Some(value);
+        unsafe {
+            *self.staged.get() = Some(value);
+        }
         self.staged_read.set(false);
         let mut watchers_ref = self
             .watchers
@@ -2054,9 +2053,8 @@ impl<T> MutableStateInner<T> {
             .filter_map(|w| w.upgrade())
             .map(|inner| RecomposeScope { inner })
             .collect();
-        let had_watchers = !watchers.is_empty();
         drop(watchers_ref);
-        if had_watchers {
+        if !watchers.is_empty() {
             for watcher in watchers {
                 watcher.force_recompose();
             }
@@ -2064,12 +2062,8 @@ impl<T> MutableStateInner<T> {
     }
 
     fn commit_staged(&self) -> bool {
-        if let Some(value) = self
-            .staged
-            .try_borrow_mut()
-            .expect("mutable state staged slot borrow should succeed during commit")
-            .take()
-        {
+        let staged = unsafe { &mut *self.staged.get() };
+        if let Some(value) = staged.take() {
             let should_notify = !self.staged_read.replace(false);
             let applied_now = if let Ok(mut current) = self.value.try_borrow_mut() {
                 *current = value;
@@ -2095,15 +2089,21 @@ impl<T> MutableStateInner<T> {
     }
 
     fn abort_staged(&self) {
-        self.staged
-            .try_borrow_mut()
-            .expect("mutable state staged slot borrow should succeed during abort")
-            .take();
+        unsafe {
+            (*self.staged.get()).take();
+        }
         self.staged_read.set(false);
     }
 
     fn mark_staged_read(&self) {
         self.staged_read.set(true);
+    }
+
+    fn staged_cloned(&self) -> Option<T>
+    where
+        T: Clone,
+    {
+        unsafe { (*self.staged.get()).as_ref().cloned() }
     }
 
     fn notify_watchers_inner(&self) {
@@ -2277,15 +2277,9 @@ impl<T: Clone> MutableState<T> {
         state.subscribe_current_scope();
         self.inner.flush_pending();
         if crate::snapshot::snapshot_active() {
-            if let Some(staged) = self
-                .inner
-                .staged
-                .try_borrow()
-                .expect("mutable state staged slot borrow should succeed for read")
-                .as_ref()
-            {
+            if let Some(staged) = self.inner.staged_cloned() {
                 self.inner.mark_staged_read();
-                return staged.clone();
+                return staged;
             }
         }
         if let Ok(pending) = self.inner.pending.try_borrow() {
@@ -2371,15 +2365,9 @@ impl<T: Clone> State<T> {
         self.subscribe_current_scope();
         self.inner.flush_pending();
         if crate::snapshot::snapshot_active() {
-            if let Some(staged) = self
-                .inner
-                .staged
-                .try_borrow()
-                .expect("mutable state staged slot borrow should succeed for read")
-                .as_ref()
-            {
+            if let Some(staged) = self.inner.staged_cloned() {
                 self.inner.mark_staged_read();
-                return staged.clone();
+                return staged;
             }
         }
         if let Ok(pending) = self.inner.pending.try_borrow() {
