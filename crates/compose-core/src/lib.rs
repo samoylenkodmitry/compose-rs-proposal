@@ -2271,6 +2271,41 @@ impl<T: Clone + 'static> MutableState<T> {
         let result = f(&mut record.value);
         let record: Box<dyn snapshots::StateRecord> = record;
         self.inner.install_record(record);
+        let chain_ids = snapshots::chain_snapshot_ids(self.inner.as_state_object());
+        assert!(
+            !chain_ids.is_empty(),
+            "MutableState::update: state {:p} has empty record chain after install (snapshot {}, invalid ids: {:?})",
+            self.inner.state_object_ptr(),
+            snapshot.id,
+            snapshot.invalid.iter().copied().collect::<Vec<_>>()
+        );
+        let head = self.inner.first_record().unwrap_or_else(|| {
+            panic!(
+                "MutableState::update: state {:p} lost head record after install (snapshot {}, invalid ids: {:?}, chain ids: {:?})",
+                self.inner.state_object_ptr(),
+                snapshot.id,
+                snapshot.invalid.iter().copied().collect::<Vec<_>>(),
+                chain_ids
+            )
+        });
+        let readable = snapshots::readable(Some(head), snapshot.id, &snapshot.invalid).unwrap_or_else(|| {
+            panic!(
+                "MutableState::update: state {:p} missing readable record after install for snapshot {} (invalid ids: {:?}, chain ids: {:?})",
+                self.inner.state_object_ptr(),
+                snapshot.id,
+                snapshot.invalid.iter().copied().collect::<Vec<_>>(),
+                chain_ids
+            )
+        });
+        assert!(
+            readable.snapshot_id() == snapshot.id,
+            "MutableState::update: readable record id {} does not match snapshot {} for state {:p} after install (invalid ids: {:?}, chain ids: {:?})",
+            readable.snapshot_id(),
+            snapshot.id,
+            self.inner.state_object_ptr(),
+            snapshot.invalid.iter().copied().collect::<Vec<_>>(),
+            chain_ids
+        );
         snapshot.mark_modified(self.inner.state_object_ptr());
         snapshots::notify_write(self);
         self.notify_watchers();

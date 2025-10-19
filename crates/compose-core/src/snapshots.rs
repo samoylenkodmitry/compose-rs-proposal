@@ -103,11 +103,47 @@ impl Snapshot {
             "attempted to modify read-only snapshot {} for object {:p}",
             self.id, object
         );
+        let handle = StateObjectHandle::new(object);
+        let object_ref = handle.as_ref();
+        let chain_ids = chain_snapshot_ids(object_ref);
+        assert!(
+            !chain_ids.is_empty(),
+            "Snapshot::mark_modified: object {:p} has empty record chain in snapshot {} (invalid ids: {:?})",
+            handle.as_ptr(),
+            self.id,
+            self.invalid.iter().copied().collect::<Vec<_>>()
+        );
+        let first = object_ref.first_record().unwrap_or_else(|| {
+            panic!(
+                "Snapshot::mark_modified: object {:p} missing head record in snapshot {} (invalid ids: {:?}, chain ids: {:?})",
+                handle.as_ptr(),
+                self.id,
+                self.invalid.iter().copied().collect::<Vec<_>>(),
+                chain_ids
+            )
+        });
+        let readable = readable(Some(first), self.id, &self.invalid).unwrap_or_else(|| {
+            panic!(
+                "Snapshot::mark_modified: object {:p} missing readable record for snapshot {} (invalid ids: {:?}, chain ids: {:?})",
+                handle.as_ptr(),
+                self.id,
+                self.invalid.iter().copied().collect::<Vec<_>>(),
+                chain_ids
+            )
+        });
+        assert!(
+            readable.snapshot_id() == self.id,
+            "Snapshot::mark_modified: readable record id {} does not match snapshot {} for object {:p} (invalid ids: {:?}, chain ids: {:?})",
+            readable.snapshot_id(),
+            self.id,
+            handle.as_ptr(),
+            self.invalid.iter().copied().collect::<Vec<_>>(),
+            chain_ids
+        );
         let mut modified = self
             .modified
             .lock()
             .expect("snapshot modified set lock poisoned");
-        let handle = StateObjectHandle::new(object);
         let was_new = modified.insert(handle);
         debug_assert!(
             was_new,
@@ -253,6 +289,37 @@ fn record_from_ptr<'a>(ptr: *const dyn StateRecord) -> &'a dyn StateRecord {
     debug_assert!(!ptr.is_null(), "expected non-null state record pointer");
     // SAFETY: callers only supply pointers obtained from live state record chains.
     unsafe { &*ptr }
+}
+
+pub(crate) fn chain_snapshot_ids(object: &dyn StateObject) -> Vec<SnapshotId> {
+    use std::collections::HashSet;
+
+    let mut ids = Vec::new();
+    let mut current = object.first_record();
+    let mut seen = HashSet::new();
+    let mut depth = 0usize;
+    while let Some(ptr) = current {
+        let inserted = seen.insert(ptr);
+        assert!(
+            inserted,
+            "chain_snapshot_ids: detected cycle at record {:p} for object {:p} (collected ids so far: {:?})",
+            ptr,
+            object as *const dyn StateObject,
+            ids
+        );
+        let record = record_from_ptr(ptr);
+        ids.push(record.snapshot_id());
+        current = record.next_ptr();
+        depth = depth.saturating_add(1);
+        assert!(
+            depth <= 2048,
+            "chain_snapshot_ids: record chain exceeded sanity limit ({} nodes) for object {:p} (ids: {:?})",
+            depth,
+            object as *const dyn StateObject,
+            ids
+        );
+    }
+    ids
 }
 
 pub fn readable<'a>(
