@@ -168,19 +168,9 @@ impl Snapshot {
         let modified = self.modified.borrow();
         for (_id, state) in modified.iter() {
             let parent_head = state.first_record();
-            assert!(
-                !parent_head.is_null(),
-                "Snapshot::apply missing parent head for state {:?} (child_id={}, base_parent_id={})",
-                state.object_id(),
-                self.id.get(),
-                self.base_parent_id,
-            );
-
             let parent_readable = state.readable_record(parent.clone());
 
-            if !parent_readable.is_null()
-                && unsafe { (*parent_readable).snapshot_id() } > self.base_parent_id
-            {
+            if parent_readable.snapshot_id() > self.base_parent_id {
                 if !state.try_merge(
                     parent_head,
                     parent_readable,
