@@ -308,6 +308,135 @@ fn layout_node_applies_fractional_size_before_measure() -> Result<(), NodeError>
 }
 
 #[test]
+fn row_placements_use_resolved_width() -> Result<(), NodeError> {
+    use crate::layout::policies::RowMeasurePolicy;
+
+    let mut applier = MemoryApplier::new();
+    let child_a = applier.create(Box::new(SpacerNode {
+        size: Size {
+            width: 60.0,
+            height: 20.0,
+        },
+    }));
+    let child_b = applier.create(Box::new(SpacerNode {
+        size: Size {
+            width: 80.0,
+            height: 18.0,
+        },
+    }));
+    let child_c = applier.create(Box::new(SpacerNode {
+        size: Size {
+            width: 150.0,
+            height: 22.0,
+        },
+    }));
+
+    let policy = Rc::new(RowMeasurePolicy::new(
+        LinearArrangement::Center,
+        VerticalAlignment::CenterVertically,
+    ));
+    let mut layout_node = LayoutNode::new(Modifier::size_points(360.0, 40.0), policy);
+    layout_node.children.insert(child_a);
+    layout_node.children.insert(child_b);
+    layout_node.children.insert(child_c);
+    let layout_id = applier.create(Box::new(layout_node));
+
+    let mut builder = LayoutBuilder::new(&mut applier);
+    let measured = builder.measure_node(
+        layout_id,
+        Constraints {
+            min_width: 0.0,
+            max_width: 500.0,
+            min_height: 0.0,
+            max_height: 400.0,
+        },
+    )?;
+
+    assert_eq!(measured.size.width, 360.0);
+    assert_eq!(measured.children.len(), 3);
+    assert_eq!(measured.children[0].offset.x, 35.0);
+    assert_eq!(measured.children[1].offset.x, 95.0);
+    assert_eq!(measured.children[2].offset.x, 175.0);
+    Ok(())
+}
+
+#[test]
+fn row_space_between_uses_resolved_width() -> Result<(), NodeError> {
+    use crate::layout::policies::RowMeasurePolicy;
+
+    let mut applier = MemoryApplier::new();
+    let child_a = applier.create(Box::new(SpacerNode {
+        size: Size {
+            width: 40.0,
+            height: 10.0,
+        },
+    }));
+    let child_b = applier.create(Box::new(SpacerNode {
+        size: Size {
+            width: 60.0,
+            height: 12.0,
+        },
+    }));
+
+    let policy = Rc::new(RowMeasurePolicy::new(
+        LinearArrangement::SpaceBetween,
+        VerticalAlignment::CenterVertically,
+    ));
+    let mut layout_node = LayoutNode::new(Modifier::width(200.0), policy);
+    layout_node.children.insert(child_a);
+    layout_node.children.insert(child_b);
+    let layout_id = applier.create(Box::new(layout_node));
+
+    let mut builder = LayoutBuilder::new(&mut applier);
+    let measured = builder.measure_node(
+        layout_id,
+        Constraints {
+            min_width: 0.0,
+            max_width: 200.0,
+            min_height: 0.0,
+            max_height: 200.0,
+        },
+    )?;
+
+    assert_eq!(measured.size.width, 200.0);
+    assert_eq!(measured.children.len(), 2);
+    assert!((measured.children[0].offset.x - 0.0).abs() < 1e-3);
+    assert!((measured.children[1].offset.x - 140.0).abs() < 1e-3);
+    Ok(())
+}
+
+#[test]
+fn explicit_size_respects_padding() -> Result<(), NodeError> {
+    let mut applier = MemoryApplier::new();
+    let child = applier.create(Box::new(SpacerNode {
+        size: Size {
+            width: 10.0,
+            height: 10.0,
+        },
+    }));
+
+    let modifier = Modifier::padding(8.0).then(Modifier::size_points(100.0, 40.0));
+    let mut layout_node = LayoutNode::new(modifier.clone(), Rc::new(MaxSizePolicy));
+    layout_node.children.insert(child);
+    let layout_id = applier.create(Box::new(layout_node));
+
+    let mut builder = LayoutBuilder::new(&mut applier);
+    let measured = builder.measure_node(
+        layout_id,
+        Constraints {
+            min_width: 0.0,
+            max_width: 200.0,
+            min_height: 0.0,
+            max_height: 200.0,
+        },
+    )?;
+
+    assert_eq!(measured.size.width, 100.0);
+    assert_eq!(measured.size.height, 40.0);
+    Ok(())
+}
+
+#[test]
 fn subcompose_node_applies_explicit_size_before_measure() -> Result<(), NodeError> {
     let runtime = Runtime::new(Arc::new(DefaultScheduler));
     let mut applier = MemoryApplier::new();

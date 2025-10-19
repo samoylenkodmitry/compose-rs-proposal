@@ -214,7 +214,7 @@ impl<'a> LayoutBuilder<'a> {
         let padding = props.padding();
         let inner_constraints = {
             let inner = subtract_padding(constraints, padding);
-            apply_layout_properties_to_constraints(inner, &props)
+            apply_layout_properties_to_constraints(inner, &props, padding)
         };
 
         self.slots.reset();
@@ -293,7 +293,8 @@ impl<'a> LayoutBuilder<'a> {
         let offset = modifier.total_offset();
         let constraints = normalize_constraints(constraints);
         let mut inner_constraints = subtract_padding(constraints, padding);
-        inner_constraints = apply_layout_properties_to_constraints(inner_constraints, &props);
+        inner_constraints =
+            apply_layout_properties_to_constraints(inner_constraints, &props, padding);
         let error = Rc::new(RefCell::new(None));
         let mut records: HashMap<NodeId, ChildRecord> = HashMap::new();
         let mut measurables: Vec<Box<dyn Measurable>> = Vec::new();
@@ -762,32 +763,41 @@ fn align_vertical(alignment: VerticalAlignment, available: f32, child: f32) -> f
 fn apply_layout_properties_to_constraints(
     mut constraints: Constraints,
     props: &LayoutProperties,
+    padding: EdgeInsets,
 ) -> Constraints {
+    let horizontal_padding = padding.horizontal_sum();
+    let vertical_padding = padding.vertical_sum();
+
     if let Some(min_width) = props.min_width() {
-        constraints.min_width = constraints.min_width.max(min_width);
+        let adjusted = (min_width - horizontal_padding).max(0.0);
+        constraints.min_width = constraints.min_width.max(adjusted);
     }
     if let Some(min_height) = props.min_height() {
-        constraints.min_height = constraints.min_height.max(min_height);
+        let adjusted = (min_height - vertical_padding).max(0.0);
+        constraints.min_height = constraints.min_height.max(adjusted);
     }
 
     if let Some(max_width) = props.max_width() {
+        let adjusted = (max_width - horizontal_padding).max(0.0);
         if constraints.max_width.is_finite() {
-            constraints.max_width = constraints.max_width.min(max_width);
+            constraints.max_width = constraints.max_width.min(adjusted);
         } else {
-            constraints.max_width = max_width;
+            constraints.max_width = adjusted;
         }
     }
     if let Some(max_height) = props.max_height() {
+        let adjusted = (max_height - vertical_padding).max(0.0);
         if constraints.max_height.is_finite() {
-            constraints.max_height = constraints.max_height.min(max_height);
+            constraints.max_height = constraints.max_height.min(adjusted);
         } else {
-            constraints.max_height = max_height;
+            constraints.max_height = adjusted;
         }
     }
 
     match props.width() {
         DimensionConstraint::Points(width) => {
-            let width = clamp_dimension(width, constraints.min_width, constraints.max_width);
+            let adjusted = (width - horizontal_padding).max(0.0);
+            let width = clamp_dimension(adjusted, constraints.min_width, constraints.max_width);
             constraints.min_width = width;
             constraints.max_width = width;
         }
@@ -802,7 +812,8 @@ fn apply_layout_properties_to_constraints(
 
     match props.height() {
         DimensionConstraint::Points(height) => {
-            let height = clamp_dimension(height, constraints.min_height, constraints.max_height);
+            let adjusted = (height - vertical_padding).max(0.0);
+            let height = clamp_dimension(adjusted, constraints.min_height, constraints.max_height);
             constraints.min_height = height;
             constraints.max_height = height;
         }

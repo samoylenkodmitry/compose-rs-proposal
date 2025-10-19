@@ -7,7 +7,10 @@ use crate::widgets::{
     BoxWithConstraints, Button, Column, ColumnSpec, DynamicTextSource, ForEach, Row, RowSpec,
     Spacer, Text,
 };
-use crate::{run_test_composition, LayoutEngine, SnapshotState, TestComposition};
+use crate::{
+    run_test_composition, Color, IntrinsicSize, LayoutBox, LayoutEngine, SnapshotState,
+    TestComposition,
+};
 use compose_core::{
     self, location_key, Composer, Composition, MemoryApplier, MutableState, NodeId, Phase,
     SlotTable, State,
@@ -59,6 +62,104 @@ fn column_with_alignment_updates_node_fields() {
             assert!(!node.children.is_empty() || node.children.is_empty());
         })
         .expect("layout node available");
+}
+
+#[test]
+fn demo_row_buttons_remain_within_container_bounds() {
+    let row_id_slot: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+    let row_id_capture = Rc::clone(&row_id_slot);
+
+    let mut composition = run_test_composition(move || {
+        let row_id_capture = Rc::clone(&row_id_capture);
+        Column(
+            Modifier::padding(16.0)
+                .then(Modifier::rounded_corners(12.0))
+                .then(Modifier::background(Color(0.1, 0.1, 0.15, 0.6)))
+                .then(Modifier::padding(16.0)),
+            ColumnSpec::default(),
+            move || {
+                let row_id_capture = Rc::clone(&row_id_capture);
+                let row_id = Row(
+                    Modifier::padding(8.0)
+                        .then(Modifier::rounded_corners(12.0))
+                        .then(Modifier::background(Color(0.1, 0.1, 0.15, 0.6)))
+                        .then(Modifier::padding(8.0)),
+                    RowSpec::default(),
+                    || {
+                        Button(
+                            Modifier::width_intrinsic(IntrinsicSize::Max)
+                                .then(Modifier::padding(10.0)),
+                            || {},
+                            || {
+                                Text("OK", Modifier::padding(4.0));
+                            },
+                        );
+                        Spacer(Size {
+                            width: 8.0,
+                            height: 0.0,
+                        });
+                        Button(
+                            Modifier::width_intrinsic(IntrinsicSize::Max)
+                                .then(Modifier::padding(10.0)),
+                            || {},
+                            || {
+                                Text("Cancel", Modifier::padding(4.0));
+                            },
+                        );
+                        Spacer(Size {
+                            width: 8.0,
+                            height: 0.0,
+                        });
+                        Button(
+                            Modifier::width_intrinsic(IntrinsicSize::Max)
+                                .then(Modifier::padding(10.0)),
+                            || {},
+                            || {
+                                Text("Long Button Text", Modifier::padding(4.0));
+                            },
+                        );
+                    },
+                );
+                *row_id_capture.borrow_mut() = Some(row_id);
+            },
+        );
+    });
+
+    let row_id = row_id_slot.borrow().expect("row node available");
+    let root = composition.root().expect("composition root");
+    let layout_tree = composition
+        .applier_mut()
+        .compute_layout(
+            root,
+            Size {
+                width: 420.0,
+                height: 320.0,
+            },
+        )
+        .expect("compute layout");
+
+    fn find_layout(node: &LayoutBox, target: NodeId) -> Option<&LayoutBox> {
+        if node.node_id == target {
+            return Some(node);
+        }
+        for child in &node.children {
+            if let Some(found) = find_layout(child, target) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    let row_layout = find_layout(layout_tree.root(), row_id).expect("row layout");
+    let row_right = row_layout.rect.x + row_layout.rect.width;
+    let row_bottom = row_layout.rect.y + row_layout.rect.height;
+
+    for child in &row_layout.children {
+        assert!(child.rect.x >= row_layout.rect.x - 1e-3);
+        assert!(child.rect.y >= row_layout.rect.y - 1e-3);
+        assert!(child.rect.x + child.rect.width <= row_right + 1e-3);
+        assert!(child.rect.y + child.rect.height <= row_bottom + 1e-3);
+    }
 }
 
 fn measure_subcompose_node(
