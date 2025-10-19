@@ -1,14 +1,14 @@
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Weak;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use crate::runtime::RuntimeHandle;
 use crate::snapshot::{self, StateRecord};
 use crate::{with_current_composer_opt, RecomposeScope, RecomposeScopeInner};
 
 pub(crate) struct MutableStateInner<T: Clone + 'static> {
-    head: RwLock<Arc<StateRecord<T>>>,
+    head: RefCell<Arc<StateRecord<T>>>,
     watchers: RefCell<Vec<Weak<RecomposeScopeInner>>>,
     runtime: RuntimeHandle,
 }
@@ -18,18 +18,18 @@ impl<T: Clone + 'static> MutableStateInner<T> {
         let snapshot = snapshot::current_snapshot();
         let record = Arc::new(StateRecord::new(snapshot.id(), value));
         Self {
-            head: RwLock::new(record),
+            head: RefCell::new(record),
             watchers: RefCell::new(Vec::new()),
             runtime,
         }
     }
 
     fn first_state_record(&self) -> Arc<StateRecord<T>> {
-        self.head.read().unwrap().clone()
+        self.head.borrow().clone()
     }
 
     fn set_first_state_record(&self, record: Arc<StateRecord<T>>) {
-        *self.head.write().unwrap() = record;
+        *self.head.borrow_mut() = record;
     }
 
     fn object_id(&self) -> usize {
