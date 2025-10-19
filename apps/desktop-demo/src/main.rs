@@ -22,6 +22,7 @@ use compose_ui::{
     IntrinsicSize, LinearArrangement, Modifier, Point, RoundedCornerShape, Row, RowSpec, Size,
     Spacer, Text, VerticalAlignment,
 };
+use std::rc::Rc;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, Event, MouseButton, VirtualKeyCode, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoopBuilder};
@@ -689,6 +690,34 @@ fn async_runtime_example() {
 fn counter_app() {
     let counter = compose_core::useState(|| 0);
     let pointer_position = compose_core::useState(|| Point { x: 0.0, y: 0.0 });
+    let latest_pointer = compose_core::remember(|| Point { x: 0.0, y: 0.0 });
+    let pointer_frame =
+        compose_core::remember(|| Option::<compose_core::FrameCallbackRegistration>::None);
+    let pointer_sync = {
+        let pointer_position = pointer_position.clone();
+        let latest_pointer = latest_pointer.clone();
+        let pointer_frame = pointer_frame.clone();
+        Rc::new(move || {
+            if pointer_frame.with(|pending| pending.is_some()) {
+                return;
+            }
+            let pointer_position_cb = pointer_position.clone();
+            let latest_pointer_cb = latest_pointer.clone();
+            let pointer_frame_cb = pointer_frame.clone();
+            let registration = compose_core::withFrameMillis(move |_| {
+                let next = latest_pointer_cb.with(|value| *value);
+                pointer_position_cb.set(next);
+                pointer_frame_cb.update(|pending| {
+                    if let Some(registration) = pending.take() {
+                        drop(registration);
+                    }
+                });
+            });
+            pointer_frame.update(|pending| {
+                *pending = Some(registration);
+            });
+        })
+    };
     let pointer_down = compose_core::useState(|| false);
     let async_message =
         compose_core::useState(|| "Tap \"Fetch async value\" to run background work".to_string());
@@ -885,16 +914,23 @@ fn counter_app() {
                         }
                     }))
                     .then(Modifier::pointer_input({
-                        let pointer_position = pointer_position.clone();
                         let pointer_down = pointer_down.clone();
+                        let latest_pointer = latest_pointer.clone();
+                        let pointer_sync = pointer_sync.clone();
                         move |event: PointerEvent| match event.kind {
-                            PointerEventKind::Down => pointer_down.set(true),
-                            PointerEventKind::Up => pointer_down.set(false),
+                            PointerEventKind::Down => {
+                                pointer_down.set(true);
+                                latest_pointer.update(|position| *position = event.position);
+                                pointer_sync();
+                            }
+                            PointerEventKind::Up => {
+                                pointer_down.set(false);
+                                latest_pointer.update(|position| *position = event.position);
+                                pointer_sync();
+                            }
                             PointerEventKind::Move => {
-                                pointer_position.set(Point {
-                                    x: event.position.x,
-                                    y: event.position.y,
-                                });
+                                latest_pointer.update(|position| *position = event.position);
+                                pointer_sync();
                             }
                             PointerEventKind::Cancel => pointer_down.set(false),
                         }
