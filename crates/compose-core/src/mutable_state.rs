@@ -25,25 +25,33 @@ impl<T: Clone + 'static> MutableStateInner<T> {
     }
 
     fn first_state_record(&self) -> Arc<StateRecord<T>> {
-        let guard = self.head.read().unwrap_or_else(|err| {
-            panic!(
-                "MutableStateInner::first_state_record poisoned RwLock (object_id={:#x}): {}",
-                self.object_id(),
-                err
-            )
-        });
-        Arc::clone(&*guard)
+        match self.head.read() {
+            Ok(guard) => Arc::clone(&*guard),
+            Err(err) => {
+                let guard = err.into_inner();
+                eprintln!(
+                    "MutableStateInner::first_state_record recovered from poisoned RwLock (object_id={:#x})",
+                    self.object_id()
+                );
+                Arc::clone(&*guard)
+            }
+        }
     }
 
     fn set_first_state_record(&self, record: Arc<StateRecord<T>>) {
-        let mut guard = self.head.write().unwrap_or_else(|err| {
-            panic!(
-                "MutableStateInner::set_first_state_record poisoned RwLock (object_id={:#x}): {}",
-                self.object_id(),
-                err
-            )
-        });
-        *guard = record;
+        match self.head.write() {
+            Ok(mut guard) => {
+                *guard = record;
+            }
+            Err(err) => {
+                let mut guard = err.into_inner();
+                eprintln!(
+                    "MutableStateInner::set_first_state_record recovered from poisoned RwLock (object_id={:#x})",
+                    self.object_id()
+                );
+                *guard = record;
+            }
+        }
     }
 
     fn object_id(&self) -> usize {
