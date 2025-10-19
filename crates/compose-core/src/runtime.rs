@@ -288,9 +288,19 @@ impl RuntimeInner {
     }
 
     fn has_pending_ui(&self) -> bool {
-        !self.local_tasks.borrow().is_empty()
-            || self.ui_dispatcher.has_pending()
-            || !self.tasks.borrow().is_empty()
+        let local_pending = self
+            .local_tasks
+            .try_borrow()
+            .map(|tasks| !tasks.is_empty())
+            .unwrap_or(true);
+
+        let async_pending = self
+            .tasks
+            .try_borrow()
+            .map(|tasks| !tasks.is_empty())
+            .unwrap_or(true);
+
+        local_pending || self.ui_dispatcher.has_pending() || async_pending
     }
 
     fn register_ui_cont<T: 'static>(&self, f: impl FnOnce(T) + 'static) -> u64 {
