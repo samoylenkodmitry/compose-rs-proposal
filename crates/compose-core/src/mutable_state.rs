@@ -1,7 +1,8 @@
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Weak;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::thread;
 
 use crate::runtime::RuntimeHandle;
 use crate::snapshot::{self, StateRecord};
@@ -27,14 +28,7 @@ impl<T: Clone + 'static> MutableStateInner<T> {
     fn first_state_record(&self) -> Arc<StateRecord<T>> {
         match self.head.read() {
             Ok(guard) => Arc::clone(&*guard),
-            Err(err) => {
-                let guard = err.into_inner();
-                eprintln!(
-                    "MutableStateInner::first_state_record recovered from poisoned RwLock (object_id={:#x})",
-                    self.object_id()
-                );
-                Arc::clone(&*guard)
-            }
+            Err(err) => self.panic_poisoned_read(err),
         }
     }
 
@@ -43,19 +37,73 @@ impl<T: Clone + 'static> MutableStateInner<T> {
             Ok(mut guard) => {
                 *guard = record;
             }
-            Err(err) => {
-                let mut guard = err.into_inner();
-                eprintln!(
-                    "MutableStateInner::set_first_state_record recovered from poisoned RwLock (object_id={:#x})",
-                    self.object_id()
-                );
-                *guard = record;
-            }
+            Err(err) => self.panic_poisoned_write(err, &record),
         }
     }
 
     fn object_id(&self) -> usize {
         self as *const _ as usize
+    }
+
+    fn panic_poisoned_read(&self, err: PoisonError<RwLockReadGuard<'_, Arc<StateRecord<T>>>>) -> ! {
+        let guard = err.into_inner();
+        let head_addr = Arc::as_ptr(&guard) as usize;
+        let snapshot_id = guard.snapshot_id();
+        drop(guard);
+
+        let watcher_count = self
+            .watchers
+            .try_borrow()
+            .map(|watchers| watchers.len())
+            .unwrap_or(usize::MAX);
+
+        panic!(
+            concat!(
+                "MutableStateInner::first_state_record encountered a poisoned RwLock ",
+                "(object_id={:#x}, head_addr={:#x}, snapshot_id={}, thread={:?}, watchers={}). ",
+                "A previous panic left this state in an inconsistent state; aborting to avoid undefined behaviour."
+            ),
+            self.object_id(),
+            head_addr,
+            snapshot_id,
+            thread::current().id(),
+            watcher_count,
+        );
+    }
+
+    fn panic_poisoned_write(
+        &self,
+        err: PoisonError<RwLockWriteGuard<'_, Arc<StateRecord<T>>>>,
+        attempted_record: &Arc<StateRecord<T>>,
+    ) -> ! {
+        let guard = err.into_inner();
+        let previous_head_addr = Arc::as_ptr(&guard) as usize;
+        let previous_snapshot = guard.snapshot_id();
+        drop(guard);
+
+        let attempted_addr = Arc::as_ptr(attempted_record) as usize;
+        let attempted_snapshot = attempted_record.snapshot_id();
+
+        let watcher_count = self
+            .watchers
+            .try_borrow()
+            .map(|watchers| watchers.len())
+            .unwrap_or(usize::MAX);
+
+        panic!(
+            concat!(
+                "MutableStateInner::set_first_state_record encountered a poisoned RwLock ",
+                "(object_id={:#x}, prev_head_addr={:#x}, prev_snapshot={}, attempted_addr={:#x}, attempted_snapshot={}, ",
+                "thread={:?}, watchers={}). A previous panic left this state in an inconsistent state; aborting to avoid undefined behaviour."
+            ),
+            self.object_id(),
+            previous_head_addr,
+            previous_snapshot,
+            attempted_addr,
+            attempted_snapshot,
+            thread::current().id(),
+            watcher_count,
+        );
     }
 }
 
