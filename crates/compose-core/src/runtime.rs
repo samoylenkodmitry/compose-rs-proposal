@@ -1,9 +1,12 @@
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::future::Future;
+use std::pin::Pin;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
+use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use std::thread::ThreadId;
 use std::thread_local;
 
@@ -105,6 +108,14 @@ struct RuntimeInner {
     ui_conts: RefCell<HashMap<u64, Box<dyn Fn(Box<dyn Any>) + 'static>>>,
     next_cont_id: Cell<u64>,
     ui_thread_id: ThreadId,
+    tasks: RefCell<Vec<TaskEntry>>, // FUTURE(no_std): migrate to smallvec-backed storage.
+    next_task_id: Cell<u64>,
+    task_waker: RefCell<Option<Waker>>,
+}
+
+struct TaskEntry {
+    id: u64,
+    future: Pin<Box<dyn Future<Output = ()> + 'static>>,
 }
 
 impl RuntimeInner {
@@ -125,7 +136,16 @@ impl RuntimeInner {
             ui_conts: RefCell::new(HashMap::new()),
             next_cont_id: Cell::new(1),
             ui_thread_id: std::thread::current().id(),
+            tasks: RefCell::new(Vec::new()),
+            next_task_id: Cell::new(1),
+            task_waker: RefCell::new(None),
         }
+    }
+
+    fn init_task_waker(this: &Rc<Self>) {
+        let weak = Rc::downgrade(this);
+        let waker = unsafe { Waker::from_raw(raw_runtime_task_waker(weak)) };
+        *this.task_waker.borrow_mut() = Some(waker);
     }
 
     fn schedule(&self) {
@@ -180,6 +200,48 @@ impl RuntimeInner {
         self.schedule();
     }
 
+    fn spawn_ui_task(&self, future: Pin<Box<dyn Future<Output = ()> + 'static>>) -> u64 {
+        let id = self.next_task_id.get();
+        self.next_task_id.set(id + 1);
+        self.tasks.borrow_mut().push(TaskEntry { id, future });
+        self.schedule();
+        id
+    }
+
+    fn cancel_task(&self, id: u64) {
+        let mut tasks = self.tasks.borrow_mut();
+        if tasks.iter().any(|entry| entry.id == id) {
+            tasks.retain(|entry| entry.id != id);
+        }
+    }
+
+    fn poll_async_tasks(&self) -> bool {
+        let waker = match self.task_waker.borrow().as_ref() {
+            Some(waker) => waker.clone(),
+            None => return false,
+        };
+        let mut cx = Context::from_waker(&waker);
+        let mut tasks_ref = self.tasks.borrow_mut();
+        let tasks = std::mem::take(&mut *tasks_ref);
+        drop(tasks_ref);
+        let mut pending = Vec::with_capacity(tasks.len());
+        let mut made_progress = false;
+        for mut entry in tasks.into_iter() {
+            match entry.future.as_mut().poll(&mut cx) {
+                Poll::Ready(()) => {
+                    made_progress = true;
+                }
+                Poll::Pending => {
+                    pending.push(entry);
+                }
+            }
+        }
+        if !pending.is_empty() {
+            self.tasks.borrow_mut().extend(pending);
+        }
+        made_progress
+    }
+
     fn drain_ui(&self) {
         loop {
             let mut executed = false;
@@ -215,6 +277,10 @@ impl RuntimeInner {
                 }
             }
 
+            if self.poll_async_tasks() {
+                executed = true;
+            }
+
             if !executed {
                 break;
             }
@@ -222,7 +288,9 @@ impl RuntimeInner {
     }
 
     fn has_pending_ui(&self) -> bool {
-        !self.local_tasks.borrow().is_empty() || self.ui_dispatcher.has_pending()
+        !self.local_tasks.borrow().is_empty()
+            || self.ui_dispatcher.has_pending()
+            || !self.tasks.borrow().is_empty()
     }
 
     fn register_ui_cont<T: 'static>(&self, f: impl FnOnce(T) + 'static) -> u64 {
@@ -284,7 +352,11 @@ impl RuntimeInner {
         if let Some(index) = callbacks.iter().position(|entry| entry.id == id) {
             callbacks.remove(index);
         }
-        if !self.has_invalid_scopes() && !self.has_updates() && callbacks.is_empty() {
+        if !self.has_invalid_scopes()
+            && !self.has_updates()
+            && callbacks.is_empty()
+            && !self.has_pending_ui()
+        {
             *self.needs_frame.borrow_mut() = false;
         }
     }
@@ -301,7 +373,11 @@ impl RuntimeInner {
         for callback in pending {
             callback(frame_time_nanos);
         }
-        if !self.has_invalid_scopes() && !self.has_updates() && !self.has_frame_callbacks() {
+        if !self.has_invalid_scopes()
+            && !self.has_updates()
+            && !self.has_frame_callbacks()
+            && !self.has_pending_ui()
+        {
             *self.needs_frame.borrow_mut() = false;
         }
     }
@@ -314,9 +390,9 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn new(scheduler: Arc<dyn RuntimeScheduler>) -> Self {
-        Self {
-            inner: Rc::new(RuntimeInner::new(scheduler)),
-        }
+        let inner = Rc::new(RuntimeInner::new(scheduler));
+        RuntimeInner::init_task_waker(&inner);
+        Self { inner }
     }
 
     pub fn handle(&self) -> RuntimeHandle {
@@ -385,6 +461,11 @@ pub struct RuntimeHandle {
     ui_thread_id: ThreadId,
 }
 
+pub struct TaskHandle {
+    id: u64,
+    runtime: RuntimeHandle,
+}
+
 impl RuntimeHandle {
     pub fn schedule(&self) {
         if let Some(inner) = self.inner.upgrade() {
@@ -409,6 +490,25 @@ impl RuntimeHandle {
             inner.enqueue_ui_task(task);
         } else {
             task();
+        }
+    }
+
+    pub fn spawn_ui<F>(&self, fut: F) -> Option<TaskHandle>
+    where
+        F: Future<Output = ()> + 'static,
+    {
+        self.inner.upgrade().map(|inner| {
+            let id = inner.spawn_ui_task(Box::pin(fut));
+            TaskHandle {
+                id,
+                runtime: self.clone(),
+            }
+        })
+    }
+
+    pub fn cancel_task(&self, id: u64) {
+        if let Some(inner) = self.inner.upgrade() {
+            inner.cancel_task(id);
         }
     }
 
@@ -536,9 +636,60 @@ impl RuntimeHandle {
     }
 }
 
+impl TaskHandle {
+    pub fn cancel(self) {
+        self.runtime.cancel_task(self.id);
+    }
+}
+
 pub(crate) struct FrameCallbackEntry {
     id: FrameCallbackId,
     callback: Option<Box<dyn FnOnce(u64) + 'static>>,
+}
+
+struct RuntimeTaskWaker {
+    inner: Weak<RuntimeInner>,
+}
+
+impl RuntimeTaskWaker {
+    fn wake(&self) {
+        if let Some(inner) = self.inner.upgrade() {
+            inner.schedule();
+        }
+    }
+}
+
+fn raw_runtime_task_waker(inner: Weak<RuntimeInner>) -> RawWaker {
+    let waker = Arc::new(RuntimeTaskWaker { inner });
+    RawWaker::new(Arc::into_raw(waker) as *const (), &RuntimeTaskWaker::VTABLE)
+}
+
+impl RuntimeTaskWaker {
+    const VTABLE: RawWakerVTable =
+        RawWakerVTable::new(Self::clone, Self::wake_ptr, Self::wake_by_ref, Self::drop);
+
+    unsafe fn clone(data: *const ()) -> RawWaker {
+        let arc = Arc::<RuntimeTaskWaker>::from_raw(data as *const RuntimeTaskWaker);
+        let cloned = arc.clone();
+        std::mem::forget(arc);
+        RawWaker::new(Arc::into_raw(cloned) as *const (), &Self::VTABLE)
+    }
+
+    unsafe fn wake_ptr(data: *const ()) {
+        let arc = Arc::<RuntimeTaskWaker>::from_raw(data as *const RuntimeTaskWaker);
+        arc.wake();
+        // dropping `arc` releases the reference
+    }
+
+    unsafe fn wake_by_ref(data: *const ()) {
+        let arc = Arc::<RuntimeTaskWaker>::from_raw(data as *const RuntimeTaskWaker);
+        arc.wake();
+        std::mem::forget(arc);
+    }
+
+    unsafe fn drop(data: *const ()) {
+        let _ = Arc::<RuntimeTaskWaker>::from_raw(data as *const RuntimeTaskWaker);
+    }
 }
 
 thread_local! {

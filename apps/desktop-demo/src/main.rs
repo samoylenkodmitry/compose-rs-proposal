@@ -2,7 +2,7 @@ use compose_animation::animateFloatAsState;
 use compose_app_shell::{default_root_key, AppShell};
 use compose_core::{
     self, compositionLocalOf, CompositionLocal, CompositionLocalProvider, DisposableEffect,
-    DisposableEffectResult, LaunchedEffect,
+    DisposableEffectResult, LaunchedEffect, LaunchedEffectAsync,
 };
 use compose_foundation::{PointerEvent, PointerEventKind};
 use compose_platform_desktop_winit::DesktopWinitPlatform;
@@ -159,9 +159,56 @@ fn main() {
     });
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum DemoTab {
+    Counter,
+    CompositionLocal,
+    Async,
+}
+
+impl DemoTab {
+    fn label(self) -> &'static str {
+        match self {
+            DemoTab::Counter => "Counter App",
+            DemoTab::CompositionLocal => "CompositionLocal Test",
+            DemoTab::Async => "Async Runtime",
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 struct Holder {
     count: i32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AnimationState {
+    progress: f32,
+    direction: f32,
+}
+
+impl Default for AnimationState {
+    fn default() -> Self {
+        Self {
+            progress: 0.0,
+            direction: 1.0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct FrameStats {
+    frames: u32,
+    last_frame_ms: f32,
+}
+
+impl Default for FrameStats {
+    fn default() -> Self {
+        Self {
+            frames: 0,
+            last_frame_ms: 0.0,
+        }
+    }
 }
 
 fn local_holder() -> CompositionLocal<Holder> {
@@ -189,69 +236,58 @@ fn random() -> i32 {
 
 #[composable]
 fn combined_app() {
-    let show_counter = compose_core::useState(|| false);
+    let active_tab = compose_core::useState(|| DemoTab::Counter);
 
     Column(Modifier::padding(20.0), ColumnSpec::default(), move || {
-        let show_counter_for_row = show_counter.clone();
-        let show_counter_for_condition = show_counter.clone();
+        let tab_state_for_row = active_tab.clone();
+        let tab_state_for_content = active_tab.clone();
         Row(Modifier::padding(8.0), RowSpec::default(), move || {
-            let is_counter = show_counter_for_row.get();
-            Button(
-                Modifier::rounded_corners(12.0)
-                    .then(Modifier::draw_behind(move |scope| {
-                        scope.draw_round_rect(
-                            Brush::solid(if is_counter {
-                                Color(0.2, 0.45, 0.9, 1.0)
-                            } else {
-                                Color(0.3, 0.3, 0.3, 0.5)
-                            }),
-                            CornerRadii::uniform(12.0),
-                        );
-                    }))
-                    .then(Modifier::padding(10.0)),
-                {
-                    let show_counter = show_counter_for_row.clone();
-                    move || {
-                        println!("Counter App button clicked");
-                        if !show_counter.get() {
-                            show_counter.set(true);
+            let tab_state = tab_state_for_row.clone();
+            let render_tab_button = move |tab: DemoTab| {
+                let tab_state = tab_state.clone();
+                let is_active = tab_state.get() == tab;
+                Button(
+                    Modifier::rounded_corners(12.0)
+                        .then(Modifier::draw_behind(move |scope| {
+                            scope.draw_round_rect(
+                                Brush::solid(if is_active {
+                                    Color(0.2, 0.45, 0.9, 1.0)
+                                } else {
+                                    Color(0.3, 0.3, 0.3, 0.5)
+                                }),
+                                CornerRadii::uniform(12.0),
+                            );
+                        }))
+                        .then(Modifier::padding(10.0)),
+                    {
+                        let tab_state = tab_state.clone();
+                        move || {
+                            if tab_state.get() != tab {
+                                println!("{} button clicked", tab.label());
+                                tab_state.set(tab);
+                            }
                         }
-                    }
-                },
-                || {
-                    Text("Counter App", Modifier::padding(4.0));
-                },
-            );
+                    },
+                    {
+                        let label = tab.label();
+                        move || {
+                            Text(label, Modifier::padding(4.0));
+                        }
+                    },
+                );
+            };
+
+            render_tab_button(DemoTab::Counter);
             Spacer(Size {
                 width: 8.0,
                 height: 0.0,
             });
-            Button(
-                Modifier::rounded_corners(12.0)
-                    .then(Modifier::draw_behind(move |scope| {
-                        scope.draw_round_rect(
-                            Brush::solid(if !is_counter {
-                                Color(0.2, 0.45, 0.9, 1.0)
-                            } else {
-                                Color(0.3, 0.3, 0.3, 0.5)
-                            }),
-                            CornerRadii::uniform(12.0),
-                        );
-                    }))
-                    .then(Modifier::padding(10.0)),
-                {
-                    let show_counter = show_counter_for_row.clone();
-                    move || {
-                        println!("Composition Local button clicked");
-                        if show_counter.get() {
-                            show_counter.set(false);
-                        }
-                    }
-                },
-                || {
-                    Text("CompositionLocal Test", Modifier::padding(4.0));
-                },
-            );
+            render_tab_button(DemoTab::CompositionLocal);
+            Spacer(Size {
+                width: 8.0,
+                height: 0.0,
+            });
+            render_tab_button(DemoTab::Async);
         });
 
         Spacer(Size {
@@ -259,14 +295,12 @@ fn combined_app() {
             height: 12.0,
         });
 
-        println!("if recomposed");
-        if show_counter_for_condition.get() {
-            println!("if show counter");
-            counter_app();
-        } else {
-            println!("if not show counter");
-            composition_local_example();
-        }
+        let active = tab_state_for_content.get();
+        compose_core::with_key(&active, || match active {
+            DemoTab::Counter => counter_app(),
+            DemoTab::CompositionLocal => composition_local_example(),
+            DemoTab::Async => async_runtime_example(),
+        });
     });
 }
 
@@ -380,6 +414,274 @@ fn composition_local_content_inner() {
         Modifier::padding(8.0)
             .then(Modifier::background(Color(0.6, 0.9, 0.4, 0.7)))
             .then(Modifier::rounded_corners(12.0)),
+    );
+}
+
+#[composable]
+fn async_runtime_example() {
+    let is_running = compose_core::useState(|| true);
+    let animation = compose_core::useState(AnimationState::default);
+    let stats = compose_core::useState(FrameStats::default);
+    let reset_signal = compose_core::useState(|| 0u64);
+
+    {
+        let animation_state = animation.clone();
+        let stats_state = stats.clone();
+        let running_state = is_running.clone();
+        let reset_state = reset_signal.clone();
+        LaunchedEffectAsync!((), move |scope| {
+            let animation = animation_state.clone();
+            let stats = stats_state.clone();
+            let running = running_state.clone();
+            let reset = reset_state.clone();
+            Box::pin(async move {
+                let clock = scope.runtime().frame_clock();
+                let mut last_time: Option<u64> = None;
+                let mut last_reset = reset.get();
+
+                animation.set(AnimationState::default());
+                stats.set(FrameStats::default());
+
+                while scope.is_active() {
+                    let nanos = clock.next_frame().await;
+                    if !scope.is_active() {
+                        break;
+                    }
+
+                    let current_reset = reset.get();
+                    if current_reset != last_reset {
+                        last_reset = current_reset;
+                        animation.set(AnimationState::default());
+                        stats.set(FrameStats::default());
+                        last_time = None;
+                        continue;
+                    }
+
+                    let running_now = running.get();
+                    if !running_now {
+                        last_time = Some(nanos);
+                        continue;
+                    }
+
+                    if let Some(previous) = last_time {
+                        let mut delta_nanos = nanos.saturating_sub(previous);
+                        if delta_nanos == 0 {
+                            // Fall back to a nominal 60 FPS delta so the animation keeps
+                            // advancing even if two callbacks report the same timestamp.
+                            delta_nanos = 16_666_667;
+                        }
+                        let dt_ms = delta_nanos as f32 / 1_000_000.0;
+                        stats.update(|state| {
+                            state.frames = state.frames.wrapping_add(1);
+                            state.last_frame_ms = dt_ms;
+                        });
+                        animation.update(|anim| {
+                            let next = anim.progress + anim.direction * (dt_ms / 600.0);
+                            if next >= 1.0 {
+                                anim.progress = 1.0;
+                                anim.direction = -1.0;
+                            } else if next <= 0.0 {
+                                anim.progress = 0.0;
+                                anim.direction = 1.0;
+                            } else {
+                                anim.progress = next;
+                            }
+                        });
+                    }
+
+                    last_time = Some(nanos);
+                }
+            })
+        });
+    }
+
+    Column(
+        Modifier::padding(32.0)
+            .then(Modifier::background(Color(0.10, 0.14, 0.28, 1.0)))
+            .then(Modifier::rounded_corners(24.0))
+            .then(Modifier::padding(20.0)),
+        ColumnSpec::default(),
+        {
+            let is_running_state = is_running.clone();
+            move || {
+                Text(
+                    "Async Runtime Demo",
+                    Modifier::padding(12.0)
+                        .then(Modifier::background(Color(1.0, 1.0, 1.0, 0.08)))
+                        .then(Modifier::rounded_corners(16.0)),
+                );
+
+                Spacer(Size {
+                    width: 0.0,
+                    height: 16.0,
+                });
+
+                let animation_snapshot = animation.get();
+                let stats_snapshot = stats.get();
+                let progress_value = animation_snapshot.progress.clamp(0.0, 1.0);
+                let fill_width = 320.0 * progress_value;
+                Column(
+                    Modifier::padding(8.0)
+                        .then(Modifier::background(Color(0.06, 0.10, 0.22, 0.8)))
+                        .then(Modifier::rounded_corners(18.0))
+                        .then(Modifier::padding(12.0)),
+                    ColumnSpec::default(),
+                    {
+                        move || {
+                            Text(
+                                format!("Progress: {:>3}%", (progress_value * 100.0) as i32),
+                                Modifier::padding(6.0),
+                            );
+
+                            Spacer(Size {
+                                width: 0.0,
+                                height: 8.0,
+                            });
+
+                            Row(
+                                Modifier::size(Size {
+                                    width: 360.0,
+                                    height: 26.0,
+                                })
+                                .then(Modifier::rounded_corners(13.0))
+                                .then(Modifier::draw_behind(|scope| {
+                                    scope.draw_round_rect(
+                                        Brush::solid(Color(0.12, 0.16, 0.30, 1.0)),
+                                        CornerRadii::uniform(13.0),
+                                    );
+                                })),
+                                RowSpec::default(),
+                                {
+                                    let progress_width = fill_width;
+                                    move || {
+                                        if progress_width > 0.0 {
+                                            Row(
+                                                Modifier::size(Size {
+                                                    width: progress_width,
+                                                    height: 26.0,
+                                                })
+                                                .then(Modifier::rounded_corners(13.0))
+                                                .then(Modifier::draw_behind(|scope| {
+                                                    scope.draw_round_rect(
+                                                        Brush::linear_gradient(vec![
+                                                            Color(0.25, 0.55, 0.95, 1.0),
+                                                            Color(0.15, 0.35, 0.80, 1.0),
+                                                        ]),
+                                                        CornerRadii::uniform(13.0),
+                                                    );
+                                                })),
+                                                RowSpec::default(),
+                                                || {},
+                                            );
+                                        }
+                                    }
+                                },
+                            );
+                        }
+                    },
+                );
+
+                Spacer(Size {
+                    width: 0.0,
+                    height: 12.0,
+                });
+
+                Text(
+                    format!(
+                        "Frames advanced: {} (last frame {:.2} ms, direction: {})",
+                        stats_snapshot.frames,
+                        stats_snapshot.last_frame_ms,
+                        if animation_snapshot.direction >= 0.0 {
+                            "forward"
+                        } else {
+                            "reverse"
+                        }
+                    ),
+                    Modifier::padding(8.0)
+                        .then(Modifier::background(Color(0.18, 0.22, 0.36, 0.6)))
+                        .then(Modifier::rounded_corners(14.0)),
+                );
+
+                Spacer(Size {
+                    width: 0.0,
+                    height: 16.0,
+                });
+
+                Row(
+                    Modifier::padding(4.0),
+                    RowSpec::new()
+                        .horizontal_arrangement(LinearArrangement::SpacedBy(12.0))
+                        .vertical_alignment(VerticalAlignment::CenterVertically),
+                    {
+                        let toggle_state = is_running_state.clone();
+                        let animation_state = animation.clone();
+                        let stats_state = stats.clone();
+                        let reset_state = reset_signal.clone();
+                        move || {
+                            let running = toggle_state.get();
+                            let button_color = if running {
+                                Color(0.50, 0.20, 0.35, 1.0)
+                            } else {
+                                Color(0.2, 0.45, 0.9, 1.0)
+                            };
+                            Button(
+                                Modifier::rounded_corners(16.0)
+                                    .then(Modifier::draw_behind({
+                                        let color = button_color;
+                                        move |scope| {
+                                            scope.draw_round_rect(
+                                                Brush::solid(color),
+                                                CornerRadii::uniform(16.0),
+                                            );
+                                        }
+                                    }))
+                                    .then(Modifier::padding(12.0)),
+                                {
+                                    let toggle_state = toggle_state.clone();
+                                    move || toggle_state.set(!toggle_state.get())
+                                },
+                                {
+                                    let label = if running {
+                                        "Pause animation"
+                                    } else {
+                                        "Resume animation"
+                                    };
+                                    move || {
+                                        Text(label, Modifier::padding(6.0));
+                                    }
+                                },
+                            );
+
+                            let reset_animation = animation_state.clone();
+                            let reset_stats = stats_state.clone();
+                            let reset_tick_state = reset_state.clone();
+                            let toggle_state = toggle_state.clone();
+                            Button(
+                                Modifier::rounded_corners(16.0)
+                                    .then(Modifier::draw_behind(|scope| {
+                                        scope.draw_round_rect(
+                                            Brush::solid(Color(0.16, 0.36, 0.82, 1.0)),
+                                            CornerRadii::uniform(16.0),
+                                        );
+                                    }))
+                                    .then(Modifier::padding(12.0)),
+                                move || {
+                                    reset_animation.set(AnimationState::default());
+                                    reset_stats.set(FrameStats::default());
+                                    if !toggle_state.get() {
+                                        toggle_state.set(true);
+                                    }
+                                    reset_tick_state.update(|tick| *tick = tick.wrapping_add(1));
+                                },
+                                || {
+                                    Text("Reset", Modifier::padding(6.0));
+                                },
+                            );
+                        }
+                    },
+                );
+            }
+        },
     );
 }
 

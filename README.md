@@ -48,6 +48,13 @@ Test side effect cleanup:
 cargo run --example test_cleanup
 ```
 
+## Known issues
+
+- Switching between the "Async Runtime" and "CompositionLocal Test" tabs in the desktop demo can
+  occasionally panic with a slot-table mismatch (e.g. `slot kind mismatch at 109`). This behaviour
+  reproduces even without the new async demo wiring and is being tracked separately from the
+  coroutine executor changes showcased here.
+
 ## Roadmap
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for detailed progress tracking, implementation status, and upcoming milestones. Also see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the original design goals and architecture.
