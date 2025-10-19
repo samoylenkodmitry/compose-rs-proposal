@@ -1,5 +1,7 @@
 use super::*;
 use crate as compose_core;
+use crate::snapshot::take_mutable_snapshot;
+use crate::state::{MutationPolicy, SnapshotMutableState};
 use compose_macros::composable;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -161,7 +163,7 @@ fn mutable_state_exposes_pending_value_while_borrowed() {
 }
 
 #[test]
-fn mutable_state_reads_during_update_return_current_value() {
+fn mutable_state_reads_during_update_return_previous_value() {
     let (runtime_handle, _runtime) = runtime_handle();
     let state = MutableState::with_runtime(0, runtime_handle);
     let before = Cell::new(-1);
@@ -174,12 +176,12 @@ fn mutable_state_reads_during_update_return_current_value() {
     });
 
     assert_eq!(before.get(), 0);
-    assert_eq!(after.get(), 7);
+    assert_eq!(after.get(), 0);
     assert_eq!(state.get(), 7);
 }
 
 #[test]
-fn mutable_state_flush_pending_handles_reentrant_drop_reads() {
+fn mutable_state_snapshot_handles_reentrant_drop_reads() {
     let (runtime_handle, _runtime) = runtime_handle();
     let drops = Rc::new(Cell::new(0));
     let state = MutableState::with_runtime(
@@ -206,7 +208,7 @@ fn mutable_state_flush_pending_handles_reentrant_drop_reads() {
 
     assert!(drops.get() >= 1);
     DROP_REENTRY_LAST_VALUE.with(|last| {
-        assert!(last.get().is_some());
+        assert_eq!(last.get(), Some(1));
     });
 }
 
@@ -1244,6 +1246,7 @@ fn composition_local_simple_subscription_test() {
     #[composable]
     fn root(local_value: CompositionLocal<i32>, trigger: MutableState<i32>) {
         let val = trigger.value();
+        println!("root sees trigger value {}", val);
         CompositionLocalProvider(vec![local_value.provides(val)], || {
             reader(local_value.clone());
         });
@@ -1253,6 +1256,11 @@ fn composition_local_simple_subscription_test() {
         .render(1, || root(local_value.clone(), trigger.clone()))
         .expect("initial composition");
 
+    println!(
+        "initial recompositions={}, last={}",
+        READER_RECOMPOSITIONS.with(|c| c.get()),
+        LAST_VALUE.with(|v| v.get())
+    );
     assert_eq!(READER_RECOMPOSITIONS.with(|c| c.get()), 1);
     assert_eq!(LAST_VALUE.with(|v| v.get()), 10);
 
@@ -1261,6 +1269,11 @@ fn composition_local_simple_subscription_test() {
     let _ = composition.process_invalid_scopes().expect("recomposition");
 
     // Reader should have recomposed and seen the new value
+    println!(
+        "after update recompositions={}, last={}",
+        READER_RECOMPOSITIONS.with(|c| c.get()),
+        LAST_VALUE.with(|v| v.get())
+    );
     assert_eq!(
         READER_RECOMPOSITIONS.with(|c| c.get()),
         2,
@@ -1595,6 +1608,74 @@ fn inactive_scopes_delay_invalidation_until_reactivated() {
         .expect("recomposition after reactivation");
 
     assert_eq!(INVOCATIONS.with(|count| count.get()), 2);
+}
+
+struct SumPolicy;
+
+impl MutationPolicy<i32> for SumPolicy {
+    fn equivalent(&self, a: &i32, b: &i32) -> bool {
+        a == b
+    }
+
+    fn merge(&self, previous: &i32, current: &i32, applied: &i32) -> Option<i32> {
+        Some((current - previous) + (applied - previous) + previous)
+    }
+}
+
+#[test]
+fn snapshot_state_global_write_then_read() {
+    let state = SnapshotMutableState::new_in_arc(0, Arc::new(SumPolicy));
+    assert_eq!(state.get(), 0);
+    state.set(1);
+    assert_eq!(state.get(), 1);
+}
+
+#[test]
+fn snapshot_state_child_isolation_and_apply() {
+    let state = SnapshotMutableState::new_in_arc(0, Arc::new(SumPolicy));
+
+    let child = take_mutable_snapshot(None, None);
+    child.enter(|| {
+        state.set(2);
+        assert_eq!(state.get(), 2);
+    });
+
+    assert_eq!(state.get(), 0);
+
+    child.apply().expect("child applies cleanly");
+    assert_eq!(state.get(), 2);
+}
+
+#[test]
+fn snapshot_state_concurrent_children_merge() {
+    let state = SnapshotMutableState::new_in_arc(0, Arc::new(SumPolicy));
+
+    let first = take_mutable_snapshot(None, None);
+    let second = take_mutable_snapshot(None, None);
+
+    first.enter(|| state.set(1));
+    second.enter(|| state.set(2));
+
+    first.apply().expect("first apply succeeds");
+    second.apply().expect("second apply merges via policy");
+    assert_eq!(state.get(), 3);
+}
+
+#[test]
+fn snapshot_state_child_apply_after_parent_history() {
+    let state = SnapshotMutableState::new_in_arc(0, Arc::new(SumPolicy));
+
+    for value in 1..=5 {
+        state.set(value);
+    }
+
+    let child = take_mutable_snapshot(None, None);
+    child.enter(|| state.set(42));
+
+    child
+        .apply()
+        .expect("child snapshot should apply after parent history");
+    assert_eq!(state.get(), 42);
 }
 
 // Note: Tests for ComposeTestRule and run_test_composition have been moved to
