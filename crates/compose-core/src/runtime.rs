@@ -210,8 +210,10 @@ impl RuntimeInner {
 
     fn cancel_task(&self, id: u64) {
         let mut tasks = self.tasks.borrow_mut();
-        if tasks.iter().any(|entry| entry.id == id) {
-            tasks.retain(|entry| entry.id != id);
+        if let Some(index) = tasks.iter().position(|entry| entry.id == id) {
+            let entry = tasks.remove(index);
+            drop(tasks);
+            drop(entry);
         }
     }
 

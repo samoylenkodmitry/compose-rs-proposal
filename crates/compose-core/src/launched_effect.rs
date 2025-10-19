@@ -84,8 +84,12 @@ impl LaunchedEffectState {
 }
 
 impl LaunchedEffectCancellation {
-    fn cancel(&self) {
+    fn deactivate(&self) {
         self.active.store(false, Ordering::SeqCst);
+    }
+
+    fn cancel(&self) {
+        self.deactivate();
         let mut pending = self.continuations.borrow_mut();
         for id in pending.drain(..) {
             self.runtime.cancel_ui_cont(id);
@@ -140,10 +144,14 @@ impl LaunchedEffectAsyncState {
     }
 
     fn cancel_current(&mut self) {
+        if let Some(cancel) = self.cancel.as_ref() {
+            cancel.deactivate();
+        }
+        let cancel = self.cancel.take();
         if let Some(handle) = self.task.take() {
             handle.cancel();
         }
-        if let Some(cancel) = self.cancel.take() {
+        if let Some(cancel) = cancel {
             cancel.cancel();
         }
     }
