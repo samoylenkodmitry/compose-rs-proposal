@@ -192,7 +192,6 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
             let this = self as *const _ as *mut Self;
             (*this).head = raw;
             advance_global_snapshot(new_id);
-            self.notify_applied();
 
             if snapshot.parent.is_none() && !snapshot.has_pending_children() {
                 let head_state = (*this).head as *mut StateRecord;

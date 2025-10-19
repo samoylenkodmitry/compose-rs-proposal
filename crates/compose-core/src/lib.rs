@@ -2041,13 +2041,7 @@ impl<T: Clone + 'static> MutableState<T> {
     }
 
     fn schedule_invalidation(&self) {
-        let runtime = self.inner.runtime.clone();
-        let weak = Rc::downgrade(&self.inner);
-        runtime.enqueue_ui_task(Box::new(move || {
-            if let Some(inner) = weak.upgrade() {
-                inner.invalidate_watchers();
-            }
-        }));
+        self.inner.invalidate_watchers();
     }
 }
 
