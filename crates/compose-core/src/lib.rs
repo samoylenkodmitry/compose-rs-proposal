@@ -2,6 +2,7 @@
 
 extern crate self as compose_core;
 
+pub mod composer_context;
 pub mod frame_clock;
 mod launched_effect;
 pub mod owned;
@@ -39,7 +40,6 @@ use std::cell::{Cell, RefCell, UnsafeCell};
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet}; // FUTURE(no_std): replace HashMap/HashSet with arena-backed maps.
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::mem;
 use std::rc::{Rc, Weak}; // FUTURE(no_std): replace Rc/Weak with arena-managed handles.
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -254,10 +254,6 @@ impl std::fmt::Display for NodeError {
 
 impl std::error::Error for NodeError {}
 
-thread_local! {
-    static CURRENT_COMPOSER: RefCell<Vec<*mut ()>> = RefCell::new(Vec::new()); // FUTURE(no_std): replace Vec with fixed-capacity stack storage.
-}
-
 pub use subcompose::{DefaultSlotReusePolicy, SlotId, SlotReusePolicy, SubcomposeState};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -267,29 +263,15 @@ pub enum Phase {
     Layout,
 }
 
-pub fn with_current_composer<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
-    CURRENT_COMPOSER.with(|stack| {
-        let ptr = *stack.borrow().last().expect("no composer installed");
-        let composer = unsafe { &mut *(ptr as *mut Composer<'static>) };
-        let composer: &mut Composer<'_> =
-            unsafe { mem::transmute::<&mut Composer<'static>, &mut Composer<'_>>(composer) };
-        f(composer)
-    })
-}
+pub use composer_context::with_composer as with_current_composer;
 
 #[allow(non_snake_case)]
 pub fn withCurrentComposer<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
-    with_current_composer(f)
+    composer_context::with_composer(f)
 }
 
 fn with_current_composer_opt<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> Option<R> {
-    CURRENT_COMPOSER.with(|stack| {
-        let ptr = *stack.borrow().last()?;
-        let composer = unsafe { &mut *(ptr as *mut Composer<'static>) };
-        let composer: &mut Composer<'_> =
-            unsafe { mem::transmute::<&mut Composer<'static>, &mut Composer<'_>>(composer) };
-        Some(f(composer))
-    })
+    composer_context::try_with_composer(f)
 }
 
 pub fn with_key<K: Hash>(key: &K, content: impl FnOnce()) {
@@ -1356,14 +1338,11 @@ impl<'a> Composer<'a> {
     }
 
     pub fn install<R>(&'a mut self, f: impl FnOnce(&mut Composer<'a>) -> R) -> R {
-        CURRENT_COMPOSER.with(|stack| stack.borrow_mut().push(self as *mut _ as *mut ()));
+        let _composer_guard = composer_context::enter(self);
         runtime::push_active_runtime(&self.runtime);
         struct Guard;
         impl Drop for Guard {
             fn drop(&mut self) {
-                CURRENT_COMPOSER.with(|stack| {
-                    stack.borrow_mut().pop();
-                });
                 runtime::pop_active_runtime();
             }
         }
