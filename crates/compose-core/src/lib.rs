@@ -915,6 +915,10 @@ impl SlotTable {
         }
     }
 
+    fn slot_kind(&self, index: usize) -> Option<SlotKind> {
+        self.slots.get(index).map(Slot::kind)
+    }
+
     pub fn skip_current(&mut self) {
         if let Some(frame) = self.group_stack.last() {
             self.cursor = frame.end.min(self.slots.len());
@@ -1535,6 +1539,10 @@ impl<'a> Composer<'a> {
 
     fn recompose_group(&mut self, scope: &RecomposeScope) {
         if let Some(index) = scope.group_index() {
+            if !matches!(self.slots.slot_kind(index), Some(SlotKind::Group)) {
+                scope.mark_recomposed();
+                return;
+            }
             self.slots.start_recompose(index);
             self.scope_stack.push(scope.clone());
             let saved_locals = std::mem::take(&mut self.local_stack);
