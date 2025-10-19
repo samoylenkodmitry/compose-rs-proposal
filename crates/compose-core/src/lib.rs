@@ -2039,9 +2039,15 @@ impl<T> MutableStateInner<T> {
     }
 
     fn stage(&self, value: T) {
-        *self.staged.borrow_mut() = Some(value);
+        *self
+            .staged
+            .try_borrow_mut()
+            .expect("mutable state staged slot borrow should succeed") = Some(value);
         self.staged_read.set(false);
-        let mut watchers_ref = self.watchers.borrow_mut();
+        let mut watchers_ref = self
+            .watchers
+            .try_borrow_mut()
+            .expect("mutable state watcher list borrow should succeed while staging");
         watchers_ref.retain(|w| w.strong_count() > 0);
         let watchers: Vec<RecomposeScope> = watchers_ref
             .iter()
@@ -2058,14 +2064,26 @@ impl<T> MutableStateInner<T> {
     }
 
     fn commit_staged(&self) -> bool {
-        if let Some(value) = self.staged.borrow_mut().take() {
+        if let Some(value) = self
+            .staged
+            .try_borrow_mut()
+            .expect("mutable state staged slot borrow should succeed during commit")
+            .take()
+        {
             let should_notify = !self.staged_read.replace(false);
             let applied_now = if let Ok(mut current) = self.value.try_borrow_mut() {
                 *current = value;
-                self.pending.borrow_mut().take();
+                self.pending
+                    .try_borrow_mut()
+                    .expect("pending slot borrow should succeed during staged commit")
+                    .take();
                 true
             } else {
-                *self.pending.borrow_mut() = Some(value);
+                *self
+                    .pending
+                    .try_borrow_mut()
+                    .expect("pending slot borrow should succeed when staging pending value") =
+                    Some(value);
                 false
             };
             if !applied_now {
@@ -2077,7 +2095,10 @@ impl<T> MutableStateInner<T> {
     }
 
     fn abort_staged(&self) {
-        self.staged.borrow_mut().take();
+        self.staged
+            .try_borrow_mut()
+            .expect("mutable state staged slot borrow should succeed during abort")
+            .take();
         self.staged_read.set(false);
     }
 
@@ -2087,7 +2108,10 @@ impl<T> MutableStateInner<T> {
 
     fn notify_watchers_inner(&self) {
         let watchers: Vec<RecomposeScope> = {
-            let mut watchers = self.watchers.borrow_mut();
+            let mut watchers = self
+                .watchers
+                .try_borrow_mut()
+                .expect("mutable state watcher list borrow should succeed during notify");
             watchers.retain(|w| w.strong_count() > 0);
             watchers
                 .iter()
@@ -2253,7 +2277,13 @@ impl<T: Clone> MutableState<T> {
         state.subscribe_current_scope();
         self.inner.flush_pending();
         if crate::snapshot::snapshot_active() {
-            if let Some(staged) = self.inner.staged.borrow().as_ref() {
+            if let Some(staged) = self
+                .inner
+                .staged
+                .try_borrow()
+                .expect("mutable state staged slot borrow should succeed for read")
+                .as_ref()
+            {
                 self.inner.mark_staged_read();
                 return staged.clone();
             }
@@ -2341,7 +2371,13 @@ impl<T: Clone> State<T> {
         self.subscribe_current_scope();
         self.inner.flush_pending();
         if crate::snapshot::snapshot_active() {
-            if let Some(staged) = self.inner.staged.borrow().as_ref() {
+            if let Some(staged) = self
+                .inner
+                .staged
+                .try_borrow()
+                .expect("mutable state staged slot borrow should succeed for read")
+                .as_ref()
+            {
                 self.inner.mark_staged_read();
                 return staged.clone();
             }

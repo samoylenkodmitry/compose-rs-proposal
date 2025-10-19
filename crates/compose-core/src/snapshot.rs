@@ -22,10 +22,14 @@ struct SnapshotCtx {
 
 fn push_ctx() -> bool {
     SNAPSHOT_STACK.with(|stack| {
-        let mut stack = stack.borrow_mut();
+        let mut stack = stack
+            .try_borrow_mut()
+            .expect("mutable snapshot stack borrow should succeed");
         let top_level = stack.is_empty();
         let id = NEXT_SNAPSHOT_ID.with(|next| {
-            let mut next = next.borrow_mut();
+            let mut next = next
+                .try_borrow_mut()
+                .expect("snapshot id generator borrow should succeed");
             let id = *next;
             *next = id + 1;
             id
@@ -40,7 +44,12 @@ fn push_ctx() -> bool {
 }
 
 fn pop_ctx() -> Option<SnapshotCtx> {
-    SNAPSHOT_STACK.with(|stack| stack.borrow_mut().pop())
+    SNAPSHOT_STACK.with(|stack| {
+        stack
+            .try_borrow_mut()
+            .expect("mutable snapshot stack pop requires unique access")
+            .pop()
+    })
 }
 
 pub struct SnapshotGuard {
@@ -58,7 +67,9 @@ impl Drop for SnapshotGuard {
             }
 
             SNAPSHOT_STACK.with(|stack| {
-                let mut stack = stack.borrow_mut();
+                let mut stack = stack
+                    .try_borrow_mut()
+                    .expect("mutable snapshot stack borrow during drop should succeed");
                 if let Some(parent) = stack.last_mut() {
                     for participant in ctx.participants.drain(..) {
                         if parent.seen.insert(participant.id) {
@@ -86,12 +97,19 @@ pub fn with_mutable_snapshot<R>(f: impl FnOnce() -> R) -> R {
 }
 
 pub fn snapshot_active() -> bool {
-    SNAPSHOT_STACK.with(|stack| !stack.borrow().is_empty())
+    SNAPSHOT_STACK.with(|stack| {
+        !stack
+            .try_borrow()
+            .expect("snapshot stack borrow should succeed for activity check")
+            .is_empty()
+    })
 }
 
 pub fn register_participant(unique_id: usize, commit: Box<dyn Fn()>, abort: Box<dyn Fn()>) {
     SNAPSHOT_STACK.with(|stack| {
-        let mut stack = stack.borrow_mut();
+        let mut stack = stack
+            .try_borrow_mut()
+            .expect("mutable snapshot stack borrow for participant registration should succeed");
         if let Some(ctx) = stack.last_mut() {
             if ctx.seen.insert(unique_id) {
                 ctx.participants.push(Participant {
