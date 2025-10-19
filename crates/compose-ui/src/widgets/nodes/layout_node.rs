@@ -1,7 +1,6 @@
 use crate::modifier::Modifier;
-use crate::modifier_bridge::build_chain;
 use compose_core::{Node, NodeId};
-use compose_foundation::ModifierNodeChain;
+use compose_foundation::{BasicModifierNodeContext, ModifierNodeChain};
 use compose_ui_layout::MeasurePolicy;
 use indexmap::IndexSet;
 use std::rc::Rc;
@@ -9,6 +8,7 @@ use std::rc::Rc;
 pub struct LayoutNode {
     pub modifier: Modifier,
     pub mods: ModifierNodeChain,
+    modifier_context: BasicModifierNodeContext,
     pub measure_policy: Rc<dyn MeasurePolicy>,
     pub children: IndexSet<NodeId>,
 }
@@ -18,6 +18,7 @@ impl LayoutNode {
         let mut node = Self {
             modifier: Modifier::empty(),
             mods: ModifierNodeChain::new(),
+            modifier_context: BasicModifierNodeContext::new(),
             measure_policy,
             children: IndexSet::new(),
         };
@@ -27,7 +28,12 @@ impl LayoutNode {
 
     pub fn set_modifier(&mut self, modifier: Modifier) {
         self.modifier = modifier;
-        self.mods = build_chain(&self.modifier);
+        self.sync_modifier_chain();
+    }
+
+    pub(crate) fn sync_modifier_chain(&mut self) {
+        self.modifier
+            .update_chain(&mut self.mods, &mut self.modifier_context);
     }
 
     pub fn set_measure_policy(&mut self, policy: Rc<dyn MeasurePolicy>) {
@@ -37,12 +43,15 @@ impl LayoutNode {
 
 impl Clone for LayoutNode {
     fn clone(&self) -> Self {
-        Self {
+        let mut cloned = Self {
             modifier: self.modifier.clone(),
-            mods: build_chain(&self.modifier),
+            mods: ModifierNodeChain::new(),
+            modifier_context: BasicModifierNodeContext::new(),
             measure_policy: self.measure_policy.clone(),
             children: self.children.clone(),
-        }
+        };
+        cloned.sync_modifier_chain();
+        cloned
     }
 }
 

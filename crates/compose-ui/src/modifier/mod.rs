@@ -1,7 +1,8 @@
 //! Modifier system for Compose-RS
 //!
-//! Note: Some methods use camelCase (alignInBox, alignInColumn, alignInRow, columnWeight, rowWeight)
-//! to maintain internal consistency with Jetpack Compose conventions.
+//! This module now acts as a thin builder around modifier elements. Each
+//! [`Modifier`] stores the element chain required by the modifier node system
+//! together with cached layout/draw state used by higher level components.
 
 #![allow(non_snake_case)]
 
@@ -16,54 +17,21 @@ mod padding;
 mod pointer_input;
 
 pub use crate::draw::{DrawCacheBuilder, DrawCommand};
-pub use compose_foundation::{PointerEvent, PointerEventKind};
+pub use compose_foundation::{
+    modifier_element, DynModifierElement, PointerEvent, PointerEventKind,
+};
+use compose_foundation::{BasicModifierNodeContext, ModifierElement, ModifierNodeChain};
 pub use compose_ui_graphics::{
     Brush, Color, CornerRadii, EdgeInsets, GraphicsLayer, Point, Rect, RoundedCornerShape, Size,
 };
-use compose_ui_layout::{Alignment, HorizontalAlignment, VerticalAlignment};
+use compose_ui_layout::{Alignment, HorizontalAlignment, IntrinsicSize, VerticalAlignment};
 
-pub use compose_ui_layout::IntrinsicSize;
-
-#[derive(Clone)]
-pub enum ModOp {
-    Padding(EdgeInsets),
-    Background(Color),
-    Clickable(Rc<dyn Fn(Point)>),
-    Size(Size),
-    Width(f32),
-    Height(f32),
-    FillMaxWidth(f32),
-    FillMaxHeight(f32),
-    RequiredSize(Size),
-    Weight { weight: f32, fill: bool },
-    RoundedCorners(RoundedCornerShape),
-    PointerInput(Rc<dyn Fn(PointerEvent)>),
-    GraphicsLayer(GraphicsLayer),
-    Offset(Point),
-    AbsoluteOffset(Point),
-    Draw(DrawCommand),
-    BoxAlign(Alignment),
-    ColumnAlign(HorizontalAlignment),
-    RowAlign(VerticalAlignment),
-    WidthIntrinsic(IntrinsicSize),
-    HeightIntrinsic(IntrinsicSize),
-}
+use crate::modifier_nodes::SizeElement;
 
 #[derive(Clone, Default)]
-pub struct Modifier(Rc<Vec<ModOp>>);
-
-impl PartialEq for Modifier {
-    fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
-    }
-}
-
-impl Eq for Modifier {}
-
-impl fmt::Debug for Modifier {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("Modifier").field(&self.0.len()).finish()
-    }
+pub struct Modifier {
+    elements: Rc<Vec<DynModifierElement>>,
+    state: Rc<ModifierState>,
 }
 
 impl Modifier {
@@ -71,16 +39,14 @@ impl Modifier {
         Self::default()
     }
 
-    fn with_op(op: ModOp) -> Self {
-        Self(Rc::new(vec![op]))
-    }
-
-    fn with_ops(ops: Vec<ModOp>) -> Self {
-        Self(Rc::new(ops))
-    }
-
     pub fn size(size: Size) -> Self {
-        Self::with_op(ModOp::Size(size))
+        Self::with_element(
+            SizeElement::new(Some(size.width), Some(size.height)),
+            move |state| {
+                state.layout.width = DimensionConstraint::Points(size.width);
+                state.layout.height = DimensionConstraint::Points(size.height);
+            },
+        )
     }
 
     pub fn size_points(width: f32, height: f32) -> Self {
@@ -88,23 +54,27 @@ impl Modifier {
     }
 
     pub fn width(width: f32) -> Self {
-        Self::with_op(ModOp::Width(width))
+        Self::with_element(SizeElement::new(Some(width), None), move |state| {
+            state.layout.width = DimensionConstraint::Points(width);
+        })
     }
 
     pub fn height(height: f32) -> Self {
-        Self::with_op(ModOp::Height(height))
+        Self::with_element(SizeElement::new(None, Some(height)), move |state| {
+            state.layout.height = DimensionConstraint::Points(height);
+        })
     }
 
-    /// Sets the width to match the intrinsic size of the content.
-    /// Jetpack Compose: Modifier.width(IntrinsicSize.Min/Max)
     pub fn width_intrinsic(intrinsic: IntrinsicSize) -> Self {
-        Self::with_op(ModOp::WidthIntrinsic(intrinsic))
+        Self::with_state(move |state| {
+            state.layout.width = DimensionConstraint::Intrinsic(intrinsic);
+        })
     }
 
-    /// Sets the height to match the intrinsic size of the content.
-    /// Jetpack Compose: Modifier.height(IntrinsicSize.Min/Max)
     pub fn height_intrinsic(intrinsic: IntrinsicSize) -> Self {
-        Self::with_op(ModOp::HeightIntrinsic(intrinsic))
+        Self::with_state(move |state| {
+            state.layout.height = DimensionConstraint::Intrinsic(intrinsic);
+        })
     }
 
     pub fn fill_max_size() -> Self {
@@ -113,10 +83,10 @@ impl Modifier {
 
     pub fn fill_max_size_fraction(fraction: f32) -> Self {
         let clamped = fraction.clamp(0.0, 1.0);
-        Self::with_ops(vec![
-            ModOp::FillMaxWidth(clamped),
-            ModOp::FillMaxHeight(clamped),
-        ])
+        Self::with_state(move |state| {
+            state.layout.width = DimensionConstraint::Fraction(clamped);
+            state.layout.height = DimensionConstraint::Fraction(clamped);
+        })
     }
 
     pub fn fill_max_width() -> Self {
@@ -125,7 +95,9 @@ impl Modifier {
 
     pub fn fill_max_width_fraction(fraction: f32) -> Self {
         let clamped = fraction.clamp(0.0, 1.0);
-        Self::with_op(ModOp::FillMaxWidth(clamped))
+        Self::with_state(move |state| {
+            state.layout.width = DimensionConstraint::Fraction(clamped);
+        })
     }
 
     pub fn fill_max_height() -> Self {
@@ -134,19 +106,31 @@ impl Modifier {
 
     pub fn fill_max_height_fraction(fraction: f32) -> Self {
         let clamped = fraction.clamp(0.0, 1.0);
-        Self::with_op(ModOp::FillMaxHeight(clamped))
+        Self::with_state(move |state| {
+            state.layout.height = DimensionConstraint::Fraction(clamped);
+        })
     }
 
     pub fn offset(x: f32, y: f32) -> Self {
-        Self::with_op(ModOp::Offset(Point { x, y }))
+        Self::with_state(move |state| {
+            state.offset.x += x;
+            state.offset.y += y;
+        })
     }
 
     pub fn absolute_offset(x: f32, y: f32) -> Self {
-        Self::with_op(ModOp::AbsoluteOffset(Point { x, y }))
+        Self::offset(x, y)
     }
 
     pub fn required_size(size: Size) -> Self {
-        Self::with_op(ModOp::RequiredSize(size))
+        Self::with_state(move |state| {
+            state.layout.width = DimensionConstraint::Points(size.width);
+            state.layout.height = DimensionConstraint::Points(size.height);
+            state.layout.min_width = Some(size.width);
+            state.layout.max_width = Some(size.width);
+            state.layout.min_height = Some(size.height);
+            state.layout.max_height = Some(size.height);
+        })
     }
 
     pub fn weight(weight: f32) -> Self {
@@ -154,57 +138,70 @@ impl Modifier {
     }
 
     pub fn weight_with_fill(weight: f32, fill: bool) -> Self {
-        Self::with_op(ModOp::Weight { weight, fill })
+        Self::with_state(move |state| {
+            state.layout.weight = Some(LayoutWeight { weight, fill });
+        })
     }
 
     pub fn align(alignment: Alignment) -> Self {
-        Self::with_op(ModOp::BoxAlign(alignment))
+        Self::with_state(move |state| {
+            state.layout.box_alignment = Some(alignment);
+        })
     }
 
-    /// Align content within a Box using 2D alignment (BoxScope only).
-    /// Internal implementation for BoxScope.align()
     pub fn alignInBox(self, alignment: Alignment) -> Self {
-        self.then(Self::with_op(ModOp::BoxAlign(alignment)))
+        self.then(Self::align(alignment))
     }
 
-    /// Align content horizontally within a Column (ColumnScope only).
-    /// Internal implementation for ColumnScope.align()
     pub fn alignInColumn(self, alignment: HorizontalAlignment) -> Self {
-        self.then(Self::with_op(ModOp::ColumnAlign(alignment)))
+        self.then(Self::with_state(move |state| {
+            state.layout.column_alignment = Some(alignment);
+        }))
     }
 
-    /// Align content vertically within a Row (RowScope only).
-    /// Internal implementation for RowScope.align()
     pub fn alignInRow(self, alignment: VerticalAlignment) -> Self {
-        self.then(Self::with_op(ModOp::RowAlign(alignment)))
+        self.then(Self::with_state(move |state| {
+            state.layout.row_alignment = Some(alignment);
+        }))
     }
 
-    /// Apply weight in Column (ColumnScope only).
-    /// Internal implementation for ColumnScope.weight()
     pub fn columnWeight(self, weight: f32, fill: bool) -> Self {
-        self.then(Self::with_op(ModOp::Weight { weight, fill }))
+        self.then(Self::weight_with_fill(weight, fill))
     }
 
-    /// Apply weight in Row (RowScope only).
-    /// Internal implementation for RowScope.weight()
     pub fn rowWeight(self, weight: f32, fill: bool) -> Self {
-        self.then(Self::with_op(ModOp::Weight { weight, fill }))
+        self.then(Self::weight_with_fill(weight, fill))
     }
 
     pub fn then(&self, next: Modifier) -> Modifier {
-        if self.0.is_empty() {
+        if self.elements.is_empty() && self.state.is_default() {
             return next;
         }
-        if next.0.is_empty() {
+        if next.elements.is_empty() && next.state.is_default() {
             return self.clone();
         }
-        let mut ops = (*self.0).clone();
-        ops.extend((*next.0).iter().cloned());
-        Modifier(Rc::new(ops))
+        let mut elements = Vec::with_capacity(self.elements.len() + next.elements.len());
+        elements.extend(self.elements.iter().cloned());
+        elements.extend(next.elements.iter().cloned());
+        let mut state = (*self.state).clone();
+        state.merge(&next.state);
+        Modifier::from_parts(elements, state)
     }
 
-    pub(crate) fn ops(&self) -> &[ModOp] {
-        &self.0
+    pub(crate) fn elements(&self) -> &[DynModifierElement] {
+        &self.elements
+    }
+
+    pub(crate) fn update_chain(
+        &self,
+        chain: &mut ModifierNodeChain,
+        context: &mut BasicModifierNodeContext,
+    ) {
+        if self.elements.is_empty() {
+            chain.detach_all();
+            return;
+        }
+        chain.update_from_slice(self.elements(), context);
     }
 
     pub fn total_padding(&self) -> f32 {
@@ -227,22 +224,165 @@ impl Modifier {
     }
 
     pub fn padding_values(&self) -> EdgeInsets {
-        self.layout_properties().padding
+        self.state.layout.padding
     }
 
     pub(crate) fn total_offset(&self) -> Point {
-        let mut offset = Point { x: 0.0, y: 0.0 };
-        for op in self.0.iter() {
-            let delta = match op {
-                ModOp::Offset(delta) | ModOp::AbsoluteOffset(delta) => Some(*delta),
-                _ => None,
-            };
-            if let Some(delta) = delta {
-                offset.x += delta.x;
-                offset.y += delta.y;
-            }
+        self.state.offset
+    }
+
+    pub(crate) fn layout_properties(&self) -> LayoutProperties {
+        self.state.layout
+    }
+
+    pub(crate) fn box_alignment(&self) -> Option<Alignment> {
+        self.state.layout.box_alignment
+    }
+
+    pub(crate) fn column_alignment(&self) -> Option<HorizontalAlignment> {
+        self.state.layout.column_alignment
+    }
+
+    pub(crate) fn row_alignment(&self) -> Option<VerticalAlignment> {
+        self.state.layout.row_alignment
+    }
+
+    pub fn background_color(&self) -> Option<Color> {
+        self.state.background
+    }
+
+    pub fn corner_shape(&self) -> Option<RoundedCornerShape> {
+        self.state.corner_shape
+    }
+
+    pub fn draw_commands(&self) -> Vec<DrawCommand> {
+        self.state.draw_commands.clone()
+    }
+
+    pub fn click_handler(&self) -> Option<Rc<dyn Fn(Point)>> {
+        self.state.click_handler.clone()
+    }
+
+    pub fn pointer_inputs(&self) -> Vec<Rc<dyn Fn(PointerEvent)>> {
+        self.state.pointer_inputs.clone()
+    }
+
+    pub fn graphics_layer_values(&self) -> Option<GraphicsLayer> {
+        self.state.graphics_layer
+    }
+
+    fn with_element<E, F>(element: E, update: F) -> Self
+    where
+        E: ModifierElement,
+        F: FnOnce(&mut ModifierState),
+    {
+        let dyn_element = modifier_element(element);
+        Self::from_parts(vec![dyn_element], ModifierState::from_update(update))
+    }
+
+    fn with_state<F>(update: F) -> Self
+    where
+        F: FnOnce(&mut ModifierState),
+    {
+        Self::from_parts(Vec::new(), ModifierState::from_update(update))
+    }
+
+    fn from_parts(elements: Vec<DynModifierElement>, state: ModifierState) -> Self {
+        Self {
+            elements: Rc::new(elements),
+            state: Rc::new(state),
         }
-        offset
+    }
+}
+
+impl PartialEq for Modifier {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.elements, &other.elements) && Rc::ptr_eq(&self.state, &other.state)
+    }
+}
+
+impl Eq for Modifier {}
+
+impl fmt::Debug for Modifier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Modifier")
+            .field("elements", &self.elements.len())
+            .finish()
+    }
+}
+
+#[derive(Clone)]
+struct ModifierState {
+    layout: LayoutProperties,
+    offset: Point,
+    background: Option<Color>,
+    corner_shape: Option<RoundedCornerShape>,
+    draw_commands: Vec<DrawCommand>,
+    click_handler: Option<Rc<dyn Fn(Point)>>,
+    pointer_inputs: Vec<Rc<dyn Fn(PointerEvent)>>,
+    graphics_layer: Option<GraphicsLayer>,
+}
+
+impl ModifierState {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn from_update<F>(update: F) -> Self
+    where
+        F: FnOnce(&mut ModifierState),
+    {
+        let mut state = Self::new();
+        update(&mut state);
+        state
+    }
+
+    fn merge(&mut self, other: &ModifierState) {
+        self.layout = self.layout.merged(other.layout);
+        self.offset.x += other.offset.x;
+        self.offset.y += other.offset.y;
+        if let Some(color) = other.background {
+            self.background = Some(color);
+        }
+        if let Some(shape) = other.corner_shape {
+            self.corner_shape = Some(shape);
+        }
+        if let Some(handler) = &other.click_handler {
+            self.click_handler = Some(handler.clone());
+        }
+        if let Some(layer) = other.graphics_layer {
+            self.graphics_layer = Some(layer);
+        }
+        self.draw_commands
+            .extend(other.draw_commands.iter().cloned());
+        self.pointer_inputs
+            .extend(other.pointer_inputs.iter().cloned());
+    }
+
+    fn is_default(&self) -> bool {
+        self.layout == LayoutProperties::default()
+            && self.offset == Point { x: 0.0, y: 0.0 }
+            && self.background.is_none()
+            && self.corner_shape.is_none()
+            && self.click_handler.is_none()
+            && self.graphics_layer.is_none()
+            && self.draw_commands.is_empty()
+            && self.pointer_inputs.is_empty()
+    }
+}
+
+impl Default for ModifierState {
+    fn default() -> Self {
+        Self {
+            layout: LayoutProperties::default(),
+            offset: Point { x: 0.0, y: 0.0 },
+            background: None,
+            corner_shape: None,
+            draw_commands: Vec::new(),
+            click_handler: None,
+            pointer_inputs: Vec::new(),
+            graphics_layer: None,
+        }
     }
 }
 
@@ -305,7 +445,6 @@ impl LayoutProperties {
         self.max_height
     }
 
-    #[allow(dead_code)]
     pub fn weight(&self) -> Option<LayoutWeight> {
         self.weight
     }
@@ -314,86 +453,48 @@ impl LayoutProperties {
         self.box_alignment
     }
 
-    #[allow(dead_code)] // Reserved for type-safe scope system integration
     pub fn column_alignment(&self) -> Option<HorizontalAlignment> {
         self.column_alignment
     }
 
-    #[allow(dead_code)] // Reserved for type-safe scope system integration
     pub fn row_alignment(&self) -> Option<VerticalAlignment> {
         self.row_alignment
     }
-}
 
-impl Modifier {
-    pub(crate) fn layout_properties(&self) -> LayoutProperties {
-        let mut props = LayoutProperties::default();
-        for op in self.0.iter() {
-            match op {
-                ModOp::Padding(padding) => props.padding += *padding,
-                ModOp::Size(size) => {
-                    props.width = DimensionConstraint::Points(size.width);
-                    props.height = DimensionConstraint::Points(size.height);
-                }
-                ModOp::Width(width) => {
-                    props.width = DimensionConstraint::Points(*width);
-                }
-                ModOp::Height(height) => {
-                    props.height = DimensionConstraint::Points(*height);
-                }
-                ModOp::FillMaxWidth(fraction) => {
-                    props.width = DimensionConstraint::Fraction(*fraction);
-                }
-                ModOp::FillMaxHeight(fraction) => {
-                    props.height = DimensionConstraint::Fraction(*fraction);
-                }
-                ModOp::RequiredSize(size) => {
-                    props.width = DimensionConstraint::Points(size.width);
-                    props.height = DimensionConstraint::Points(size.height);
-                    props.min_width = Some(size.width);
-                    props.max_width = Some(size.width);
-                    props.min_height = Some(size.height);
-                    props.max_height = Some(size.height);
-                }
-                ModOp::Weight { weight, fill } => {
-                    props.weight = Some(LayoutWeight {
-                        weight: *weight,
-                        fill: *fill,
-                    });
-                }
-                ModOp::BoxAlign(alignment) => {
-                    props.box_alignment = Some(*alignment);
-                }
-                ModOp::ColumnAlign(alignment) => {
-                    props.column_alignment = Some(*alignment);
-                }
-                ModOp::RowAlign(alignment) => {
-                    props.row_alignment = Some(*alignment);
-                }
-                ModOp::WidthIntrinsic(intrinsic) => {
-                    props.width = DimensionConstraint::Intrinsic(*intrinsic);
-                }
-                ModOp::HeightIntrinsic(intrinsic) => {
-                    props.height = DimensionConstraint::Intrinsic(*intrinsic);
-                }
-                _ => {}
-            }
+    fn merged(self, other: LayoutProperties) -> LayoutProperties {
+        let mut result = self;
+        result.padding += other.padding;
+        if other.width != DimensionConstraint::Unspecified {
+            result.width = other.width;
         }
-        props
-    }
-
-    pub(crate) fn box_alignment(&self) -> Option<Alignment> {
-        self.layout_properties().box_alignment()
-    }
-
-    #[allow(dead_code)] // Reserved for type-safe scope system integration
-    pub(crate) fn column_alignment(&self) -> Option<HorizontalAlignment> {
-        self.layout_properties().column_alignment()
-    }
-
-    #[allow(dead_code)] // Reserved for type-safe scope system integration
-    pub(crate) fn row_alignment(&self) -> Option<VerticalAlignment> {
-        self.layout_properties().row_alignment()
+        if other.height != DimensionConstraint::Unspecified {
+            result.height = other.height;
+        }
+        if other.min_width.is_some() {
+            result.min_width = other.min_width;
+        }
+        if other.min_height.is_some() {
+            result.min_height = other.min_height;
+        }
+        if other.max_width.is_some() {
+            result.max_width = other.max_width;
+        }
+        if other.max_height.is_some() {
+            result.max_height = other.max_height;
+        }
+        if other.weight.is_some() {
+            result.weight = other.weight;
+        }
+        if other.box_alignment.is_some() {
+            result.box_alignment = other.box_alignment;
+        }
+        if other.column_alignment.is_some() {
+            result.column_alignment = other.column_alignment;
+        }
+        if other.row_alignment.is_some() {
+            result.row_alignment = other.row_alignment;
+        }
+        result
     }
 }
 

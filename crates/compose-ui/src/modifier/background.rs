@@ -1,29 +1,22 @@
-use super::{Color, ModOp, Modifier, RoundedCornerShape};
+use super::{Color, Modifier, RoundedCornerShape};
+use crate::modifier_nodes::BackgroundElement;
 
 impl Modifier {
     pub fn background(color: Color) -> Self {
-        Self::with_op(ModOp::Background(color))
-    }
-
-    pub fn rounded_corners(radius: f32) -> Self {
-        Self::with_op(ModOp::RoundedCorners(RoundedCornerShape::uniform(radius)))
-    }
-
-    pub fn rounded_corner_shape(shape: RoundedCornerShape) -> Self {
-        Self::with_op(ModOp::RoundedCorners(shape))
-    }
-
-    pub fn background_color(&self) -> Option<Color> {
-        self.0.iter().rev().find_map(|op| match op {
-            ModOp::Background(color) => Some(*color),
-            _ => None,
+        Self::with_element(BackgroundElement::new(color), move |state| {
+            state.background = Some(color);
         })
     }
 
-    pub fn corner_shape(&self) -> Option<RoundedCornerShape> {
-        self.0.iter().rev().find_map(|op| match op {
-            ModOp::RoundedCorners(shape) => Some(*shape),
-            _ => None,
+    pub fn rounded_corners(radius: f32) -> Self {
+        Self::with_state(move |state| {
+            state.corner_shape = Some(RoundedCornerShape::uniform(radius));
+        })
+    }
+
+    pub fn rounded_corner_shape(shape: RoundedCornerShape) -> Self {
+        Self::with_state(move |state| {
+            state.corner_shape = Some(shape);
         })
     }
 }
