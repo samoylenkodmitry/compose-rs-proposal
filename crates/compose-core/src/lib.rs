@@ -22,7 +22,7 @@ pub use runtime::{TestRuntime, TestScheduler};
 
 use std::any::Any;
 use std::cell::{Cell, RefCell, UnsafeCell};
-use std::collections::{hash_map::DefaultHasher, HashMap, HashSet}; // FUTURE(no_std): replace HashMap/HashSet with arena-backed maps.
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque}; // FUTURE(no_std): replace HashMap/HashSet with arena-backed maps.
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::mem;
@@ -1949,6 +1949,7 @@ impl<'a> Composer<'a> {
 struct MutableStateInner<T> {
     value: RefCell<T>,
     pending: RefCell<Option<T>>,
+    pending_backlog: RefCell<VecDeque<T>>,
     staged: UnsafeCell<Option<T>>,
     staged_read: Cell<bool>,
     watchers: RefCell<Vec<Weak<RecomposeScopeInner>>>, // FUTURE(no_std): move to stack-allocated subscription list.
@@ -1961,6 +1962,7 @@ impl<T> MutableStateInner<T> {
         Self {
             value: RefCell::new(value),
             pending: RefCell::new(None),
+            pending_backlog: RefCell::new(VecDeque::new()),
             staged: UnsafeCell::new(None),
             staged_read: Cell::new(false),
             watchers: RefCell::new(Vec::new()),
@@ -2019,6 +2021,11 @@ impl<T> MutableStateInner<T> {
             Ok(slot) => slot,
             Err(_) => return false,
         };
+        if slot.is_none() {
+            if let Some(latest) = self.take_latest_backlog() {
+                *slot = Some(latest);
+            }
+        }
         if let Some(value) = slot.take() {
             match self.value.try_borrow_mut() {
                 Ok(mut current) => {
@@ -2036,6 +2043,34 @@ impl<T> MutableStateInner<T> {
         } else {
             false
         }
+    }
+
+    fn take_latest_backlog(&self) -> Option<T> {
+        let mut backlog = self
+            .pending_backlog
+            .try_borrow_mut()
+            .expect("pending backlog borrow should succeed when draining pending values");
+        let latest = backlog.pop_back();
+        backlog.clear();
+        latest
+    }
+
+    fn clear_pending_slots(&self) {
+        self.pending
+            .try_borrow_mut()
+            .expect("pending slot borrow should succeed when clearing pending values")
+            .take();
+        self.pending_backlog
+            .try_borrow_mut()
+            .expect("pending backlog borrow should succeed when clearing pending values")
+            .clear();
+    }
+
+    fn enqueue_pending_backlog(&self, value: T) {
+        self.pending_backlog
+            .try_borrow_mut()
+            .expect("pending backlog borrow should succeed when queueing pending values")
+            .push_back(value);
     }
 
     fn stage(&self, value: T) {
@@ -2071,13 +2106,17 @@ impl<T> MutableStateInner<T> {
                     .try_borrow_mut()
                     .expect("pending slot borrow should succeed during staged commit")
                     .take();
+                self.pending_backlog
+                    .try_borrow_mut()
+                    .expect("pending backlog borrow should succeed during staged commit")
+                    .clear();
                 true
             } else {
-                *self
-                    .pending
-                    .try_borrow_mut()
-                    .expect("pending slot borrow should succeed when staging pending value") =
-                    Some(value);
+                if let Ok(mut pending) = self.pending.try_borrow_mut() {
+                    *pending = Some(value);
+                } else {
+                    self.enqueue_pending_backlog(value);
+                }
                 false
             };
             if !applied_now {
@@ -2106,6 +2145,21 @@ impl<T> MutableStateInner<T> {
         unsafe { (*self.staged.get()).as_ref().cloned() }
     }
 
+    fn pending_cloned(&self) -> Option<T>
+    where
+        T: Clone,
+    {
+        if let Ok(pending) = self.pending.try_borrow() {
+            if let Some(value) = pending.as_ref() {
+                return Some(value.clone());
+            }
+        }
+        if let Ok(backlog) = self.pending_backlog.try_borrow() {
+            return backlog.back().cloned();
+        }
+        None
+    }
+
     fn notify_watchers_inner(&self) {
         let watchers: Vec<RecomposeScope> = {
             let mut watchers = self
@@ -2126,7 +2180,11 @@ impl<T> MutableStateInner<T> {
     }
 
     fn store_pending(&self, value: T) {
-        *self.pending.borrow_mut() = Some(value);
+        if let Ok(mut pending) = self.pending.try_borrow_mut() {
+            *pending = Some(value);
+            return;
+        }
+        self.enqueue_pending_backlog(value);
     }
 }
 
@@ -2244,7 +2302,7 @@ impl<T> MutableState<T> {
         let applied_now = if let Ok(mut current) = self.inner.value.try_borrow_mut() {
             *current = value;
             // Clear any stale pending value now that we've applied the latest update.
-            self.inner.pending.borrow_mut().take();
+            self.inner.clear_pending_slots();
             true
         } else {
             self.inner.store_pending(value);
@@ -2282,10 +2340,8 @@ impl<T: Clone> MutableState<T> {
                 return staged;
             }
         }
-        if let Ok(pending) = self.inner.pending.try_borrow() {
-            if let Some(pending) = pending.as_ref() {
-                return pending.clone();
-            }
+        if let Some(pending) = self.inner.pending_cloned() {
+            return pending;
         }
         if let Ok(value) = self.inner.value.try_borrow() {
             value.clone()
@@ -2370,10 +2426,8 @@ impl<T: Clone> State<T> {
                 return staged;
             }
         }
-        if let Ok(pending) = self.inner.pending.try_borrow() {
-            if let Some(pending) = pending.as_ref() {
-                return pending.clone();
-            }
+        if let Some(pending) = self.inner.pending_cloned() {
+            return pending;
         }
         if let Ok(value) = self.inner.value.try_borrow() {
             value.clone()
