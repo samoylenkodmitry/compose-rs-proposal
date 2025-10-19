@@ -693,10 +693,12 @@ fn counter_app() {
     let latest_pointer = compose_core::remember(|| Point { x: 0.0, y: 0.0 });
     let pointer_frame =
         compose_core::remember(|| Option::<compose_core::FrameCallbackRegistration>::None);
+    let runtime_handle = compose_core::with_current_composer(|composer| composer.runtime_handle());
     let pointer_sync = {
         let pointer_position = pointer_position.clone();
         let latest_pointer = latest_pointer.clone();
         let pointer_frame = pointer_frame.clone();
+        let runtime_handle = runtime_handle.clone();
         Rc::new(move || {
             if pointer_frame.with(|pending| pending.is_some()) {
                 return;
@@ -704,7 +706,8 @@ fn counter_app() {
             let pointer_position_cb = pointer_position.clone();
             let latest_pointer_cb = latest_pointer.clone();
             let pointer_frame_cb = pointer_frame.clone();
-            let registration = compose_core::withFrameMillis(move |_| {
+            let runtime_handle = runtime_handle.clone();
+            let registration = runtime_handle.frame_clock().with_frame_millis(move |_| {
                 let next = latest_pointer_cb.with(|value| *value);
                 pointer_position_cb.set(next);
                 pointer_frame_cb.update(|pending| {
@@ -716,6 +719,7 @@ fn counter_app() {
             pointer_frame.update(|pending| {
                 *pending = Some(registration);
             });
+            runtime_handle.schedule();
         })
     };
     let pointer_down = compose_core::useState(|| false);
