@@ -169,7 +169,7 @@ impl<T: fmt::Debug + Clone + 'static> fmt::Debug for MutableState<T> {
 }
 
 impl<T: Clone + 'static> State<T> {
-    fn subscribe_current_scope(&self) {
+    fn subscribe_current_scope(&self) -> bool {
         if let Some(Some(scope)) =
             with_current_composer_opt(|composer| composer.current_recompose_scope())
         {
@@ -182,11 +182,18 @@ impl<T: Clone + 'static> State<T> {
             if !already_registered {
                 watchers.push(scope.downgrade());
             }
+            true
+        } else {
+            false
         }
     }
 
     pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
-        self.subscribe_current_scope();
+        if !self.subscribe_current_scope() {
+            let value = self.inner.first_state_record().value();
+            return f(&value);
+        }
+
         let snapshot = snapshot::current_snapshot();
         let record = snapshot::readable(&self.inner.first_state_record(), &*snapshot);
         let value = record.value();
@@ -194,7 +201,10 @@ impl<T: Clone + 'static> State<T> {
     }
 
     pub fn value(&self) -> T {
-        self.subscribe_current_scope();
+        if !self.subscribe_current_scope() {
+            return self.inner.first_state_record().value();
+        }
+
         let snapshot = snapshot::current_snapshot();
         let record = snapshot::readable(&self.inner.first_state_record(), &*snapshot);
         record.value()

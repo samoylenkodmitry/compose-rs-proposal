@@ -1,5 +1,6 @@
 use super::*;
 use crate as compose_core;
+use crate::snapshot::{self, Snapshot, SnapshotId, SnapshotIdSet};
 use compose_macros::composable;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -26,6 +27,37 @@ fn runtime_handle() -> (RuntimeHandle, Runtime) {
 
 thread_local! {
     static INVOCATIONS: Cell<usize> = Cell::new(0);
+}
+
+struct RejectingSnapshot {
+    id: SnapshotId,
+    invalid: SnapshotIdSet,
+}
+
+impl RejectingSnapshot {
+    fn new(id: SnapshotId, invalid: SnapshotIdSet) -> Self {
+        Self { id, invalid }
+    }
+}
+
+impl Snapshot for RejectingSnapshot {
+    fn id(&self) -> SnapshotId {
+        self.id
+    }
+
+    fn invalid(&self) -> SnapshotIdSet {
+        self.invalid.clone()
+    }
+
+    fn read_only(&self) -> bool {
+        false
+    }
+
+    fn disposed(&self) -> bool {
+        false
+    }
+
+    fn record_modified(&self, _object_id: usize) {}
 }
 
 thread_local! {
@@ -114,6 +146,24 @@ fn mutable_state_reads_during_update_return_current_value() {
 
     assert_eq!(before.get(), 0);
     assert_eq!(state.get(), 7);
+}
+
+#[test]
+fn mutable_state_reads_outside_composition_use_latest_value() {
+    let (runtime_handle, _runtime) = runtime_handle();
+    let state = MutableState::with_runtime(0, runtime_handle);
+
+    let mut invalid = SnapshotIdSet::new();
+    invalid.insert(snapshot::current_snapshot().id());
+    let snapshot = Arc::new(RejectingSnapshot::new(usize::MAX, invalid));
+
+    snapshot::with_snapshot(snapshot, || {
+        assert_eq!(state.value(), 0);
+        state.set(5);
+        assert_eq!(state.value(), 5);
+    });
+
+    assert_eq!(state.value(), 5);
 }
 
 #[test]
