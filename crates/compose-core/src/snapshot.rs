@@ -158,8 +158,10 @@ pub fn readable<T: Clone + 'static>(
 
     let mut current: Option<Arc<StateRecord<T>>> = Some(first.clone());
     let mut candidate: Option<Arc<StateRecord<T>>> = None;
+    let mut fallback: Option<Arc<StateRecord<T>>> = None;
 
     while let Some(record) = current {
+        fallback = Some(record.clone());
         if valid(id, record.snapshot_id(), &invalid) {
             let replace = match &candidate {
                 Some(existing) => existing.snapshot_id() < record.snapshot_id(),
@@ -172,7 +174,9 @@ pub fn readable<T: Clone + 'static>(
         current = record.next();
     }
 
-    candidate.expect("No readable state record for snapshot")
+    candidate
+        .or(fallback)
+        .expect("State had no records when attempting to read a snapshot")
 }
 
 pub fn writable_record<T: Clone + 'static>(
