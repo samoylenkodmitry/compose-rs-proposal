@@ -156,7 +156,7 @@ fn main() {
     });
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum DemoTab {
     Counter,
     CompositionLocal,
@@ -292,21 +292,12 @@ fn combined_app() {
             height: 12.0,
         });
 
-        println!("if recomposed");
-        match tab_state_for_content.get() {
-            DemoTab::Counter => {
-                println!("showing counter tab");
-                counter_app();
-            }
-            DemoTab::CompositionLocal => {
-                println!("showing composition local tab");
-                composition_local_example();
-            }
-            DemoTab::Async => {
-                println!("showing async runtime tab");
-                async_runtime_example();
-            }
-        }
+        let active = tab_state_for_content.get();
+        compose_core::with_key(&active, || match active {
+            DemoTab::Counter => counter_app(),
+            DemoTab::CompositionLocal => composition_local_example(),
+            DemoTab::Async => async_runtime_example(),
+        });
     });
 }
 
@@ -470,26 +461,29 @@ fn async_runtime_example() {
                     }
 
                     if let Some(previous) = last_time {
-                        let delta_nanos = nanos.saturating_sub(previous);
-                        if delta_nanos > 0 {
-                            let dt_ms = delta_nanos as f32 / 1_000_000.0;
-                            stats.update(|state| {
-                                state.frames = state.frames.wrapping_add(1);
-                                state.last_frame_ms = dt_ms;
-                            });
-                            animation.update(|anim| {
-                                let next = anim.progress + anim.direction * (dt_ms / 600.0);
-                                if next >= 1.0 {
-                                    anim.progress = 1.0;
-                                    anim.direction = -1.0;
-                                } else if next <= 0.0 {
-                                    anim.progress = 0.0;
-                                    anim.direction = 1.0;
-                                } else {
-                                    anim.progress = next;
-                                }
-                            });
+                        let mut delta_nanos = nanos.saturating_sub(previous);
+                        if delta_nanos == 0 {
+                            // Fall back to a nominal 60 FPS delta so the animation keeps
+                            // advancing even if two callbacks report the same timestamp.
+                            delta_nanos = 16_666_667;
                         }
+                        let dt_ms = delta_nanos as f32 / 1_000_000.0;
+                        stats.update(|state| {
+                            state.frames = state.frames.wrapping_add(1);
+                            state.last_frame_ms = dt_ms;
+                        });
+                        animation.update(|anim| {
+                            let next = anim.progress + anim.direction * (dt_ms / 600.0);
+                            if next >= 1.0 {
+                                anim.progress = 1.0;
+                                anim.direction = -1.0;
+                            } else if next <= 0.0 {
+                                anim.progress = 0.0;
+                                anim.direction = 1.0;
+                            } else {
+                                anim.progress = next;
+                            }
+                        });
                     }
 
                     last_time = Some(nanos);
