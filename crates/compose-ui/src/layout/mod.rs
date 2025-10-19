@@ -212,7 +212,10 @@ impl<'a> LayoutBuilder<'a> {
             (modifier, props, offset)
         };
         let padding = props.padding();
-        let inner_constraints = normalize_constraints(subtract_padding(constraints, padding));
+        let inner_constraints = {
+            let inner = subtract_padding(constraints, padding);
+            apply_layout_properties_to_constraints(inner, &props)
+        };
 
         self.slots.reset();
         let mut composer = Composer::new(
@@ -290,7 +293,7 @@ impl<'a> LayoutBuilder<'a> {
         let offset = modifier.total_offset();
         let constraints = normalize_constraints(constraints);
         let mut inner_constraints = subtract_padding(constraints, padding);
-        inner_constraints = apply_layout_properties_to_constraints(inner_constraints, props);
+        inner_constraints = apply_layout_properties_to_constraints(inner_constraints, &props);
         let error = Rc::new(RefCell::new(None));
         let mut records: HashMap<NodeId, ChildRecord> = HashMap::new();
         let mut measurables: Vec<Box<dyn Measurable>> = Vec::new();
@@ -758,7 +761,7 @@ fn align_vertical(alignment: VerticalAlignment, available: f32, child: f32) -> f
 
 fn apply_layout_properties_to_constraints(
     mut constraints: Constraints,
-    props: LayoutProperties,
+    props: &LayoutProperties,
 ) -> Constraints {
     if let Some(min_width) = props.min_width() {
         constraints.min_width = constraints.min_width.max(min_width);

@@ -1,9 +1,14 @@
 use super::*;
-use compose_core::Applier;
+use compose_core::{Applier, DefaultScheduler, Runtime};
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
-use crate::modifier::{Modifier, Size};
+use crate::{
+    modifier::{Modifier, Size},
+    subcompose_layout::MeasurePolicy as SubcomposeMeasurePolicy,
+    subcompose_layout::SubcomposeLayoutNode,
+};
 use compose_ui_layout::{MeasurePolicy, MeasureResult, Placement};
 
 use super::core::Measurable;
@@ -278,6 +283,100 @@ fn layout_node_applies_fractional_size_before_measure() -> Result<(), NodeError>
     let mut layout_node = LayoutNode::new(modifier.clone(), policy);
     layout_node.children.insert(child);
     let layout_id = applier.create(Box::new(layout_node));
+
+    let mut builder = LayoutBuilder::new(&mut applier);
+    let measured = builder.measure_node(
+        layout_id,
+        Constraints {
+            min_width: 0.0,
+            max_width: 300.0,
+            min_height: 0.0,
+            max_height: 200.0,
+        },
+    )?;
+
+    let captured = captured.borrow();
+    assert_eq!(captured.len(), 1);
+    let constraints = captured[0];
+    assert_eq!(constraints.min_width, 150.0);
+    assert_eq!(constraints.max_width, 150.0);
+    assert_eq!(constraints.min_height, 100.0);
+    assert_eq!(constraints.max_height, 100.0);
+    assert_eq!(measured.size.width, 150.0);
+    assert_eq!(measured.size.height, 100.0);
+    Ok(())
+}
+
+#[test]
+fn subcompose_node_applies_explicit_size_before_measure() -> Result<(), NodeError> {
+    let runtime = Runtime::new(Arc::new(DefaultScheduler));
+    let mut applier = MemoryApplier::new();
+    applier.set_runtime_handle(runtime.handle());
+
+    let captured = Rc::new(RefCell::new(Vec::new()));
+    let policy: Rc<SubcomposeMeasurePolicy> = {
+        let captured = Rc::clone(&captured);
+        Rc::new(move |_scope, constraints| {
+            captured.borrow_mut().push(constraints);
+            MeasureResult::new(
+                Size {
+                    width: constraints.min_width,
+                    height: constraints.min_height,
+                },
+                Vec::new(),
+            )
+        })
+    };
+
+    let node = SubcomposeLayoutNode::new(Modifier::size_points(120.0, 40.0), Rc::clone(&policy));
+    let layout_id = applier.create(Box::new(node));
+
+    let mut builder = LayoutBuilder::new(&mut applier);
+    let measured = builder.measure_node(
+        layout_id,
+        Constraints {
+            min_width: 0.0,
+            max_width: 200.0,
+            min_height: 0.0,
+            max_height: 200.0,
+        },
+    )?;
+
+    let captured = captured.borrow();
+    assert_eq!(captured.len(), 1);
+    let constraints = captured[0];
+    assert_eq!(constraints.min_width, 120.0);
+    assert_eq!(constraints.max_width, 120.0);
+    assert_eq!(constraints.min_height, 40.0);
+    assert_eq!(constraints.max_height, 40.0);
+    assert_eq!(measured.size.width, 120.0);
+    assert_eq!(measured.size.height, 40.0);
+    Ok(())
+}
+
+#[test]
+fn subcompose_node_applies_fractional_size_before_measure() -> Result<(), NodeError> {
+    let runtime = Runtime::new(Arc::new(DefaultScheduler));
+    let mut applier = MemoryApplier::new();
+    applier.set_runtime_handle(runtime.handle());
+
+    let captured = Rc::new(RefCell::new(Vec::new()));
+    let policy: Rc<SubcomposeMeasurePolicy> = {
+        let captured = Rc::clone(&captured);
+        Rc::new(move |_scope, constraints| {
+            captured.borrow_mut().push(constraints);
+            MeasureResult::new(
+                Size {
+                    width: constraints.min_width,
+                    height: constraints.min_height,
+                },
+                Vec::new(),
+            )
+        })
+    };
+
+    let node = SubcomposeLayoutNode::new(Modifier::fill_max_size_fraction(0.5), Rc::clone(&policy));
+    let layout_id = applier.create(Box::new(node));
 
     let mut builder = LayoutBuilder::new(&mut applier);
     let measured = builder.measure_node(
