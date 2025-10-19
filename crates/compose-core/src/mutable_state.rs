@@ -166,33 +166,17 @@ impl<T: Clone + 'static> MutableState<T> {
 
     pub fn update<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
         self.inner.runtime.assert_ui_thread();
-        let snapshot = snapshot::current_snapshot();
-        let head = self.inner.first_state_record();
-        let record = snapshot::writable_record(&head, &*snapshot);
-        let mut current = record.value();
-        let result = f(&mut current);
-        record.set_value(current);
-        if !Arc::ptr_eq(&record, &head) {
-            record.set_next(Some(head));
-            self.inner.set_first_state_record(record.clone());
-        }
-        snapshot.record_modified(self.inner.object_id());
-        self.notify_watchers();
+        let previous = self.inner.first_state_record();
+        let mut value = previous.value();
+        let result = f(&mut value);
+        self.install_new_record(previous, value);
         result
     }
 
     pub fn replace(&self, value: T) {
         self.inner.runtime.assert_ui_thread();
-        let snapshot = snapshot::current_snapshot();
-        let head = self.inner.first_state_record();
-        let record = snapshot::writable_record(&head, &*snapshot);
-        record.set_value(value);
-        if !Arc::ptr_eq(&record, &head) {
-            record.set_next(Some(head));
-            self.inner.set_first_state_record(record.clone());
-        }
-        snapshot.record_modified(self.inner.object_id());
-        self.notify_watchers();
+        let previous = self.inner.first_state_record();
+        self.install_new_record(previous, value);
     }
 
     pub fn set_value(&self, value: T) {
@@ -205,7 +189,13 @@ impl<T: Clone + 'static> MutableState<T> {
 
     fn notify_watchers(&self) {
         let watchers: Vec<RecomposeScope> = {
-            let mut watchers = self.inner.watchers.borrow_mut();
+            let mut watchers = self.inner.watchers.try_borrow_mut().unwrap_or_else(|err| {
+                panic!(
+                    "MutableState::notify_watchers failed to borrow watchers (object_id={:#x}): {}",
+                    self.inner.object_id(),
+                    err
+                )
+            });
             watchers.retain(|w| w.strong_count() > 0);
             watchers
                 .iter()
@@ -217,6 +207,39 @@ impl<T: Clone + 'static> MutableState<T> {
         for watcher in watchers {
             watcher.invalidate();
         }
+    }
+
+    fn install_new_record(&self, previous: Arc<StateRecord<T>>, value: T) {
+        let active_snapshot = snapshot::current_snapshot();
+        let use_active = snapshot::has_thread_snapshot()
+            && !active_snapshot.read_only()
+            && active_snapshot.id() >= previous.snapshot_id();
+        let snapshot = if use_active {
+            active_snapshot
+        } else {
+            snapshot::advance_global_snapshot()
+        };
+        let new_id = snapshot.id();
+        let previous_id = previous.snapshot_id();
+        debug_assert!(
+            new_id >= previous_id,
+            "snapshot id did not advance (object_id={:#x}, previous={}, new={})",
+            self.inner.object_id(),
+            previous_id,
+            new_id
+        );
+
+        let record = Arc::new(StateRecord::new(new_id, value));
+        debug_assert!(
+            !Arc::ptr_eq(&record, &previous),
+            "new state record unexpectedly aliases previous record (object_id={:#x}, snapshot_id={})",
+            self.inner.object_id(),
+            new_id
+        );
+        record.set_next(Some(previous));
+        self.inner.set_first_state_record(record.clone());
+        snapshot.record_modified(self.inner.object_id());
+        self.notify_watchers();
     }
 
     pub fn value(&self) -> T {
@@ -241,7 +264,17 @@ impl<T: Clone + 'static> State<T> {
         if let Some(Some(scope)) =
             with_current_composer_opt(|composer| composer.current_recompose_scope())
         {
-            let mut watchers = self.inner.watchers.borrow_mut();
+            let mut watchers = self
+                .inner
+                .watchers
+                .try_borrow_mut()
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "State::subscribe_current_scope failed to borrow watchers (object_id={:#x}): {}",
+                        self.inner.object_id(),
+                        err
+                    )
+                });
             watchers.retain(|w| w.strong_count() > 0);
             let id = scope.id();
             let already_registered = watchers
@@ -288,5 +321,52 @@ impl<T: fmt::Debug + Clone + 'static> fmt::Debug for State<T> {
         f.debug_struct("State")
             .field("value", &self.value())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::{DefaultScheduler, Runtime};
+    use std::sync::Arc;
+
+    #[test]
+    fn installing_new_record_links_previous_head() {
+        let runtime = Runtime::new(Arc::new(DefaultScheduler));
+        let handle = runtime.handle();
+        let state = MutableState::with_runtime(0, handle);
+
+        let previous = state.inner.first_state_record();
+        state.set(1);
+        let head = state.inner.first_state_record();
+
+        assert_eq!(head.value(), 1);
+        assert_ne!(head.snapshot_id(), previous.snapshot_id());
+        let next = head
+            .next()
+            .expect("new state record should retain previous head");
+        assert!(Arc::ptr_eq(&next, &previous));
+        assert_eq!(next.value(), 0);
+    }
+
+    #[test]
+    fn subsequent_writes_chain_records_in_order() {
+        let runtime = Runtime::new(Arc::new(DefaultScheduler));
+        let handle = runtime.handle();
+        let state = MutableState::with_runtime(0, handle);
+
+        state.set(1);
+        state.set(2);
+
+        let head = state.inner.first_state_record();
+        assert_eq!(head.value(), 2);
+        let second = head
+            .next()
+            .expect("second record should exist after two writes");
+        assert_eq!(second.value(), 1);
+        let third = second
+            .next()
+            .expect("third record should preserve initial value");
+        assert_eq!(third.value(), 0);
     }
 }

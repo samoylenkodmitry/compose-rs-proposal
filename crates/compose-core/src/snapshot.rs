@@ -38,6 +38,10 @@ pub fn current_snapshot() -> Arc<dyn Snapshot> {
     })
 }
 
+pub fn has_thread_snapshot() -> bool {
+    THREAD_SNAPSHOT.with(|slot| slot.borrow().is_some())
+}
+
 pub fn with_snapshot<T>(snapshot: Arc<dyn Snapshot>, f: impl FnOnce() -> T) -> T {
     THREAD_SNAPSHOT.with(|slot| {
         let previous = slot.borrow_mut().replace(snapshot);

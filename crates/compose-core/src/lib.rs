@@ -1542,7 +1542,8 @@ impl<'a> Composer<'a> {
             }
         }
         let guard = Guard;
-        let result = f(self);
+        let snapshot = crate::snapshot::current_snapshot();
+        let result = crate::snapshot::with_snapshot(snapshot, || f(self));
         drop(guard);
         result
     }
