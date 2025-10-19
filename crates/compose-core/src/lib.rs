@@ -2079,19 +2079,14 @@ impl<T: Clone + 'static> snapshots::StateRecord for ValueRecord<T> {
         })
     }
 
-    fn next_ptr(&self) -> *const dyn snapshots::StateRecord {
+    fn next_ptr(&self) -> Option<*const dyn snapshots::StateRecord> {
         self.next
             .as_deref()
             .map(|record| record as *const dyn snapshots::StateRecord)
-            .unwrap_or(std::ptr::null::<ValueRecord<T>>() as *const dyn snapshots::StateRecord)
     }
 
     fn set_next(&mut self, next: Option<Box<dyn snapshots::StateRecord>>) {
         self.next = next;
-    }
-
-    fn take_next(&mut self) -> Option<Box<dyn snapshots::StateRecord>> {
-        self.next.take()
     }
 
     fn as_any(&self) -> &dyn Any {

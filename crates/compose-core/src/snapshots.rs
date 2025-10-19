@@ -49,9 +49,8 @@ pub trait StateRecord: Any {
     fn set_snapshot_id(&mut self, id: SnapshotId);
     fn assign_from(&mut self, other: &dyn StateRecord);
     fn boxed_clone(&self) -> Box<dyn StateRecord>;
-    fn next_ptr(&self) -> *const dyn StateRecord;
+    fn next_ptr(&self) -> Option<*const dyn StateRecord>;
     fn set_next(&mut self, next: Option<Box<dyn StateRecord>>);
-    fn take_next(&mut self) -> Option<Box<dyn StateRecord>>;
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
     fn into_any(self: Box<Self>) -> Box<dyn Any>;
@@ -98,29 +97,36 @@ impl Snapshot {
         if self.read_only {
             return;
         }
-        if let Ok(mut modified) = self.modified.lock() {
-            modified.insert(StateObjectHandle::new(object));
-        }
+        let mut modified = self
+            .modified
+            .lock()
+            .expect("snapshot modified set lock poisoned");
+        modified.insert(StateObjectHandle::new(object));
     }
 
-    pub fn modified(&self) -> Vec<*const dyn StateObject> {
-        self.modified
+    fn modified(&self) -> Vec<StateObjectHandle> {
+        let handles = self
+            .modified
             .lock()
-            .map(|set| set.iter().map(|handle| handle.as_ptr()).collect())
-            .unwrap_or_default()
+            .expect("snapshot modified set lock poisoned");
+        handles.iter().copied().collect()
     }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq, Hash)]
-struct StateObjectHandle(*const dyn StateObject);
+struct StateObjectHandle(std::ptr::NonNull<dyn StateObject>);
 
 impl StateObjectHandle {
     fn new(ptr: *const dyn StateObject) -> Self {
-        Self(ptr)
+        let raw = ptr as *mut dyn StateObject;
+        let handle = std::ptr::NonNull::new(raw)
+            .expect("state object pointer registered with snapshot must not be null");
+        Self(handle)
     }
 
-    fn as_ptr(self) -> *const dyn StateObject {
-        self.0
+    fn as_ref<'a>(self) -> &'a dyn StateObject {
+        // SAFETY: the pointer originates from a live state object which outlives the snapshot.
+        unsafe { self.0.as_ref() }
     }
 }
 
@@ -174,7 +180,9 @@ fn push_snapshot(snapshot: Arc<Snapshot>) {
 fn pop_snapshot() {
     THREAD_SNAPSHOT.with(|stack| {
         let mut stack = stack.borrow_mut();
-        stack.pop();
+        stack
+            .pop()
+            .expect("snapshot stack underflow: attempted to pop without active snapshot");
     });
 }
 
@@ -184,14 +192,12 @@ pub fn current_snapshot() -> Arc<Snapshot> {
         if let Some(top) = stack.last() {
             Arc::clone(top)
         } else {
-            GLOBAL_STATE
+            let state = GLOBAL_STATE
                 .lock()
-                .map(|state| {
-                    let mut snapshot = Snapshot::new(state.id, false);
-                    snapshot.invalid = state.invalid.clone();
-                    Arc::new(snapshot)
-                })
-                .unwrap_or_else(|_| Arc::new(Snapshot::new(0, false)))
+                .expect("global snapshot state lock poisoned");
+            let mut snapshot = Snapshot::new(state.id, false);
+            snapshot.invalid = state.invalid.clone();
+            Arc::new(snapshot)
         }
     })
 }
@@ -226,6 +232,12 @@ pub fn observe<T>(
     result
 }
 
+fn record_from_ptr<'a>(ptr: *const dyn StateRecord) -> &'a dyn StateRecord {
+    debug_assert!(!ptr.is_null(), "expected non-null state record pointer");
+    // SAFETY: callers only supply pointers obtained from live state record chains.
+    unsafe { &*ptr }
+}
+
 pub fn readable<'a>(
     mut first: Option<*const dyn StateRecord>,
     id: SnapshotId,
@@ -233,21 +245,18 @@ pub fn readable<'a>(
 ) -> Option<&'a dyn StateRecord> {
     let mut best: Option<*const dyn StateRecord> = None;
     while let Some(ptr) = first {
-        unsafe {
-            let record = &*ptr;
-            if record.snapshot_id() <= id && !invalid.get(record.snapshot_id()) {
-                if best
-                    .map(|current| (*current).snapshot_id() < record.snapshot_id())
-                    .unwrap_or(true)
-                {
-                    best = Some(ptr);
-                }
+        let record = record_from_ptr(ptr);
+        if record.snapshot_id() <= id && !invalid.get(record.snapshot_id()) {
+            if best
+                .map(|current| record_from_ptr(current).snapshot_id() < record.snapshot_id())
+                .unwrap_or(true)
+            {
+                best = Some(ptr);
             }
-            let next = record.next_ptr();
-            first = if next.is_null() { None } else { Some(next) };
         }
+        first = record.next_ptr();
     }
-    best.map(|ptr| unsafe { &*ptr })
+    best.map(record_from_ptr)
 }
 
 pub fn writable_record(object: &dyn StateObject, snapshot: &Snapshot) -> Box<dyn StateRecord> {
@@ -270,17 +279,14 @@ fn apply_snapshot(snapshot: &Arc<Snapshot>) -> SnapshotApplyResult {
         return SnapshotApplyResult::Success;
     }
 
-    let mut state = match GLOBAL_STATE.lock() {
-        Ok(guard) => guard,
-        Err(_) => return SnapshotApplyResult::Failure,
-    };
+    let mut state = GLOBAL_STATE
+        .lock()
+        .expect("global snapshot state lock poisoned during apply");
 
     let mut any_failure = false;
 
-    for object_ptr in objects {
-        // Safety: state objects live for the duration of the program and we only
-        // record pointers produced by `StateObject` implementors.
-        let object = unsafe { &*object_ptr };
+    for handle in objects {
+        let object = handle.as_ref();
         let first = object.first_record();
         let base = readable(first, state.id, &state.invalid);
         let pending = readable(first, snapshot.id, &snapshot.invalid);
@@ -312,7 +318,9 @@ fn apply_snapshot(snapshot: &Arc<Snapshot>) -> SnapshotApplyResult {
 pub fn register_global_write_observer(
     observer: impl Fn(&dyn Any) + Send + Sync + 'static,
 ) -> ObserverHandle {
-    let mut state = GLOBAL_STATE.lock().unwrap();
+    let mut state = GLOBAL_STATE
+        .lock()
+        .expect("global snapshot state lock poisoned when registering write observer");
     state
         .write_observers
         .push(Arc::new(observer) as Arc<dyn Fn(&dyn Any) + Send + Sync>);
@@ -325,10 +333,11 @@ pub fn notify_write(object: &dyn Any) {
         observer(object);
     }
     if THREAD_SNAPSHOT.with(|stack| stack.borrow().is_empty()) {
-        if let Ok(state) = GLOBAL_STATE.lock() {
-            for observer in &state.write_observers {
-                observer(object);
-            }
+        let state = GLOBAL_STATE
+            .lock()
+            .expect("global snapshot state lock poisoned when notifying observers");
+        for observer in &state.write_observers {
+            observer(object);
         }
     }
 }
