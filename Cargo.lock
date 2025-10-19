@@ -360,6 +360,7 @@ dependencies = [
  "anyhow",
  "compose-macros",
  "compose-testing",
+ "once_cell",
 ]
 
 [[package]]

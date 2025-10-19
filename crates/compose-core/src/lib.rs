@@ -6,6 +6,7 @@ pub mod frame_clock;
 pub mod owned;
 pub mod platform;
 pub mod runtime;
+pub mod snapshots;
 pub mod subcompose;
 
 pub use frame_clock::{FrameCallbackRegistration, FrameClock};
@@ -21,8 +22,8 @@ use std::cell::{Cell, RefCell, UnsafeCell};
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet}; // FUTURE(no_std): replace HashMap/HashSet with arena-backed maps.
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::marker::PhantomData;
 use std::mem;
-use std::ptr::{self, NonNull};
 use std::rc::{Rc, Weak}; // FUTURE(no_std): replace Rc/Weak with arena-managed handles.
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -307,12 +308,12 @@ pub fn withFrameMillis(callback: impl FnOnce(u64) + 'static) -> FrameCallbackReg
 }
 
 #[allow(non_snake_case)]
-pub fn mutableStateOf<T: 'static>(initial: T) -> MutableState<T> {
+pub fn mutableStateOf<T: Clone + 'static>(initial: T) -> MutableState<T> {
     with_current_composer(|composer| composer.mutable_state_of(initial))
 }
 
 #[allow(non_snake_case)]
-pub fn useState<T: 'static>(init: impl FnOnce() -> T) -> MutableState<T> {
+pub fn useState<T: Clone + 'static>(init: impl FnOnce() -> T) -> MutableState<T> {
     remember(|| mutableStateOf(init())).with(|state| state.clone())
 }
 
@@ -321,7 +322,7 @@ pub fn useState<T: 'static>(init: impl FnOnce() -> T) -> MutableState<T> {
     since = "0.1.0",
     note = "use useState(|| value) instead of use_state(|| value)"
 )]
-pub fn use_state<T: 'static>(init: impl FnOnce() -> T) -> MutableState<T> {
+pub fn use_state<T: Clone + 'static>(init: impl FnOnce() -> T) -> MutableState<T> {
     useState(init)
 }
 
@@ -1602,7 +1603,7 @@ impl<'a> Composer<'a> {
         self.slots.write_value(idx, value);
     }
 
-    pub fn mutable_state_of<T: 'static>(&mut self, initial: T) -> MutableState<T> {
+    pub fn mutable_state_of<T: Clone + 'static>(&mut self, initial: T) -> MutableState<T> {
         MutableState::with_runtime(initial, self.runtime.clone())
     }
 
@@ -1771,7 +1772,7 @@ impl<'a> Composer<'a> {
         }
     }
 
-    pub fn use_state<T: 'static>(&mut self, init: impl FnOnce() -> T) -> MutableState<T> {
+    pub fn use_state<T: Clone + 'static>(&mut self, init: impl FnOnce() -> T) -> MutableState<T> {
         let state = self
             .slots
             .remember(|| MutableState::with_runtime(init(), self.runtime.clone()));
@@ -1942,126 +1943,173 @@ impl<'a> Composer<'a> {
     }
 }
 
-struct MutableStateInner<T> {
-    value: RefCell<T>,
-    pending: RefCell<Option<T>>,
+struct MutableStateInner<T: Clone + 'static> {
+    records: UnsafeCell<Option<Box<dyn snapshots::StateRecord>>>,
     watchers: RefCell<Vec<Weak<RecomposeScopeInner>>>, // FUTURE(no_std): move to stack-allocated subscription list.
     runtime: RuntimeHandle,
-    active_borrow: Cell<Option<NonNull<T>>>,
+    marker: PhantomData<T>,
 }
 
-impl<T> MutableStateInner<T> {
+impl<T: Clone + 'static> MutableStateInner<T> {
     fn new(value: T, runtime: RuntimeHandle) -> Self {
+        let record = Box::new(ValueRecord::new(0, value));
         Self {
-            value: RefCell::new(value),
-            pending: RefCell::new(None),
+            records: UnsafeCell::new(Some(record)),
             watchers: RefCell::new(Vec::new()),
             runtime,
-            active_borrow: Cell::new(None),
+            marker: PhantomData,
         }
     }
 
-    fn begin_active_borrow(&self, ptr: NonNull<T>) -> ActiveBorrowGuard<'_, T> {
-        debug_assert!(self.active_borrow.get().is_none());
-        self.active_borrow.set(Some(ptr));
-        ActiveBorrowGuard { inner: self }
-    }
-
-    fn active_value(&self) -> Option<T>
-    where
-        T: Clone,
-    {
-        self.active_borrow
-            .get()
-            .map(|ptr| unsafe { Self::clone_from_active(ptr) })
-    }
-
-    unsafe fn clone_from_active(slot: NonNull<T>) -> T
-    where
-        T: Clone,
-    {
-        struct Restore<T> {
-            ptr: *mut T,
-            value: Option<T>,
+    fn first_record(&self) -> Option<*const dyn snapshots::StateRecord> {
+        unsafe {
+            (*self.records.get())
+                .as_ref()
+                .map(|record| &**record as *const dyn snapshots::StateRecord)
         }
+    }
 
-        impl<T> Drop for Restore<T> {
-            fn drop(&mut self) {
-                if let Some(value) = self.value.take() {
-                    unsafe {
-                        ptr::write(self.ptr, value);
-                    }
-                }
+    fn install_record(&self, mut record: Box<dyn snapshots::StateRecord>) {
+        unsafe {
+            let slot = &mut *self.records.get();
+            let previous = slot.take();
+            if let Some(prev) = previous {
+                record.set_next(Some(prev));
             }
-        }
-
-        let ptr = slot.as_ptr();
-        let mut restore = Restore {
-            ptr,
-            value: Some(ptr::read(ptr)),
-        };
-        let clone = restore.value.as_ref().unwrap().clone();
-        let value = restore.value.take().unwrap();
-        ptr::write(ptr, value);
-        clone
-    }
-
-    fn flush_pending(&self) -> bool {
-        let mut slot = match self.pending.try_borrow_mut() {
-            Ok(slot) => slot,
-            Err(_) => return false,
-        };
-        if let Some(value) = slot.take() {
-            match self.value.try_borrow_mut() {
-                Ok(mut current) => {
-                    let ptr = NonNull::from(&mut *current);
-                    let guard = self.begin_active_borrow(ptr);
-                    *current = value;
-                    drop(guard);
-                    true
-                }
-                Err(_) => {
-                    *slot = Some(value);
-                    false
-                }
-            }
-        } else {
-            false
+            *slot = Some(record);
         }
     }
 
-    fn store_pending(&self, value: T) {
-        *self.pending.borrow_mut() = Some(value);
+    fn replace_chain(&self, chain: Option<Box<dyn snapshots::StateRecord>>) {
+        unsafe {
+            *self.records.get() = chain;
+        }
+    }
+
+    fn state_object_ptr(&self) -> *const dyn snapshots::StateObject {
+        self as *const _ as *const dyn snapshots::StateObject
+    }
+
+    fn as_state_object(&self) -> &dyn snapshots::StateObject {
+        self
+    }
+
+    fn runtime(&self) -> &RuntimeHandle {
+        &self.runtime
+    }
+
+    fn watchers(&self) -> &RefCell<Vec<Weak<RecomposeScopeInner>>> {
+        &self.watchers
     }
 }
 
-struct ActiveBorrowGuard<'a, T> {
-    inner: &'a MutableStateInner<T>,
-}
+impl<T: Clone + 'static> snapshots::StateObject for MutableStateInner<T> {
+    fn first_record(&self) -> Option<*const dyn snapshots::StateRecord> {
+        self.first_record()
+    }
 
-impl<'a, T> Drop for ActiveBorrowGuard<'a, T> {
-    fn drop(&mut self) {
-        self.inner.active_borrow.set(None);
+    fn set_first_record(&self, record: Box<dyn snapshots::StateRecord>) {
+        self.install_record(record);
+    }
+
+    fn replace_chain(&self, record: Option<Box<dyn snapshots::StateRecord>>) {
+        self.replace_chain(record);
+    }
+
+    fn merge_records(
+        &self,
+        _previous: &dyn snapshots::StateRecord,
+        current: &dyn snapshots::StateRecord,
+        _applied: &dyn snapshots::StateRecord,
+    ) -> Option<Box<dyn snapshots::StateRecord>> {
+        Some(current.boxed_clone())
     }
 }
 
-pub struct State<T> {
+pub struct State<T: Clone + 'static> {
     inner: Rc<MutableStateInner<T>>, // FUTURE(no_std): replace Rc with arena-managed state handles.
 }
 
-pub struct MutableState<T> {
+pub struct MutableState<T: Clone + 'static> {
     inner: Rc<MutableStateInner<T>>, // FUTURE(no_std): replace Rc with arena-managed state handles.
 }
 
-impl<T> PartialEq for State<T> {
+impl<T: Clone + 'static> PartialEq for State<T> {
     fn eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.inner, &other.inner)
     }
 }
 
-impl<T> Eq for State<T> {}
+struct ValueRecord<T: Clone + 'static> {
+    snapshot_id: snapshots::SnapshotId,
+    value: T,
+    next: Option<Box<dyn snapshots::StateRecord>>,
+}
 
-impl<T> Clone for State<T> {
+impl<T: Clone + 'static> ValueRecord<T> {
+    fn new(snapshot_id: snapshots::SnapshotId, value: T) -> Self {
+        Self {
+            snapshot_id,
+            value,
+            next: None,
+        }
+    }
+}
+
+impl<T: Clone + 'static> snapshots::StateRecord for ValueRecord<T> {
+    fn snapshot_id(&self) -> snapshots::SnapshotId {
+        self.snapshot_id
+    }
+
+    fn set_snapshot_id(&mut self, id: snapshots::SnapshotId) {
+        self.snapshot_id = id;
+    }
+
+    fn assign_from(&mut self, other: &dyn snapshots::StateRecord) {
+        if let Some(other) = other.as_any().downcast_ref::<ValueRecord<T>>() {
+            self.value = other.value.clone();
+        }
+    }
+
+    fn boxed_clone(&self) -> Box<dyn snapshots::StateRecord> {
+        Box::new(ValueRecord {
+            snapshot_id: self.snapshot_id,
+            value: self.value.clone(),
+            next: None,
+        })
+    }
+
+    fn next_ptr(&self) -> *const dyn snapshots::StateRecord {
+        self.next
+            .as_deref()
+            .map(|record| record as *const dyn snapshots::StateRecord)
+            .unwrap_or(std::ptr::null::<ValueRecord<T>>() as *const dyn snapshots::StateRecord)
+    }
+
+    fn set_next(&mut self, next: Option<Box<dyn snapshots::StateRecord>>) {
+        self.next = next;
+    }
+
+    fn take_next(&mut self) -> Option<Box<dyn snapshots::StateRecord>> {
+        self.next.take()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
+    fn into_any(self: Box<Self>) -> Box<dyn Any> {
+        self
+    }
+}
+
+impl<T: Clone + 'static> Eq for State<T> {}
+
+impl<T: Clone + 'static> Clone for State<T> {
     fn clone(&self) -> Self {
         Self {
             inner: Rc::clone(&self.inner),
@@ -2069,15 +2117,15 @@ impl<T> Clone for State<T> {
     }
 }
 
-impl<T> PartialEq for MutableState<T> {
+impl<T: Clone + 'static> PartialEq for MutableState<T> {
     fn eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.inner, &other.inner)
     }
 }
 
-impl<T> Eq for MutableState<T> {}
+impl<T: Clone + 'static> Eq for MutableState<T> {}
 
-impl<T> Clone for MutableState<T> {
+impl<T: Clone + 'static> Clone for MutableState<T> {
     fn clone(&self) -> Self {
         Self {
             inner: Rc::clone(&self.inner),
@@ -2085,7 +2133,7 @@ impl<T> Clone for MutableState<T> {
     }
 }
 
-impl<T> MutableState<T> {
+impl<T: Clone + 'static> MutableState<T> {
     pub fn with_runtime(value: T, runtime: RuntimeHandle) -> Self {
         Self {
             inner: Rc::new(MutableStateInner::new(value, runtime)),
@@ -2099,43 +2147,28 @@ impl<T> MutableState<T> {
     }
 
     pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
-        self.inner.flush_pending();
         self.as_state().with(f)
     }
 
     pub fn update<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
-        self.inner.runtime.assert_ui_thread();
-        self.inner.flush_pending();
-        let result = {
-            let mut value = self.inner.value.borrow_mut();
-            let value_ref: &mut T = &mut *value;
-            let ptr = NonNull::from(&mut *value_ref);
-            let guard = self.inner.begin_active_borrow(ptr);
-            let result = f(value_ref);
-            drop(guard);
-            result
-        };
+        self.inner.runtime().assert_ui_thread();
+        let snapshot = snapshots::current_snapshot();
+        let record = snapshots::writable_record(self.inner.as_state_object(), &snapshot);
+        let mut record = record
+            .into_any()
+            .downcast::<ValueRecord<T>>()
+            .expect("invalid record type for MutableState");
+        let result = f(&mut record.value);
+        let record: Box<dyn snapshots::StateRecord> = record;
+        self.inner.install_record(record);
+        snapshot.mark_modified(self.inner.state_object_ptr());
+        snapshots::notify_write(self);
         self.notify_watchers();
         result
     }
 
     pub fn replace(&self, value: T) {
-        self.inner.runtime.assert_ui_thread();
-        let applied_now = if let Ok(mut current) = self.inner.value.try_borrow_mut() {
-            *current = value;
-            // Clear any stale pending value now that we've applied the latest update.
-            self.inner.pending.borrow_mut().take();
-            true
-        } else {
-            self.inner.store_pending(value);
-            false
-        };
-        self.notify_watchers();
-        if !applied_now {
-            // If we couldn't apply immediately, try to flush any pending value eagerly so
-            // the next read observes the latest state.
-            self.inner.flush_pending();
-        }
+        self.update(|slot| *slot = value);
     }
 
     pub fn set_value(&self, value: T) {
@@ -2146,9 +2179,17 @@ impl<T> MutableState<T> {
         self.replace(value);
     }
 
+    pub fn value(&self) -> T {
+        self.as_state().value()
+    }
+
+    pub fn get(&self) -> T {
+        self.value()
+    }
+
     fn notify_watchers(&self) {
         let watchers: Vec<RecomposeScope> = {
-            let mut watchers = self.inner.watchers.borrow_mut();
+            let mut watchers = self.inner.watchers().borrow_mut();
             watchers.retain(|w| w.strong_count() > 0);
             watchers
                 .iter()
@@ -2163,44 +2204,20 @@ impl<T> MutableState<T> {
     }
 }
 
-impl<T: Clone> MutableState<T> {
-    pub fn value(&self) -> T {
-        let state = self.as_state();
-        state.subscribe_current_scope();
-        self.inner.flush_pending();
-        if let Ok(pending) = self.inner.pending.try_borrow() {
-            if let Some(pending) = pending.as_ref() {
-                return pending.clone();
-            }
-        }
-        if let Ok(value) = self.inner.value.try_borrow() {
-            value.clone()
-        } else if let Some(active) = self.inner.active_value() {
-            active
-        } else {
-            panic!("state value unavailable: pending update missing")
-        }
-    }
-
-    pub fn get(&self) -> T {
-        self.value()
-    }
-}
-
-impl<T: fmt::Debug> fmt::Debug for MutableState<T> {
+impl<T: Clone + fmt::Debug + 'static> fmt::Debug for MutableState<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MutableState")
-            .field("value", &*self.inner.value.borrow())
+            .field("value", &self.value())
             .finish()
     }
 }
 
-struct DerivedState<T> {
+struct DerivedState<T: Clone + 'static> {
     compute: Rc<dyn Fn() -> T>, // FUTURE(no_std): store compute closures in arena-managed cell.
     state: MutableState<T>,
 }
 
-impl<T: Clone> DerivedState<T> {
+impl<T: Clone + 'static> DerivedState<T> {
     fn new(runtime: RuntimeHandle, compute: Rc<dyn Fn() -> T>) -> Self {
         // FUTURE(no_std): accept arena-managed compute handle.
         let initial = compute();
@@ -2221,12 +2238,12 @@ impl<T: Clone> DerivedState<T> {
     }
 }
 
-impl<T> State<T> {
+impl<T: Clone + 'static> State<T> {
     fn subscribe_current_scope(&self) {
         if let Some(Some(scope)) =
             with_current_composer_opt(|composer| composer.current_recompose_scope())
         {
-            let mut watchers = self.inner.watchers.borrow_mut();
+            let mut watchers = self.inner.watchers().borrow_mut();
             watchers.retain(|w| w.strong_count() > 0);
             let id = scope.id();
             let already_registered = watchers
@@ -2240,28 +2257,31 @@ impl<T> State<T> {
 
     pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
         self.subscribe_current_scope();
-        self.inner.flush_pending();
-        let value = self.inner.value.borrow();
-        f(&value)
+        let snapshot = snapshots::current_snapshot();
+        let record = snapshots::readable(self.inner.first_record(), snapshot.id, &snapshot.invalid)
+            .expect("state has no record");
+        if let Some(observer) = snapshot.read_observer.as_ref() {
+            observer(record.as_any());
+        }
+        let value = record
+            .as_any()
+            .downcast_ref::<ValueRecord<T>>()
+            .expect("invalid record type for MutableState");
+        f(&value.value)
     }
 }
 
-impl<T: Clone> State<T> {
+impl<T: Clone + 'static> State<T> {
     pub fn value(&self) -> T {
         self.subscribe_current_scope();
-        self.inner.flush_pending();
-        if let Ok(pending) = self.inner.pending.try_borrow() {
-            if let Some(pending) = pending.as_ref() {
-                return pending.clone();
-            }
-        }
-        if let Ok(value) = self.inner.value.try_borrow() {
-            value.clone()
-        } else if let Some(active) = self.inner.active_value() {
-            active
-        } else {
-            panic!("state value unavailable: pending update missing")
-        }
+        let snapshot = snapshots::current_snapshot();
+        let record = snapshots::readable(self.inner.first_record(), snapshot.id, &snapshot.invalid)
+            .expect("state has no record");
+        let value = record
+            .as_any()
+            .downcast_ref::<ValueRecord<T>>()
+            .expect("invalid record type for MutableState");
+        value.value.clone()
     }
 
     pub fn get(&self) -> T {
@@ -2269,10 +2289,10 @@ impl<T: Clone> State<T> {
     }
 }
 
-impl<T: fmt::Debug> fmt::Debug for State<T> {
+impl<T: Clone + fmt::Debug + 'static> fmt::Debug for State<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("State")
-            .field("value", &*self.inner.value.borrow())
+            .field("value", &self.value())
             .finish()
     }
 }
