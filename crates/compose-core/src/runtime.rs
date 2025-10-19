@@ -352,7 +352,11 @@ impl RuntimeInner {
         if let Some(index) = callbacks.iter().position(|entry| entry.id == id) {
             callbacks.remove(index);
         }
-        if !self.has_invalid_scopes() && !self.has_updates() && callbacks.is_empty() {
+        if !self.has_invalid_scopes()
+            && !self.has_updates()
+            && callbacks.is_empty()
+            && !self.has_pending_ui()
+        {
             *self.needs_frame.borrow_mut() = false;
         }
     }
@@ -369,7 +373,11 @@ impl RuntimeInner {
         for callback in pending {
             callback(frame_time_nanos);
         }
-        if !self.has_invalid_scopes() && !self.has_updates() && !self.has_frame_callbacks() {
+        if !self.has_invalid_scopes()
+            && !self.has_updates()
+            && !self.has_frame_callbacks()
+            && !self.has_pending_ui()
+        {
             *self.needs_frame.borrow_mut() = false;
         }
     }
