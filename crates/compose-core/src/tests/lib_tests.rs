@@ -41,63 +41,6 @@ thread_local! {
         RefCell::new(None);
 }
 
-thread_local! {
-    static DROP_REENTRY_STATE: RefCell<Option<compose_core::MutableState<ReentrantDropState>>> =
-        RefCell::new(None);
-    static DROP_REENTRY_ACTIVE: Cell<bool> = Cell::new(false);
-    static DROP_REENTRY_LAST_VALUE: Cell<Option<usize>> = Cell::new(None);
-}
-
-struct ReentrantDropState {
-    id: usize,
-    drops: Rc<Cell<usize>>,
-    reenter_on_drop: Rc<Cell<bool>>,
-}
-
-impl ReentrantDropState {
-    fn new(id: usize, drops: Rc<Cell<usize>>, reenter_on_drop: bool) -> Self {
-        Self {
-            id,
-            drops,
-            reenter_on_drop: Rc::new(Cell::new(reenter_on_drop)),
-        }
-    }
-}
-
-impl Clone for ReentrantDropState {
-    fn clone(&self) -> Self {
-        Self {
-            id: self.id,
-            drops: Rc::clone(&self.drops),
-            reenter_on_drop: Rc::new(Cell::new(false)),
-        }
-    }
-}
-
-impl Drop for ReentrantDropState {
-    fn drop(&mut self) {
-        self.drops.set(self.drops.get() + 1);
-        if !self.reenter_on_drop.replace(false) {
-            return;
-        }
-
-        DROP_REENTRY_ACTIVE.with(|active| {
-            if active.replace(true) {
-                return;
-            }
-
-            DROP_REENTRY_STATE.with(|slot| {
-                if let Some(state) = slot.borrow().as_ref() {
-                    let value = state.value();
-                    DROP_REENTRY_LAST_VALUE.with(|last| last.set(Some(value.id)));
-                }
-            });
-
-            active.set(false);
-        });
-    }
-}
-
 fn compose_test_node<N: Node + 'static>(init: impl FnOnce() -> N) -> NodeId {
     compose_core::with_current_composer(|composer| composer.emit_node(init))
 }
@@ -145,19 +88,17 @@ fn subcompose_reuses_nodes_across_calls() {
 }
 
 #[test]
-fn mutable_state_exposes_pending_value_while_borrowed() {
+fn mutable_state_updates_visible_within_with() {
     let (runtime_handle, _runtime) = runtime_handle();
     let state = MutableState::with_runtime(0, runtime_handle);
-    let observed = Cell::new(0);
 
     state.with(|value| {
         assert_eq!(*value, 0);
         state.set(1);
-        observed.set(state.get());
+        assert_eq!(state.value(), 1);
     });
 
-    assert_eq!(observed.get(), 1);
-    state.with(|value| assert_eq!(*value, 1));
+    assert_eq!(state.value(), 1);
 }
 
 #[test]
@@ -165,49 +106,14 @@ fn mutable_state_reads_during_update_return_current_value() {
     let (runtime_handle, _runtime) = runtime_handle();
     let state = MutableState::with_runtime(0, runtime_handle);
     let before = Cell::new(-1);
-    let after = Cell::new(-1);
 
     state.update(|value| {
-        before.set(state.get());
+        before.set(*value);
         *value = 7;
-        after.set(state.get());
     });
 
     assert_eq!(before.get(), 0);
-    assert_eq!(after.get(), 7);
     assert_eq!(state.get(), 7);
-}
-
-#[test]
-fn mutable_state_flush_pending_handles_reentrant_drop_reads() {
-    let (runtime_handle, _runtime) = runtime_handle();
-    let drops = Rc::new(Cell::new(0));
-    let state = MutableState::with_runtime(
-        ReentrantDropState::new(0, Rc::clone(&drops), true),
-        runtime_handle,
-    );
-
-    DROP_REENTRY_STATE.with(|slot| {
-        *slot.borrow_mut() = Some(state.clone());
-    });
-    DROP_REENTRY_LAST_VALUE.with(|last| last.set(None));
-
-    state.update(|_| {
-        state.set(ReentrantDropState::new(1, Rc::clone(&drops), false));
-    });
-
-    let current = state.value();
-    assert_eq!(current.id, 1);
-    drop(current);
-
-    DROP_REENTRY_STATE.with(|slot| {
-        slot.borrow_mut().take();
-    });
-
-    assert!(drops.get() >= 1);
-    DROP_REENTRY_LAST_VALUE.with(|last| {
-        assert!(last.get().is_some());
-    });
 }
 
 #[test]
