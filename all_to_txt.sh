@@ -1,8 +1,16 @@
 #!/bin/bash
 
 # all_to_txt.sh - Generate compact project description for LLM agents
-# Usage: ./all_to_txt.sh
+# Usage: ./all_to_txt.sh [--core-only|-c]
 # Output: single_file_code.md (compact version, excludes tests/benchmarks)
+#
+# Options:
+#   --core-only, -c   Only consolidate files related to the project's core areas:
+#                     - snapshot system (snapshot.rs, snapshot/*.rs)
+#                     - appshell (compose-app-shell crate)
+#                     - slot system (slot*, nodes/, subcompose.rs)
+#                     - runtime (runtime.rs, frame_clock.rs, launched_effect.rs, state.rs)
+#                     - composable macro (compose-macros crate)
 
 # Get the project root directory
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,6 +21,32 @@ OUTPUT_FILE="single_file_code.md"
 
 # Always use compact mode
 COMPACT_MODE=true
+
+# Default: include everything (subject to test/bench/target exclusions)
+CORE_ONLY=false
+
+# Pattern used when CORE_ONLY=true to match files we consider "core".
+# This is intentionally permissive and matches paths/names seen in this repo.
+CORE_PATTERN="(compose-core|compose-app-shell|compose-macros|snapshot|snapshot.rs|subcompose.rs|slot|slots|nodes/|runtime.rs|frame_clock.rs|launched_effect.rs|state.rs)"
+
+# Simple CLI parsing
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        -c|--core-only)
+            CORE_ONLY=true
+            shift
+            ;;
+        -h|--help)
+            sed -n '1,120p' "${BASH_SOURCE[0]}"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: $0 [--core-only|-c]"
+            exit 1
+            ;;
+    esac
+done
 
 # Function to remove comments and optimize Rust code for token reduction
 optimize_rust_code() {
@@ -84,10 +118,18 @@ optimize_rust_code() {
     # Generate directory tree showing only .rs files (excluding target, tests, benches)
     echo "## Files:"
     echo '```'
-    find . -name "target" -prune -o -name "tests" -prune -o -name "benches" -prune -o -name "*.rs" -type f -print | \
-    grep -v -E "(test|bench|example)" | sed 's|^\./||' | sort | while read file; do
-        echo "$file"
-    done
+    # When CORE_ONLY is set, filter the find results through CORE_PATTERN
+    if [ "$CORE_ONLY" = true ]; then
+        find . -name "target" -prune -o -name "tests" -prune -o -name "benches" -prune -o -name "*.rs" -type f -print | \
+        grep -v -E "(test|bench|example)" | sed 's|^\./||' | grep -E "$CORE_PATTERN" | sort | while read file; do
+            echo "$file"
+        done
+    else
+        find . -name "target" -prune -o -name "tests" -prune -o -name "benches" -prune -o -name "*.rs" -type f -print | \
+        grep -v -E "(test|bench|example)" | sed 's|^\./||' | sort | while read file; do
+            echo "$file"
+        done
+    fi
     echo '```'
     echo ""
 
@@ -95,13 +137,24 @@ optimize_rust_code() {
     echo "## Code:"
     echo ""
 
-    find . -name "target" -prune -o -name "tests" -prune -o -name "benches" -prune -o -name "*.rs" -type f -print | \
-    grep -v -E "(test|bench|example)" | sed 's|^\./||' | sort | while read file; do
-        echo "**$file**"
-        echo '```rust'
-        optimize_rust_code "$file"
-        echo '```'
-    done
+    # Output code bodies. Apply CORE_PATTERN when CORE_ONLY=true.
+    if [ "$CORE_ONLY" = true ]; then
+        find . -name "target" -prune -o -name "tests" -prune -o -name "benches" -prune -o -name "*.rs" -type f -print | \
+        grep -v -E "(test|bench|example)" | sed 's|^\./||' | grep -E "$CORE_PATTERN" | sort | while read file; do
+            echo "**$file**"
+            echo '```rust'
+            optimize_rust_code "$file"
+            echo '```'
+        done
+    else
+        find . -name "target" -prune -o -name "tests" -prune -o -name "benches" -prune -o -name "*.rs" -type f -print | \
+        grep -v -E "(test|bench|example)" | sed 's|^\./||' | sort | while read file; do
+            echo "**$file**"
+            echo '```rust'
+            optimize_rust_code "$file"
+            echo '```'
+        done
+    fi
 } > "$OUTPUT_FILE"
 
 echo "Generated $OUTPUT_FILE successfully!"
