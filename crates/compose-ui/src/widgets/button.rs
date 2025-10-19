@@ -5,6 +5,7 @@
 use super::nodes::ButtonNode;
 use crate::composable;
 use crate::modifier::Modifier;
+use compose_core::snapshots::{self, SnapshotApplyResult};
 use compose_core::NodeId;
 use indexmap::IndexSet;
 use std::cell::RefCell;
@@ -16,7 +17,18 @@ where
     F: FnMut() + 'static,
     G: FnMut() + 'static,
 {
-    let on_click_rc: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(on_click));
+    let handler_cell = Rc::new(RefCell::new(on_click));
+    let on_click_rc: Rc<RefCell<dyn FnMut()>> = {
+        let handler_cell = Rc::clone(&handler_cell);
+        Rc::new(RefCell::new(move || {
+            let mut handler = handler_cell.borrow_mut();
+            if let Err(SnapshotApplyResult::Failure) =
+                snapshots::with_mutable_snapshot(|| handler())
+            {
+                panic!("Button on_click handler failed to apply snapshot");
+            }
+        }))
+    };
     let id = compose_core::with_current_composer(|composer| {
         composer.emit_node(|| ButtonNode {
             modifier: modifier.clone(),
