@@ -403,6 +403,7 @@ dependencies = [
 name = "compose-render-pixels"
 version = "0.1.0"
 dependencies = [
+ "compose-core",
  "compose-foundation",
  "compose-render-common",
  "compose-ui",
