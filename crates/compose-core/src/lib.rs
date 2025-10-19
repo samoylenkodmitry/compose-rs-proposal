@@ -1950,6 +1950,7 @@ struct MutableStateInner<T> {
     value: RefCell<T>,
     pending: RefCell<Option<T>>,
     pending_backlog: RefCell<VecDeque<T>>,
+    pending_backlog_overflow: UnsafeCell<Option<T>>,
     staged: UnsafeCell<Option<T>>,
     staged_read: Cell<bool>,
     watchers: RefCell<Vec<Weak<RecomposeScopeInner>>>, // FUTURE(no_std): move to stack-allocated subscription list.
@@ -1963,6 +1964,7 @@ impl<T> MutableStateInner<T> {
             value: RefCell::new(value),
             pending: RefCell::new(None),
             pending_backlog: RefCell::new(VecDeque::new()),
+            pending_backlog_overflow: UnsafeCell::new(None),
             staged: UnsafeCell::new(None),
             staged_read: Cell::new(false),
             watchers: RefCell::new(Vec::new()),
@@ -2046,31 +2048,47 @@ impl<T> MutableStateInner<T> {
     }
 
     fn take_latest_backlog(&self) -> Option<T> {
-        let mut backlog = self
-            .pending_backlog
-            .try_borrow_mut()
-            .expect("pending backlog borrow should succeed when draining pending values");
-        let latest = backlog.pop_back();
-        backlog.clear();
-        latest
+        match self.pending_backlog.try_borrow_mut() {
+            Ok(mut backlog) => {
+                if backlog.is_empty() {
+                    if let Some(value) = self.take_backlog_overflow() {
+                        backlog.push_back(value);
+                    }
+                }
+                let latest = backlog.pop_back();
+                backlog.clear();
+                latest
+            }
+            Err(_) => None,
+        }
     }
 
     fn clear_pending_slots(&self) {
-        self.pending
-            .try_borrow_mut()
-            .expect("pending slot borrow should succeed when clearing pending values")
-            .take();
-        self.pending_backlog
-            .try_borrow_mut()
-            .expect("pending backlog borrow should succeed when clearing pending values")
-            .clear();
+        if let Ok(mut pending) = self.pending.try_borrow_mut() {
+            pending.take();
+        }
+        if let Ok(mut backlog) = self.pending_backlog.try_borrow_mut() {
+            backlog.clear();
+        }
+        self.take_backlog_overflow();
     }
 
     fn enqueue_pending_backlog(&self, value: T) {
-        self.pending_backlog
-            .try_borrow_mut()
-            .expect("pending backlog borrow should succeed when queueing pending values")
-            .push_back(value);
+        if let Ok(mut backlog) = self.pending_backlog.try_borrow_mut() {
+            backlog.push_back(value);
+        } else {
+            self.store_backlog_overflow(value);
+        }
+    }
+
+    fn take_backlog_overflow(&self) -> Option<T> {
+        unsafe { (*self.pending_backlog_overflow.get()).take() }
+    }
+
+    fn store_backlog_overflow(&self, value: T) {
+        unsafe {
+            *self.pending_backlog_overflow.get() = Some(value);
+        }
     }
 
     fn stage(&self, value: T) {
@@ -2078,22 +2096,37 @@ impl<T> MutableStateInner<T> {
             *self.staged.get() = Some(value);
         }
         self.staged_read.set(false);
-        let mut watchers_ref = self
-            .watchers
-            .try_borrow_mut()
-            .expect("mutable state watcher list borrow should succeed while staging");
-        watchers_ref.retain(|w| w.strong_count() > 0);
-        let watchers: Vec<RecomposeScope> = watchers_ref
-            .iter()
-            .filter_map(|w| w.upgrade())
-            .map(|inner| RecomposeScope { inner })
-            .collect();
-        drop(watchers_ref);
-        if !watchers.is_empty() {
-            for watcher in watchers {
-                watcher.force_recompose();
+        self.force_recompose_watchers();
+    }
+
+    fn force_recompose_watchers(&self) {
+        let watchers: Vec<RecomposeScope> = match self.watchers.try_borrow_mut() {
+            Ok(mut watchers_ref) => {
+                watchers_ref.retain(|w| w.strong_count() > 0);
+                watchers_ref
+                    .iter()
+                    .filter_map(|w| w.upgrade())
+                    .map(|inner| RecomposeScope { inner })
+                    .collect()
             }
+            Err(_) => {
+                self.defer_force_recompose_watchers();
+                return;
+            }
+        };
+
+        for watcher in watchers {
+            watcher.force_recompose();
         }
+    }
+
+    fn defer_force_recompose_watchers(&self) {
+        let runtime = self.runtime.clone();
+        let ptr = self as *const _ as *const ();
+        runtime.enqueue_ui_task(Box::new(move || {
+            let inner = unsafe { &*(ptr as *const MutableStateInner<T>) };
+            inner.force_recompose_watchers();
+        }));
     }
 
     fn commit_staged(&self) -> bool {
@@ -2102,14 +2135,13 @@ impl<T> MutableStateInner<T> {
             let should_notify = !self.staged_read.replace(false);
             let applied_now = if let Ok(mut current) = self.value.try_borrow_mut() {
                 *current = value;
-                self.pending
-                    .try_borrow_mut()
-                    .expect("pending slot borrow should succeed during staged commit")
-                    .take();
-                self.pending_backlog
-                    .try_borrow_mut()
-                    .expect("pending backlog borrow should succeed during staged commit")
-                    .clear();
+                if let Ok(mut pending) = self.pending.try_borrow_mut() {
+                    pending.take();
+                }
+                if let Ok(mut backlog) = self.pending_backlog.try_borrow_mut() {
+                    backlog.clear();
+                }
+                self.take_backlog_overflow();
                 true
             } else {
                 if let Ok(mut pending) = self.pending.try_borrow_mut() {
@@ -2155,28 +2187,41 @@ impl<T> MutableStateInner<T> {
             }
         }
         if let Ok(backlog) = self.pending_backlog.try_borrow() {
-            return backlog.back().cloned();
+            if let Some(value) = backlog.back() {
+                return Some(value.clone());
+            }
         }
-        None
+        unsafe { (*self.pending_backlog_overflow.get()).as_ref().cloned() }
     }
 
     fn notify_watchers_inner(&self) {
-        let watchers: Vec<RecomposeScope> = {
-            let mut watchers = self
-                .watchers
-                .try_borrow_mut()
-                .expect("mutable state watcher list borrow should succeed during notify");
-            watchers.retain(|w| w.strong_count() > 0);
-            watchers
-                .iter()
-                .filter_map(|w| w.upgrade())
-                .map(|inner| RecomposeScope { inner })
-                .collect()
+        let watchers: Vec<RecomposeScope> = match self.watchers.try_borrow_mut() {
+            Ok(mut watchers) => {
+                watchers.retain(|w| w.strong_count() > 0);
+                watchers
+                    .iter()
+                    .filter_map(|w| w.upgrade())
+                    .map(|inner| RecomposeScope { inner })
+                    .collect()
+            }
+            Err(_) => {
+                self.defer_notify_watchers();
+                return;
+            }
         };
 
         for watcher in watchers {
             watcher.invalidate();
         }
+    }
+
+    fn defer_notify_watchers(&self) {
+        let runtime = self.runtime.clone();
+        let ptr = self as *const _ as *const ();
+        runtime.enqueue_ui_task(Box::new(move || {
+            let inner = unsafe { &*(ptr as *const MutableStateInner<T>) };
+            inner.notify_watchers_inner();
+        }));
     }
 
     fn store_pending(&self, value: T) {
