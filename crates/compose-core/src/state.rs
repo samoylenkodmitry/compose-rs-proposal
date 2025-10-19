@@ -93,6 +93,47 @@ pub(crate) struct SnapshotMutableState<T> {
     apply_observers: Mutex<Vec<Box<dyn Fn() + 'static>>>,
 }
 
+impl<T> SnapshotMutableState<T> {
+    fn assert_chain_integrity(&self, caller: &str, snapshot_context: Option<SnapshotId>) {
+        unsafe {
+            let mut cursor = self.head as *mut StateRecord;
+            assert!(
+                !cursor.is_null(),
+                "SnapshotMutableState::{} observed null head for state {:?} (snapshot_context={:?})",
+                caller,
+                self.id,
+                snapshot_context
+            );
+
+            let mut seen = HashSet::new();
+            let mut ids = Vec::new();
+            while !cursor.is_null() {
+                let addr = cursor as usize;
+                let record = &*cursor;
+                assert!(
+                    seen.insert(addr),
+                    "SnapshotMutableState::{} detected duplicate/cycle at record {:p} for state {:?} (snapshot_context={:?}, chain_ids={:?})",
+                    caller,
+                    cursor,
+                    self.id,
+                    snapshot_context,
+                    ids
+                );
+                ids.push(record.snapshot_id());
+                cursor = record.next();
+            }
+
+            assert!(
+                !ids.is_empty(),
+                "SnapshotMutableState::{} finished integrity scan with empty id list for state {:?} (snapshot_context={:?})",
+                caller,
+                self.id,
+                snapshot_context
+            );
+        }
+    }
+}
+
 impl<T: Clone + 'static> SnapshotMutableState<T> {
     pub(crate) fn new_in_arc(initial: T, policy: Arc<dyn MutationPolicy<T>>) -> Arc<Self> {
         let record_id = alloc_record_id();
@@ -212,6 +253,7 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
                         let mut_ref = &mut *(self.head);
                         mut_ref.value = new_value;
                     }
+                    self.assert_chain_integrity("set(child-overwrite)", Some(snapshot.id()));
                     return;
                 }
 
@@ -223,6 +265,7 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
                 let raw = Box::into_raw(record);
                 let this = self as *const _ as *mut Self;
                 (*this).head = raw;
+                self.assert_chain_integrity("set(child-push)", Some(snapshot.id()));
                 return;
             }
 
@@ -245,6 +288,7 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
             let this = self as *const _ as *mut Self;
             (*this).head = raw;
             advance_global_snapshot(new_id);
+            self.assert_chain_integrity("set(global-push)", Some(snapshot.id()));
 
             if snapshot.parent.is_none() && !snapshot.has_pending_children() {
                 let head_state = (*this).head as *mut StateRecord;
@@ -255,6 +299,7 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
                     drop(Box::from_raw(tail as *mut TRecord<T>));
                     tail = next;
                 }
+                self.assert_chain_integrity("set(global-prune)", Some(snapshot.id()));
             }
         }
     }
@@ -472,6 +517,7 @@ impl<T: Clone + 'static> StateObject for SnapshotMutableState<T> {
                 (*this).head = raw;
                 advance_global_snapshot(new_id);
                 self.notify_applied();
+                self.assert_chain_integrity("try_merge", Some(child_id));
                 true
             } else {
                 false
@@ -501,6 +547,7 @@ impl<T: Clone + 'static> StateObject for SnapshotMutableState<T> {
                     (*this).head = raw;
                     advance_global_snapshot(new_id);
                     self.notify_applied();
+                    self.assert_chain_integrity("promote_record", Some(child_id));
                     return Ok(());
                 }
                 cursor = (&*cursor).next();
