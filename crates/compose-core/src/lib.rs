@@ -6,12 +6,16 @@ pub mod frame_clock;
 pub mod owned;
 pub mod platform;
 pub mod runtime;
+pub mod snapshot;
 pub mod subcompose;
 
 pub use frame_clock::{FrameCallbackRegistration, FrameClock};
 pub use owned::Owned;
 pub use platform::{Clock, RuntimeScheduler};
 pub use runtime::{schedule_frame, schedule_node_update, DefaultScheduler, Runtime, RuntimeHandle};
+pub use snapshot::{
+    begin_mutable_snapshot, register_participant, snapshot_active, with_mutable_snapshot,
+};
 
 #[cfg(test)]
 pub use runtime::{TestRuntime, TestScheduler};
@@ -1945,6 +1949,8 @@ impl<'a> Composer<'a> {
 struct MutableStateInner<T> {
     value: RefCell<T>,
     pending: RefCell<Option<T>>,
+    staged: RefCell<Option<T>>,
+    staged_read: Cell<bool>,
     watchers: RefCell<Vec<Weak<RecomposeScopeInner>>>, // FUTURE(no_std): move to stack-allocated subscription list.
     runtime: RuntimeHandle,
     active_borrow: Cell<Option<NonNull<T>>>,
@@ -1955,6 +1961,8 @@ impl<T> MutableStateInner<T> {
         Self {
             value: RefCell::new(value),
             pending: RefCell::new(None),
+            staged: RefCell::new(None),
+            staged_read: Cell::new(false),
             watchers: RefCell::new(Vec::new()),
             runtime,
             active_borrow: Cell::new(None),
@@ -2030,6 +2038,69 @@ impl<T> MutableStateInner<T> {
         }
     }
 
+    fn stage(&self, value: T) {
+        *self.staged.borrow_mut() = Some(value);
+        self.staged_read.set(false);
+        let mut watchers_ref = self.watchers.borrow_mut();
+        watchers_ref.retain(|w| w.strong_count() > 0);
+        let watchers: Vec<RecomposeScope> = watchers_ref
+            .iter()
+            .filter_map(|w| w.upgrade())
+            .map(|inner| RecomposeScope { inner })
+            .collect();
+        let had_watchers = !watchers.is_empty();
+        drop(watchers_ref);
+        if had_watchers {
+            for watcher in watchers {
+                watcher.force_recompose();
+            }
+        }
+    }
+
+    fn commit_staged(&self) -> bool {
+        if let Some(value) = self.staged.borrow_mut().take() {
+            let should_notify = !self.staged_read.replace(false);
+            let applied_now = if let Ok(mut current) = self.value.try_borrow_mut() {
+                *current = value;
+                self.pending.borrow_mut().take();
+                true
+            } else {
+                *self.pending.borrow_mut() = Some(value);
+                false
+            };
+            if !applied_now {
+                self.flush_pending();
+            }
+            return should_notify;
+        }
+        false
+    }
+
+    fn abort_staged(&self) {
+        self.staged.borrow_mut().take();
+        self.staged_read.set(false);
+    }
+
+    fn mark_staged_read(&self) {
+        self.staged_read.set(true);
+    }
+
+    fn notify_watchers_inner(&self) {
+        let watchers: Vec<RecomposeScope> = {
+            let mut watchers = self.watchers.borrow_mut();
+            watchers.retain(|w| w.strong_count() > 0);
+            watchers
+                .iter()
+                .filter_map(|w| w.upgrade())
+                .map(|inner| RecomposeScope { inner })
+                .collect()
+        };
+
+        for watcher in watchers {
+            watcher.invalidate();
+        }
+    }
+
     fn store_pending(&self, value: T) {
         *self.pending.borrow_mut() = Some(value);
     }
@@ -2086,6 +2157,10 @@ impl<T> Clone for MutableState<T> {
 }
 
 impl<T> MutableState<T> {
+    fn unique_id(&self) -> usize {
+        Rc::as_ptr(&self.inner) as *const _ as usize
+    }
+
     pub fn with_runtime(value: T, runtime: RuntimeHandle) -> Self {
         Self {
             inner: Rc::new(MutableStateInner::new(value, runtime)),
@@ -2121,6 +2196,27 @@ impl<T> MutableState<T> {
 
     pub fn replace(&self, value: T) {
         self.inner.runtime.assert_ui_thread();
+        if crate::snapshot::snapshot_active() {
+            self.inner.stage(value);
+            let inner_ptr = Rc::as_ptr(&self.inner) as *const ();
+            let commit_ptr = inner_ptr;
+            let abort_ptr = inner_ptr;
+            let id = self.unique_id();
+            crate::snapshot::register_participant(
+                id,
+                Box::new(move || {
+                    let inner = unsafe { &*(commit_ptr as *const MutableStateInner<T>) };
+                    if inner.commit_staged() {
+                        inner.notify_watchers_inner();
+                    }
+                }),
+                Box::new(move || {
+                    let inner = unsafe { &*(abort_ptr as *const MutableStateInner<T>) };
+                    inner.abort_staged();
+                }),
+            );
+            return;
+        }
         let applied_now = if let Ok(mut current) = self.inner.value.try_borrow_mut() {
             *current = value;
             // Clear any stale pending value now that we've applied the latest update.
@@ -2147,19 +2243,7 @@ impl<T> MutableState<T> {
     }
 
     fn notify_watchers(&self) {
-        let watchers: Vec<RecomposeScope> = {
-            let mut watchers = self.inner.watchers.borrow_mut();
-            watchers.retain(|w| w.strong_count() > 0);
-            watchers
-                .iter()
-                .filter_map(|w| w.upgrade())
-                .map(|inner| RecomposeScope { inner })
-                .collect()
-        };
-
-        for watcher in watchers {
-            watcher.invalidate();
-        }
+        self.inner.notify_watchers_inner();
     }
 }
 
@@ -2168,6 +2252,12 @@ impl<T: Clone> MutableState<T> {
         let state = self.as_state();
         state.subscribe_current_scope();
         self.inner.flush_pending();
+        if crate::snapshot::snapshot_active() {
+            if let Some(staged) = self.inner.staged.borrow().as_ref() {
+                self.inner.mark_staged_read();
+                return staged.clone();
+            }
+        }
         if let Ok(pending) = self.inner.pending.try_borrow() {
             if let Some(pending) = pending.as_ref() {
                 return pending.clone();
@@ -2250,6 +2340,12 @@ impl<T: Clone> State<T> {
     pub fn value(&self) -> T {
         self.subscribe_current_scope();
         self.inner.flush_pending();
+        if crate::snapshot::snapshot_active() {
+            if let Some(staged) = self.inner.staged.borrow().as_ref() {
+                self.inner.mark_staged_read();
+                return staged.clone();
+            }
+        }
         if let Ok(pending) = self.inner.pending.try_borrow() {
             if let Some(pending) = pending.as_ref() {
                 return pending.clone();
@@ -2394,7 +2490,7 @@ impl<A: Applier> Composition<A> {
         self.slots.reset();
         let runtime_handle = self.runtime_handle();
         runtime_handle.drain_ui();
-        let (root, commands, side_effects) = {
+        let (root, commands, side_effects) = crate::snapshot::with_mutable_snapshot(|| {
             let mut composer = Composer::new(
                 &mut self.slots,
                 &mut self.applier,
@@ -2408,7 +2504,7 @@ impl<A: Applier> Composition<A> {
                 let side_effects = composer.take_side_effects();
                 (root, commands, side_effects)
             })
-        };
+        });
         for mut command in commands {
             command(&mut self.applier)?;
         }
@@ -2471,7 +2567,7 @@ impl<A: Applier> Composition<A> {
             }
             did_recompose = true;
             let runtime_clone = runtime_handle.clone();
-            let (commands, side_effects) = {
+            let (commands, side_effects) = crate::snapshot::with_mutable_snapshot(|| {
                 let mut composer =
                     Composer::new(&mut self.slots, &mut self.applier, runtime_clone, self.root);
                 composer.install(|composer| {
@@ -2482,7 +2578,7 @@ impl<A: Applier> Composition<A> {
                     let side_effects = composer.take_side_effects();
                     (commands, side_effects)
                 })
-            };
+            });
             for mut command in commands {
                 command(&mut self.applier)?;
             }
