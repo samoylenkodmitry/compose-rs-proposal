@@ -81,12 +81,19 @@ impl HeadlessRenderer {
         let rect = layout.rect;
         match &layout.node_data.kind {
             LayoutNodeKind::Text { value } => {
-                let (mut behind, mut overlay) =
-                    evaluate_modifier(layout.node_id, &layout.node_data.modifier, rect);
+                let modifier = &layout.node_data.modifier;
+                let (mut behind, mut overlay) = evaluate_modifier(layout.node_id, modifier, rect);
+                let padding = modifier.padding_values();
+                let text_rect = Rect {
+                    x: rect.x + padding.left,
+                    y: rect.y + padding.top,
+                    width: (rect.width - padding.horizontal_sum()).max(0.0),
+                    height: (rect.height - padding.vertical_sum()).max(0.0),
+                };
                 operations.append(&mut behind);
                 operations.push(RenderOp::Text {
                     node_id: layout.node_id,
-                    rect,
+                    rect: text_rect,
                     value: value.clone(),
                 });
                 operations.append(&mut overlay);
