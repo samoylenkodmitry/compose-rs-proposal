@@ -42,6 +42,10 @@ impl SnapshotIdSet {
         }
         clone
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = &SnapshotId> {
+        self.inner.iter()
+    }
 }
 
 pub trait StateRecord: Any {
@@ -94,14 +98,23 @@ impl Snapshot {
     }
 
     pub fn mark_modified(&self, object: *const dyn StateObject) {
-        if self.read_only {
-            return;
-        }
+        assert!(
+            !self.read_only,
+            "attempted to modify read-only snapshot {} for object {:p}",
+            self.id, object
+        );
         let mut modified = self
             .modified
             .lock()
             .expect("snapshot modified set lock poisoned");
-        modified.insert(StateObjectHandle::new(object));
+        let handle = StateObjectHandle::new(object);
+        let was_new = modified.insert(handle);
+        debug_assert!(
+            was_new,
+            "state object {:p} recorded as modified twice in snapshot {}",
+            handle.as_ptr(),
+            self.id
+        );
     }
 
     fn modified(&self) -> Vec<StateObjectHandle> {
@@ -127,6 +140,10 @@ impl StateObjectHandle {
     fn as_ref<'a>(self) -> &'a dyn StateObject {
         // SAFETY: the pointer originates from a live state object which outlives the snapshot.
         unsafe { self.0.as_ref() }
+    }
+
+    fn as_ptr(self) -> *const dyn StateObject {
+        self.0.as_ptr()
     }
 }
 
@@ -244,6 +261,14 @@ pub fn readable<'a>(
     invalid: &SnapshotIdSet,
 ) -> Option<&'a dyn StateRecord> {
     let mut best: Option<*const dyn StateRecord> = None;
+    if first.is_none() {
+        debug_assert!(
+            false,
+            "readable: called with empty record chain for snapshot {} (invalid ids: {:?})",
+            id,
+            invalid.iter().copied().collect::<Vec<_>>()
+        );
+    }
     while let Some(ptr) = first {
         let record = record_from_ptr(ptr);
         if record.snapshot_id() <= id && !invalid.get(record.snapshot_id()) {
@@ -261,8 +286,21 @@ pub fn readable<'a>(
 
 pub fn writable_record(object: &dyn StateObject, snapshot: &Snapshot) -> Box<dyn StateRecord> {
     let first = object.first_record();
+    assert!(
+        first.is_some(),
+        "writable_record: state object {:p} missing record chain for snapshot {}",
+        object as *const dyn StateObject,
+        snapshot.id
+    );
     let readable = readable(first, snapshot.id, &snapshot.invalid)
         .expect("state object missing readable record");
+    debug_assert!(
+        readable.snapshot_id() <= snapshot.id,
+        "writable_record: chosen record id {} exceeds snapshot {} for object {:p}",
+        readable.snapshot_id(),
+        snapshot.id,
+        object as *const dyn StateObject
+    );
     if readable.snapshot_id() == snapshot.id {
         // Clone current head for mutation; caller will replace chain.
         readable.boxed_clone()
@@ -283,36 +321,54 @@ fn apply_snapshot(snapshot: &Arc<Snapshot>) -> SnapshotApplyResult {
         .lock()
         .expect("global snapshot state lock poisoned during apply");
 
-    let mut any_failure = false;
-
     for handle in objects {
         let object = handle.as_ref();
+        let object_ptr = handle.as_ptr();
         let first = object.first_record();
-        let base = readable(first, state.id, &state.invalid);
-        let pending = readable(first, snapshot.id, &snapshot.invalid);
-        match (base, pending) {
-            (Some(base), Some(pending)) => {
-                if base.snapshot_id() == pending.snapshot_id() {
-                    continue;
-                }
-                let mut applied = pending.boxed_clone();
-                applied.set_snapshot_id(state.id + 1);
-                applied.set_next(None);
-                object.set_first_record(applied);
-            }
-            _ => {
-                any_failure = true;
-                break;
-            }
+        assert!(
+            first.is_some(),
+            "apply_snapshot: state object {:p} missing records during apply (snapshot {}, global {})",
+            object_ptr,
+            snapshot.id,
+            state.id
+        );
+        let base = readable(first, state.id, &state.invalid).unwrap_or_else(|| {
+            panic!(
+                "apply_snapshot: state object {:p} has no readable base record for global snapshot {} (invalid ids: {:?})",
+                object_ptr,
+                state.id,
+                state.invalid.iter().copied().collect::<Vec<_>>()
+            )
+        });
+        let pending = readable(first, snapshot.id, &snapshot.invalid).unwrap_or_else(|| {
+            panic!(
+                "apply_snapshot: state object {:p} has no pending record for snapshot {} (invalid ids: {:?})",
+                object_ptr,
+                snapshot.id,
+                snapshot.invalid.iter().copied().collect::<Vec<_>>()
+            )
+        });
+        if base.snapshot_id() == pending.snapshot_id() {
+            continue;
         }
+        if base.snapshot_id() > pending.snapshot_id() {
+            panic!(
+                "apply_snapshot: base record id {} exceeds pending id {} for object {:p} (snapshot {}, global {})",
+                base.snapshot_id(),
+                pending.snapshot_id(),
+                object_ptr,
+                snapshot.id,
+                state.id
+            );
+        }
+        let mut applied = pending.boxed_clone();
+        applied.set_snapshot_id(state.id + 1);
+        applied.set_next(None);
+        object.set_first_record(applied);
     }
 
-    if any_failure {
-        SnapshotApplyResult::Failure
-    } else {
-        state.id = state.id.saturating_add(1);
-        SnapshotApplyResult::Success
-    }
+    state.id = state.id.saturating_add(1);
+    SnapshotApplyResult::Success
 }
 
 pub fn register_global_write_observer(

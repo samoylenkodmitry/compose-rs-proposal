@@ -2148,7 +2148,33 @@ impl<T: Clone + 'static> MutableState<T> {
     pub fn update<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
         self.inner.runtime().assert_ui_thread();
         let snapshot = snapshots::current_snapshot();
+        debug_assert!(
+            self.inner.first_record().is_some(),
+            "MutableState::update: state {:p} missing head record before update",
+            self.inner.state_object_ptr()
+        );
+        assert!(
+            !snapshot.read_only,
+            "MutableState::update: attempted to write to read-only snapshot {} for state {:p}",
+            snapshot.id,
+            self.inner.state_object_ptr()
+        );
         let record = snapshots::writable_record(self.inner.as_state_object(), &snapshot);
+        let record_snapshot_id = record.snapshot_id();
+        debug_assert!(
+            record_snapshot_id <= snapshot.id,
+            "MutableState::update: writable record id {} exceeds snapshot {} for state {:p}",
+            record_snapshot_id,
+            snapshot.id,
+            self.inner.state_object_ptr()
+        );
+        debug_assert!(
+            record_snapshot_id == snapshot.id,
+            "MutableState::update: writable record id {} does not match snapshot {} for state {:p}",
+            record_snapshot_id,
+            snapshot.id,
+            self.inner.state_object_ptr()
+        );
         let mut record = record
             .into_any()
             .downcast::<ValueRecord<T>>()
@@ -2254,7 +2280,14 @@ impl<T: Clone + 'static> State<T> {
         self.subscribe_current_scope();
         let snapshot = snapshots::current_snapshot();
         let record = snapshots::readable(self.inner.first_record(), snapshot.id, &snapshot.invalid)
-            .expect("state has no record");
+            .unwrap_or_else(|| {
+                panic!(
+                    "State::with: state {:p} missing record for snapshot {} (invalid ids: {:?})",
+                    self.inner.state_object_ptr(),
+                    snapshot.id,
+                    snapshot.invalid.iter().copied().collect::<Vec<_>>()
+                )
+            });
         if let Some(observer) = snapshot.read_observer.as_ref() {
             observer(record.as_any());
         }
@@ -2271,7 +2304,14 @@ impl<T: Clone + 'static> State<T> {
         self.subscribe_current_scope();
         let snapshot = snapshots::current_snapshot();
         let record = snapshots::readable(self.inner.first_record(), snapshot.id, &snapshot.invalid)
-            .expect("state has no record");
+            .unwrap_or_else(|| {
+                panic!(
+                    "State::value: state {:p} missing record for snapshot {} (invalid ids: {:?})",
+                    self.inner.state_object_ptr(),
+                    snapshot.id,
+                    snapshot.invalid.iter().copied().collect::<Vec<_>>()
+                )
+            });
         let value = record
             .as_any()
             .downcast_ref::<ValueRecord<T>>()
