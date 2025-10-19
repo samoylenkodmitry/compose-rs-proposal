@@ -1,6 +1,8 @@
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::mem::ManuallyDrop;
+use std::ops::Deref;
 use std::ptr;
 use std::sync::{Arc, Mutex, Weak};
 
@@ -37,6 +39,16 @@ impl StateRecord {
     #[inline]
     pub(crate) fn set_next(&mut self, next: *mut StateRecord) {
         self.next = next;
+    }
+
+    #[inline]
+    pub(crate) fn is_tombstone(&self) -> bool {
+        self.tombstone
+    }
+
+    #[inline]
+    pub(crate) fn set_tombstone(&mut self, tombstone: bool) {
+        self.tombstone = tombstone;
     }
 }
 
@@ -82,7 +94,7 @@ pub(crate) trait StateObject: Any {
 #[repr(C)]
 struct TRecord<T> {
     base: StateRecord,
-    value: T,
+    value: ManuallyDrop<T>,
 }
 
 pub(crate) struct SnapshotMutableState<T> {
@@ -139,7 +151,7 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
         let record_id = alloc_record_id();
         let head = Box::into_raw(Box::new(TRecord {
             base: StateRecord::new(record_id),
-            value: initial,
+            value: ManuallyDrop::new(initial),
         }));
 
         let mut state = Arc::new(Self {
@@ -199,7 +211,7 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
                 snapshot.id(),
                 snapshot.pending_children()
             );
-            (*record).value.clone()
+            (*record).value.deref().clone()
         }
     }
 
@@ -249,9 +261,10 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
                     self.id
                 );
                 if top.base.snapshot_id() == snapshot.id() {
-                    if !self.policy.equivalent(&top.value, &new_value) {
+                    if !self.policy.equivalent(&*top.value, &new_value) {
                         let mut_ref = &mut *(self.head);
-                        mut_ref.value = new_value;
+                        ManuallyDrop::drop(&mut mut_ref.value);
+                        mut_ref.value = ManuallyDrop::new(new_value);
                     }
                     self.assert_chain_integrity("set(child-overwrite)", Some(snapshot.id()));
                     return;
@@ -259,7 +272,7 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
 
                 let mut record = Box::new(TRecord {
                     base: StateRecord::new(snapshot.id()),
-                    value: new_value,
+                    value: ManuallyDrop::new(new_value),
                 });
                 record.base.set_next(head as *mut StateRecord);
                 let raw = Box::into_raw(record);
@@ -281,7 +294,7 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
             let new_id = alloc_record_id();
             let mut record = Box::new(TRecord {
                 base: StateRecord::new(new_id),
-                value: new_value,
+                value: ManuallyDrop::new(new_value),
             });
             record.base.set_next(head as *mut StateRecord);
             let raw = Box::into_raw(record);
@@ -291,16 +304,22 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
             self.assert_chain_integrity("set(global-push)", Some(snapshot.id()));
 
             if snapshot.parent.is_none() && !snapshot.has_pending_children() {
-                let head_state = (*this).head as *mut StateRecord;
-                let mut tail = (*head_state).next();
-                (*head_state).set_next(ptr::null_mut());
-                while !tail.is_null() {
-                    let next = (*tail).next();
-                    drop(Box::from_raw(tail as *mut TRecord<T>));
-                    tail = next;
+                let mut cursor = (*((*this).head as *mut StateRecord)).next();
+                while !cursor.is_null() {
+                    let record = cursor as *mut TRecord<T>;
+                    if !(*record).base.is_tombstone() {
+                        ManuallyDrop::drop(&mut (*record).value);
+                        (*record).base.set_tombstone(true);
+                    }
+                    cursor = (*record).base.next();
                 }
-                self.assert_chain_integrity("set(global-prune)", Some(snapshot.id()));
+                self.assert_chain_integrity("set(global-tombstone)", Some(snapshot.id()));
             }
+
+            // Retain the prior record chain so concurrent readers never observe freed nodes.
+            // Compose proper prunes when it can prove no readers exist; for now we keep
+            // the historical chain with tombstoned values to avoid use-after-free crashes
+            // under heavy UI load.
         }
     }
 }
@@ -368,7 +387,11 @@ impl<T> Drop for SnapshotMutableState<T> {
             let mut node = self.head as *mut StateRecord;
             while !node.is_null() {
                 let next = (*node).next();
-                drop(Box::from_raw(node as *mut TRecord<T>));
+                let record = node as *mut TRecord<T>;
+                if !(*record).base.is_tombstone() {
+                    ManuallyDrop::drop(&mut (*record).value);
+                }
+                drop(Box::from_raw(record));
                 node = next;
             }
         }
@@ -502,14 +525,14 @@ impl<T: Clone + 'static> StateObject for SnapshotMutableState<T> {
             let applied_value = &*(applied as *const TRecord<T>);
 
             if let Some(merged) = self.policy.merge(
-                &prev_value.value,
-                &current_value.value,
-                &applied_value.value,
+                &*prev_value.value,
+                &*current_value.value,
+                &*applied_value.value,
             ) {
                 let new_id = alloc_record_id();
                 let mut record = Box::new(TRecord::<T> {
                     base: StateRecord::new(new_id),
-                    value: merged,
+                    value: ManuallyDrop::new(merged),
                 });
                 record.base.set_next(self.first_record());
                 let raw = Box::into_raw(record);
@@ -539,7 +562,7 @@ impl<T: Clone + 'static> StateObject for SnapshotMutableState<T> {
                     let new_id = alloc_record_id();
                     let mut record = Box::new(TRecord::<T> {
                         base: StateRecord::new(new_id),
-                        value: source.value.clone(),
+                        value: ManuallyDrop::new(source.value.deref().clone()),
                     });
                     record.base.set_next(self.first_record());
                     let raw = Box::into_raw(record);
