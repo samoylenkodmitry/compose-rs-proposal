@@ -1970,19 +1970,40 @@ impl<T: Clone + 'static> MutableStateInner<T> {
     }
 
     fn install_record(&self, mut record: Box<dyn snapshots::StateRecord>) {
+        if self.has_records() {
+            self.debug_assert_chain("pre-install_record");
+        }
+        assert!(
+            record.next_ptr().is_none(),
+            "MutableStateInner::install_record: incoming record already had next pointer for state {:p}",
+            self.state_object_ptr()
+        );
         unsafe {
             let slot = &mut *self.records.get();
             let previous = slot.take();
             if let Some(prev) = previous {
+                let previous_id = prev.snapshot_id();
+                let incoming_id = record.snapshot_id();
+                assert!(
+                    incoming_id >= previous_id,
+                    "MutableStateInner::install_record: new head id {} older than previous {} for state {:p}",
+                    incoming_id,
+                    previous_id,
+                    self.state_object_ptr()
+                );
                 record.set_next(Some(prev));
             }
             *slot = Some(record);
         }
+        self.debug_assert_chain("post-install_record");
     }
 
     fn replace_chain(&self, chain: Option<Box<dyn snapshots::StateRecord>>) {
         unsafe {
             *self.records.get() = chain;
+        }
+        if self.has_records() {
+            self.debug_assert_chain("replace_chain");
         }
     }
 
@@ -2001,6 +2022,74 @@ impl<T: Clone + 'static> MutableStateInner<T> {
     fn watchers(&self) -> &RefCell<Vec<Weak<RecomposeScopeInner>>> {
         &self.watchers
     }
+
+    fn has_records(&self) -> bool {
+        unsafe { (*self.records.get()).is_some() }
+    }
+
+    #[cfg(debug_assertions)]
+    fn debug_assert_chain(&self, context: &str) {
+        use std::collections::HashSet;
+
+        unsafe {
+            let mut current = (*self.records.get())
+                .as_ref()
+                .map(|record| &**record as *const dyn snapshots::StateRecord);
+            assert!(
+                current.is_some(),
+                "MutableStateInner::debug_assert_chain({}): missing head record for state {:p}",
+                context,
+                self.state_object_ptr()
+            );
+            let mut seen = HashSet::new();
+            let mut previous_id: Option<snapshots::SnapshotId> = None;
+            let mut depth = 0usize;
+            while let Some(ptr) = current {
+                if !seen.insert(ptr) {
+                    panic!(
+                        "MutableStateInner::debug_assert_chain({}): detected cycle at record {:p} for state {:p}",
+                        context,
+                        ptr,
+                        self.state_object_ptr()
+                    );
+                }
+                let record = &*ptr;
+                let id = record.snapshot_id();
+                if let Some(prev) = previous_id {
+                    assert!(
+                        id <= prev,
+                        "MutableStateInner::debug_assert_chain({}): record id {} larger than previous {} for state {:p}",
+                        context,
+                        id,
+                        prev,
+                        self.state_object_ptr()
+                    );
+                }
+                previous_id = Some(id);
+                current = record.next_ptr();
+                if let Some(next) = current {
+                    assert!(
+                        !std::ptr::addr_eq(next, ptr),
+                        "MutableStateInner::debug_assert_chain({}): record {:p} points to itself for state {:p}",
+                        context,
+                        ptr,
+                        self.state_object_ptr()
+                    );
+                }
+                depth = depth.saturating_add(1);
+                assert!(
+                    depth <= 2048,
+                    "MutableStateInner::debug_assert_chain({}): record chain exceeded sanity limit ({} nodes) for state {:p}",
+                    context,
+                    depth,
+                    self.state_object_ptr()
+                );
+            }
+        }
+    }
+
+    #[cfg(not(debug_assertions))]
+    fn debug_assert_chain(&self, _context: &str) {}
 }
 
 impl<T: Clone + 'static> snapshots::StateObject for MutableStateInner<T> {
@@ -2161,14 +2250,14 @@ impl<T: Clone + 'static> MutableState<T> {
         );
         let record = snapshots::writable_record(self.inner.as_state_object(), &snapshot);
         let record_snapshot_id = record.snapshot_id();
-        debug_assert!(
+        assert!(
             record_snapshot_id <= snapshot.id,
             "MutableState::update: writable record id {} exceeds snapshot {} for state {:p}",
             record_snapshot_id,
             snapshot.id,
             self.inner.state_object_ptr()
         );
-        debug_assert!(
+        assert!(
             record_snapshot_id == snapshot.id,
             "MutableState::update: writable record id {} does not match snapshot {} for state {:p}",
             record_snapshot_id,
@@ -2288,6 +2377,13 @@ impl<T: Clone + 'static> State<T> {
                     snapshot.invalid.iter().copied().collect::<Vec<_>>()
                 )
             });
+        assert!(
+            record.snapshot_id() <= snapshot.id,
+            "State::with: record id {} exceeds snapshot {} for state {:p}",
+            record.snapshot_id(),
+            snapshot.id,
+            self.inner.state_object_ptr()
+        );
         if let Some(observer) = snapshot.read_observer.as_ref() {
             observer(record.as_any());
         }
@@ -2312,6 +2408,13 @@ impl<T: Clone + 'static> State<T> {
                     snapshot.invalid.iter().copied().collect::<Vec<_>>()
                 )
             });
+        assert!(
+            record.snapshot_id() <= snapshot.id,
+            "State::value: record id {} exceeds snapshot {} for state {:p}",
+            record.snapshot_id(),
+            snapshot.id,
+            self.inner.state_object_ptr()
+        );
         let value = record
             .as_any()
             .downcast_ref::<ValueRecord<T>>()

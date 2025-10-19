@@ -262,15 +262,31 @@ pub fn readable<'a>(
 ) -> Option<&'a dyn StateRecord> {
     let mut best: Option<*const dyn StateRecord> = None;
     if first.is_none() {
-        debug_assert!(
-            false,
+        panic!(
             "readable: called with empty record chain for snapshot {} (invalid ids: {:?})",
             id,
             invalid.iter().copied().collect::<Vec<_>>()
         );
     }
+    let mut visited = 0usize;
     while let Some(ptr) = first {
         let record = record_from_ptr(ptr);
+        visited = visited.saturating_add(1);
+        assert!(
+            visited <= 2048,
+            "readable: record chain exceeded sanity limit ({} nodes) for snapshot {} (invalid ids: {:?})",
+            visited,
+            id,
+            invalid.iter().copied().collect::<Vec<_>>()
+        );
+        if let Some(next) = record.next_ptr() {
+            assert!(
+                !std::ptr::addr_eq(next, ptr),
+                "readable: record {:p} points to itself while scanning snapshot {}",
+                ptr,
+                id
+            );
+        }
         if record.snapshot_id() <= id && !invalid.get(record.snapshot_id()) {
             if best
                 .map(|current| record_from_ptr(current).snapshot_id() < record.snapshot_id())
@@ -281,6 +297,12 @@ pub fn readable<'a>(
         }
         first = record.next_ptr();
     }
+    assert!(
+        visited > 0,
+        "readable: finished traversal without visiting records for snapshot {} (invalid ids: {:?})",
+        id,
+        invalid.iter().copied().collect::<Vec<_>>()
+    );
     best.map(record_from_ptr)
 }
 
@@ -292,9 +314,15 @@ pub fn writable_record(object: &dyn StateObject, snapshot: &Snapshot) -> Box<dyn
         object as *const dyn StateObject,
         snapshot.id
     );
-    let readable = readable(first, snapshot.id, &snapshot.invalid)
-        .expect("state object missing readable record");
-    debug_assert!(
+    let readable = readable(first, snapshot.id, &snapshot.invalid).unwrap_or_else(|| {
+        panic!(
+            "writable_record: state object {:p} missing readable record for snapshot {} (invalid ids: {:?})",
+            object as *const dyn StateObject,
+            snapshot.id,
+            snapshot.invalid.iter().copied().collect::<Vec<_>>()
+        )
+    });
+    assert!(
         readable.snapshot_id() <= snapshot.id,
         "writable_record: chosen record id {} exceeds snapshot {} for object {:p}",
         readable.snapshot_id(),
@@ -307,6 +335,11 @@ pub fn writable_record(object: &dyn StateObject, snapshot: &Snapshot) -> Box<dyn
     } else {
         let mut clone = readable.boxed_clone();
         clone.set_snapshot_id(snapshot.id);
+        assert!(
+            clone.next_ptr().is_none(),
+            "writable_record: cloned record for object {:p} unexpectedly preserved next pointer",
+            object as *const dyn StateObject
+        );
         clone
     }
 }
@@ -348,6 +381,13 @@ fn apply_snapshot(snapshot: &Arc<Snapshot>) -> SnapshotApplyResult {
                 snapshot.invalid.iter().copied().collect::<Vec<_>>()
             )
         });
+        assert!(
+            pending.snapshot_id() == snapshot.id,
+            "apply_snapshot: pending record id {} does not match snapshot {} for object {:p}",
+            pending.snapshot_id(),
+            snapshot.id,
+            object_ptr
+        );
         if base.snapshot_id() == pending.snapshot_id() {
             continue;
         }
@@ -365,6 +405,24 @@ fn apply_snapshot(snapshot: &Arc<Snapshot>) -> SnapshotApplyResult {
         applied.set_snapshot_id(state.id + 1);
         applied.set_next(None);
         object.set_first_record(applied);
+        let new_head = object.first_record().unwrap_or_else(|| {
+            panic!(
+                "apply_snapshot: object {:p} lost record head after install (snapshot {}, global {})",
+                object_ptr,
+                snapshot.id,
+                state.id
+            )
+        });
+        let head_record = record_from_ptr(new_head);
+        assert!(
+            head_record.snapshot_id() == state.id + 1,
+            "apply_snapshot: expected new head id {} but found {} for object {:p} (snapshot {}, global {})",
+            state.id + 1,
+            head_record.snapshot_id(),
+            object_ptr,
+            snapshot.id,
+            state.id
+        );
     }
 
     state.id = state.id.saturating_add(1);
