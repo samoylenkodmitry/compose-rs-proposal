@@ -8,7 +8,6 @@ mod debug;
 mod draw;
 mod layout;
 mod modifier;
-mod modifier_bridge;
 mod modifier_nodes;
 mod primitives;
 mod renderer;
@@ -17,6 +16,7 @@ mod text;
 pub mod widgets;
 
 pub use compose_ui_graphics::Dp;
+pub use compose_ui_layout::IntrinsicSize;
 pub use draw::{execute_draw_commands, DrawCacheBuilder, DrawCommand};
 pub use layout::{
     core::{
@@ -26,8 +26,8 @@ pub use layout::{
     LayoutBox, LayoutEngine, LayoutNodeKind, LayoutTree,
 };
 pub use modifier::{
-    Brush, Color, CornerRadii, EdgeInsets, GraphicsLayer, IntrinsicSize, Modifier, Point,
-    PointerEvent, PointerEventKind, Rect, RoundedCornerShape, Size,
+    Brush, Color, CornerRadii, EdgeInsets, GraphicsLayer, Modifier, Point, PointerEvent,
+    PointerEventKind, Rect, RoundedCornerShape, Size,
 };
 pub use modifier_nodes::{
     AlphaElement, AlphaNode, BackgroundElement, BackgroundNode, ClickableElement, ClickableNode,

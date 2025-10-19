@@ -13,11 +13,9 @@ use self::core::{
 use crate::modifier::{
     DimensionConstraint, EdgeInsets, Modifier, Point, Rect as GeometryRect, Size,
 };
-use crate::modifier_bridge::{build_chain, ModifierNodeChainExt};
 use crate::primitives::{ButtonNode, LayoutNode, SpacerNode, TextNode};
 use crate::subcompose_layout::SubcomposeLayoutNode;
-use compose_foundation::BasicModifierNodeContext;
-use compose_ui_layout::Constraints;
+use compose_ui_layout::{Constraints, IntrinsicSize};
 
 /// Result of running layout for a Compose tree.
 #[derive(Debug, Clone)]
@@ -206,16 +204,14 @@ impl<'a> LayoutBuilder<'a> {
         };
         self.runtime_handle = Some(runtime_handle.clone());
 
-        let (modifier, layout_snapshot) = unsafe {
+        let (modifier, props, offset) = unsafe {
             let node = &mut *node_ptr;
             let modifier = node.modifier.clone();
-            let mut context = BasicModifierNodeContext::new();
-            let snapshot = node.mods.measure(&mut context, &modifier);
-            (modifier, snapshot)
+            let props = modifier.layout_properties();
+            let offset = modifier.total_offset();
+            (modifier, props, offset)
         };
-        let props = layout_snapshot.properties;
         let padding = props.padding();
-        let offset = layout_snapshot.offset;
         let inner_constraints = normalize_constraints(subtract_padding(constraints, padding));
 
         self.slots.reset();
@@ -289,11 +285,9 @@ impl<'a> LayoutBuilder<'a> {
     ) -> Result<MeasuredNode, NodeError> {
         let mut node = node;
         let modifier = node.modifier.clone();
-        let mut context = BasicModifierNodeContext::new();
-        let layout_snapshot = node.mods.measure(&mut context, &modifier);
-        let props = layout_snapshot.properties;
+        let props = modifier.layout_properties();
         let padding = props.padding();
-        let offset = layout_snapshot.offset;
+        let offset = modifier.total_offset();
         let inner_constraints = normalize_constraints(subtract_padding(constraints, padding));
         let error = Rc::new(RefCell::new(None));
         let mut records: HashMap<NodeId, ChildRecord> = HashMap::new();
@@ -693,12 +687,9 @@ fn measure_leaf(
     base_size: Size,
     constraints: Constraints,
 ) -> MeasuredNode {
-    let mut chain = build_chain(&data.modifier);
-    let mut context = BasicModifierNodeContext::new();
-    let snapshot = chain.measure(&mut context, &data.modifier);
-    let props = snapshot.properties;
+    let props = data.modifier.layout_properties();
     let padding = props.padding();
-    let offset = snapshot.offset;
+    let offset = data.modifier.total_offset();
 
     let mut width = base_size.width + padding.horizontal_sum();
     let mut height = base_size.height + padding.vertical_sum();
@@ -825,7 +816,7 @@ fn resolve_dimension_with_intrinsics(
     max_override: Option<f32>,
     min_limit: f32,
     max_limit: f32,
-    intrinsic_resolver: impl FnOnce(crate::modifier::IntrinsicSize) -> f32,
+    intrinsic_resolver: impl FnOnce(IntrinsicSize) -> f32,
 ) -> f32 {
     let mut min_bound = min_limit;
     if let Some(min_value) = min_override {
