@@ -407,6 +407,7 @@ dependencies = [
  "compose-render-common",
  "compose-ui",
  "compose-ui-graphics",
+ "log",
  "once_cell",
  "rusttype",
 ]

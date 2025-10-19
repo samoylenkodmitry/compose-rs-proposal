@@ -1,6 +1,6 @@
 use super::*;
 use crate as compose_core;
-use crate::snapshot::{enter, take_mutable_snapshot};
+use crate::snapshot::take_mutable_snapshot;
 use crate::state::{MutationPolicy, SnapshotMutableState};
 use compose_macros::composable;
 use std::cell::{Cell, RefCell};
@@ -1553,8 +1553,8 @@ fn snapshot_state_concurrent_children_merge() {
     let first = take_mutable_snapshot(None, None);
     let second = take_mutable_snapshot(None, None);
 
-    enter(first.clone(), || state.set(1));
-    enter(second.clone(), || state.set(2));
+    first.enter(|| state.set(1));
+    second.enter(|| state.set(2));
 
     first.apply().expect("first apply succeeds");
     second.apply().expect("second apply merges via policy");

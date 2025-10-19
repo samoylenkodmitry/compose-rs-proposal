@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use compose_core::run_in_mutable_snapshot;
 use compose_foundation::{PointerEvent, PointerEventKind, PointerPhase};
 use compose_render_common::{HitTestTarget, RenderScene};
 use compose_ui_graphics::{Brush, Color, Rect, RoundedCornerShape};
@@ -69,13 +70,30 @@ impl HitTestTarget for HitRegion {
             global_position: global,
             buttons: Default::default(),
         };
-        for handler in &self.pointer_inputs {
-            handler(event);
+        let has_pointer_inputs = !self.pointer_inputs.is_empty();
+        let has_click_actions = kind == PointerEventKind::Down && !self.click_actions.is_empty();
+
+        if !has_pointer_inputs && !has_click_actions {
+            return;
         }
-        if kind == PointerEventKind::Down {
-            for action in &self.click_actions {
-                action.invoke(self.rect, x, y);
+
+        if let Err(err) = run_in_mutable_snapshot(|| {
+            for handler in &self.pointer_inputs {
+                handler(event);
             }
+            if kind == PointerEventKind::Down {
+                for action in &self.click_actions {
+                    action.invoke(self.rect, x, y);
+                }
+            }
+        }) {
+            log::error!(
+                "failed to apply mutable snapshot for pointer event {:?} at ({}, {}): {}",
+                kind,
+                x,
+                y,
+                err
+            );
         }
     }
 }

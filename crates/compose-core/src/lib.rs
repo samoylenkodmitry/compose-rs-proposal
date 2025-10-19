@@ -15,6 +15,16 @@ pub use owned::Owned;
 pub use platform::{Clock, RuntimeScheduler};
 pub use runtime::{schedule_frame, schedule_node_update, DefaultScheduler, Runtime, RuntimeHandle};
 
+/// Runs the provided closure inside a mutable snapshot and applies the result.
+///
+/// UI event handlers should wrap state mutations in this helper so that
+/// recomposition observes the updates atomically once the snapshot applies.
+pub fn run_in_mutable_snapshot<T>(block: impl FnOnce() -> T) -> Result<T, &'static str> {
+    let snapshot = snapshot::take_mutable_snapshot(None, None);
+    let value = snapshot.enter(block);
+    snapshot.apply().map(|_| value)
+}
+
 #[cfg(test)]
 pub use runtime::{TestRuntime, TestScheduler};
 
@@ -388,31 +398,22 @@ pub fn CompositionLocalProvider(
 }
 
 struct LocalStateEntry<T: Clone + 'static> {
-    current: RefCell<T>,
-    signal: MutableState<()>,
-    initialized: Cell<bool>,
+    state: MutableState<T>,
 }
 
 impl<T: Clone + 'static> LocalStateEntry<T> {
     fn new(initial: T, runtime: RuntimeHandle) -> Self {
         Self {
-            current: RefCell::new(initial),
-            signal: MutableState::with_runtime((), runtime),
-            initialized: Cell::new(false),
+            state: MutableState::with_runtime(initial, runtime),
         }
     }
 
     fn set(&self, value: T) {
-        *self.current.borrow_mut() = value;
-        if self.initialized.replace(true) {
-            self.signal.set_value(());
-        }
+        self.state.replace(value);
     }
 
     fn value(&self) -> T {
-        self.signal.as_state().with(|_| ());
-        self.initialized.set(true);
-        self.current.borrow().clone()
+        self.state.value()
     }
 }
 

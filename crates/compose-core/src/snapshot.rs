@@ -15,12 +15,9 @@ fn next_snapshot_id() -> SnapshotId {
     GLOBAL_SNAPSHOT_ID.fetch_add(1, Ordering::SeqCst) + 1
 }
 
-type ApplyObserver = Box<dyn Fn(&[Arc<dyn StateObject>]) + 'static>;
-
 thread_local! {
     static GLOBAL_SNAPSHOT: RefCell<Arc<Snapshot>> = RefCell::new(Arc::new(Snapshot::new_root(0)));
     static SNAPSHOT_STACK: RefCell<Vec<Arc<Snapshot>>> = RefCell::new(Vec::new());
-    static APPLY_OBSERVERS: RefCell<Vec<ApplyObserver>> = RefCell::new(Vec::new());
 }
 
 fn current_stack_top() -> Arc<Snapshot> {
@@ -206,15 +203,6 @@ impl Snapshot {
             self.base_parent_id,
         );
 
-        if !modified.is_empty() {
-            let changed: Vec<Arc<dyn StateObject>> = modified.values().cloned().collect();
-            APPLY_OBSERVERS.with(|observers| {
-                for observer in observers.borrow().iter() {
-                    observer(&changed);
-                }
-            });
-        }
-
         Ok(())
     }
 }
@@ -259,20 +247,6 @@ pub(crate) fn take_mutable_snapshot(
     }
 
     child
-}
-
-pub(crate) fn enter<T>(snapshot: Arc<Snapshot>, block: impl FnOnce() -> T) -> T {
-    push_snapshot(snapshot);
-    let out = block();
-    pop_snapshot();
-    out
-}
-
-pub(crate) fn register_apply_observer<F>(observer: F)
-where
-    F: Fn(&[Arc<dyn StateObject>]) + 'static,
-{
-    APPLY_OBSERVERS.with(|observers| observers.borrow_mut().push(Box::new(observer)));
 }
 
 pub(crate) fn advance_global_snapshot(id: SnapshotId) {
