@@ -57,6 +57,7 @@ impl Arrangement for LinearArrangement {
 
         let children_total = Self::total_children_size(sizes);
         let remaining = total_size - children_total;
+        let remaining_for_spacing = remaining.max(0.0);
 
         match *self {
             LinearArrangement::Start => Self::fill_positions(0.0, 0.0, sizes, out_positions),
@@ -72,17 +73,17 @@ impl Arrangement for LinearArrangement {
                 let gap = if sizes.len() <= 1 {
                     0.0
                 } else {
-                    remaining / (sizes.len() as f32 - 1.0)
+                    remaining_for_spacing / (sizes.len() as f32 - 1.0)
                 };
                 Self::fill_positions(0.0, gap, sizes, out_positions);
             }
             LinearArrangement::SpaceAround => {
-                let gap = remaining / sizes.len() as f32;
+                let gap = remaining_for_spacing / sizes.len() as f32;
                 let start = gap / 2.0;
                 Self::fill_positions(start, gap, sizes, out_positions);
             }
             LinearArrangement::SpaceEvenly => {
-                let gap = remaining / (sizes.len() as f32 + 1.0);
+                let gap = remaining_for_spacing / (sizes.len() as f32 + 1.0);
                 let start = gap;
                 Self::fill_positions(start, gap, sizes, out_positions);
             }
