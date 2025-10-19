@@ -11,7 +11,7 @@ use self::core::{
     HorizontalAlignment, LinearArrangement, Measurable, Placeable, VerticalAlignment,
 };
 use crate::modifier::{
-    DimensionConstraint, EdgeInsets, Modifier, Point, Rect as GeometryRect, Size,
+    DimensionConstraint, EdgeInsets, LayoutProperties, Modifier, Point, Rect as GeometryRect, Size,
 };
 use crate::primitives::{ButtonNode, LayoutNode, SpacerNode, TextNode};
 use crate::subcompose_layout::SubcomposeLayoutNode;
@@ -288,7 +288,9 @@ impl<'a> LayoutBuilder<'a> {
         let props = modifier.layout_properties();
         let padding = props.padding();
         let offset = modifier.total_offset();
-        let inner_constraints = normalize_constraints(subtract_padding(constraints, padding));
+        let constraints = normalize_constraints(constraints);
+        let mut inner_constraints = subtract_padding(constraints, padding);
+        inner_constraints = apply_layout_properties_to_constraints(inner_constraints, props);
         let error = Rc::new(RefCell::new(None));
         let mut records: HashMap<NodeId, ChildRecord> = HashMap::new();
         let mut measurables: Vec<Box<dyn Measurable>> = Vec::new();
@@ -752,6 +754,65 @@ fn align_vertical(alignment: VerticalAlignment, available: f32, child: f32) -> f
         VerticalAlignment::CenterVertically => ((available - child) / 2.0).max(0.0),
         VerticalAlignment::Bottom => (available - child).max(0.0),
     }
+}
+
+fn apply_layout_properties_to_constraints(
+    mut constraints: Constraints,
+    props: LayoutProperties,
+) -> Constraints {
+    if let Some(min_width) = props.min_width() {
+        constraints.min_width = constraints.min_width.max(min_width);
+    }
+    if let Some(min_height) = props.min_height() {
+        constraints.min_height = constraints.min_height.max(min_height);
+    }
+
+    if let Some(max_width) = props.max_width() {
+        if constraints.max_width.is_finite() {
+            constraints.max_width = constraints.max_width.min(max_width);
+        } else {
+            constraints.max_width = max_width;
+        }
+    }
+    if let Some(max_height) = props.max_height() {
+        if constraints.max_height.is_finite() {
+            constraints.max_height = constraints.max_height.min(max_height);
+        } else {
+            constraints.max_height = max_height;
+        }
+    }
+
+    match props.width() {
+        DimensionConstraint::Points(width) => {
+            let width = clamp_dimension(width, constraints.min_width, constraints.max_width);
+            constraints.min_width = width;
+            constraints.max_width = width;
+        }
+        DimensionConstraint::Fraction(fraction) if constraints.max_width.is_finite() => {
+            let available = constraints.max_width * fraction.clamp(0.0, 1.0);
+            let width = clamp_dimension(available, constraints.min_width, constraints.max_width);
+            constraints.min_width = width;
+            constraints.max_width = width;
+        }
+        _ => {}
+    }
+
+    match props.height() {
+        DimensionConstraint::Points(height) => {
+            let height = clamp_dimension(height, constraints.min_height, constraints.max_height);
+            constraints.min_height = height;
+            constraints.max_height = height;
+        }
+        DimensionConstraint::Fraction(fraction) if constraints.max_height.is_finite() => {
+            let available = constraints.max_height * fraction.clamp(0.0, 1.0);
+            let height = clamp_dimension(available, constraints.min_height, constraints.max_height);
+            constraints.min_height = height;
+            constraints.max_height = height;
+        }
+        _ => {}
+    }
+
+    normalize_constraints(constraints)
 }
 
 fn subtract_padding(constraints: Constraints, padding: EdgeInsets) -> Constraints {

@@ -1,5 +1,6 @@
 use super::*;
 use compose_core::Applier;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::modifier::{Modifier, Size};
@@ -99,6 +100,53 @@ impl MeasurePolicy for MaxSizePolicy {
     }
 }
 
+#[derive(Clone)]
+struct RecordingPolicy {
+    captured: Rc<RefCell<Vec<Constraints>>>,
+}
+
+impl RecordingPolicy {
+    fn new(store: Rc<RefCell<Vec<Constraints>>>) -> Self {
+        Self { captured: store }
+    }
+}
+
+impl MeasurePolicy for RecordingPolicy {
+    fn measure(
+        &self,
+        measurables: &[Box<dyn Measurable>],
+        constraints: Constraints,
+    ) -> MeasureResult {
+        self.captured.borrow_mut().push(constraints);
+        for measurable in measurables {
+            let _ = measurable.measure(constraints);
+        }
+        MeasureResult::new(
+            Size {
+                width: constraints.min_width,
+                height: constraints.min_height,
+            },
+            Vec::new(),
+        )
+    }
+
+    fn min_intrinsic_width(&self, _measurables: &[Box<dyn Measurable>], _height: f32) -> f32 {
+        0.0
+    }
+
+    fn max_intrinsic_width(&self, _measurables: &[Box<dyn Measurable>], _height: f32) -> f32 {
+        0.0
+    }
+
+    fn min_intrinsic_height(&self, _measurables: &[Box<dyn Measurable>], _width: f32) -> f32 {
+        0.0
+    }
+
+    fn max_intrinsic_height(&self, _measurables: &[Box<dyn Measurable>], _width: f32) -> f32 {
+        0.0
+    }
+}
+
 #[test]
 fn clamp_dimension_respects_infinite_max() {
     let clamped = clamp_dimension(50.0, 10.0, f32::INFINITY);
@@ -171,5 +219,85 @@ fn layout_node_uses_measure_policy() -> Result<(), NodeError> {
     assert_eq!(measured.children.len(), 2);
     assert_eq!(measured.children[0].offset, Point { x: 0.0, y: 0.0 });
     assert_eq!(measured.children[1].offset, Point { x: 0.0, y: 20.0 });
+    Ok(())
+}
+
+#[test]
+fn layout_node_applies_explicit_size_before_measure() -> Result<(), NodeError> {
+    let mut applier = MemoryApplier::new();
+    let child = applier.create(Box::new(SpacerNode {
+        size: Size {
+            width: 10.0,
+            height: 10.0,
+        },
+    }));
+
+    let captured = Rc::new(RefCell::new(Vec::new()));
+    let policy = Rc::new(RecordingPolicy::new(captured.clone()));
+    let modifier = Modifier::size_points(120.0, 40.0);
+    let mut layout_node = LayoutNode::new(modifier.clone(), policy);
+    layout_node.children.insert(child);
+    let layout_id = applier.create(Box::new(layout_node));
+
+    let mut builder = LayoutBuilder::new(&mut applier);
+    let measured = builder.measure_node(
+        layout_id,
+        Constraints {
+            min_width: 0.0,
+            max_width: 200.0,
+            min_height: 0.0,
+            max_height: 200.0,
+        },
+    )?;
+
+    let captured = captured.borrow();
+    assert_eq!(captured.len(), 1);
+    let constraints = captured[0];
+    assert_eq!(constraints.min_width, 120.0);
+    assert_eq!(constraints.max_width, 120.0);
+    assert_eq!(constraints.min_height, 40.0);
+    assert_eq!(constraints.max_height, 40.0);
+    assert_eq!(measured.size.width, 120.0);
+    assert_eq!(measured.size.height, 40.0);
+    Ok(())
+}
+
+#[test]
+fn layout_node_applies_fractional_size_before_measure() -> Result<(), NodeError> {
+    let mut applier = MemoryApplier::new();
+    let child = applier.create(Box::new(SpacerNode {
+        size: Size {
+            width: 10.0,
+            height: 10.0,
+        },
+    }));
+
+    let captured = Rc::new(RefCell::new(Vec::new()));
+    let policy = Rc::new(RecordingPolicy::new(captured.clone()));
+    let modifier = Modifier::fill_max_size_fraction(0.5);
+    let mut layout_node = LayoutNode::new(modifier.clone(), policy);
+    layout_node.children.insert(child);
+    let layout_id = applier.create(Box::new(layout_node));
+
+    let mut builder = LayoutBuilder::new(&mut applier);
+    let measured = builder.measure_node(
+        layout_id,
+        Constraints {
+            min_width: 0.0,
+            max_width: 300.0,
+            min_height: 0.0,
+            max_height: 200.0,
+        },
+    )?;
+
+    let captured = captured.borrow();
+    assert_eq!(captured.len(), 1);
+    let constraints = captured[0];
+    assert_eq!(constraints.min_width, 150.0);
+    assert_eq!(constraints.max_width, 150.0);
+    assert_eq!(constraints.min_height, 100.0);
+    assert_eq!(constraints.max_height, 100.0);
+    assert_eq!(measured.size.width, 150.0);
+    assert_eq!(measured.size.height, 100.0);
     Ok(())
 }
