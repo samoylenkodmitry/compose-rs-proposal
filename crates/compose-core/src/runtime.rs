@@ -352,10 +352,24 @@ impl RuntimeInner {
         if let Some(index) = callbacks.iter().position(|entry| entry.id == id) {
             callbacks.remove(index);
         }
+        let callbacks_empty = callbacks.is_empty();
+        drop(callbacks);
+        let local_pending = self
+            .local_tasks
+            .try_borrow()
+            .map(|tasks| !tasks.is_empty())
+            .unwrap_or(true);
+        let async_pending = self
+            .tasks
+            .try_borrow()
+            .map(|tasks| !tasks.is_empty())
+            .unwrap_or(true);
         if !self.has_invalid_scopes()
             && !self.has_updates()
-            && callbacks.is_empty()
-            && !self.has_pending_ui()
+            && callbacks_empty
+            && !local_pending
+            && !self.ui_dispatcher.has_pending()
+            && !async_pending
         {
             *self.needs_frame.borrow_mut() = false;
         }

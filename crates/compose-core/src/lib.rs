@@ -74,7 +74,6 @@ pub(crate) struct RecomposeScopeInner {
     pending_recompose: Cell<bool>,
     force_reuse: Cell<bool>,
     force_recompose: Cell<bool>,
-    group_index: Cell<Option<usize>>,
     recompose: RefCell<Option<RecomposeCallback>>,
     local_stack: RefCell<Vec<LocalContext>>,
 }
@@ -90,7 +89,6 @@ impl RecomposeScopeInner {
             pending_recompose: Cell::new(false),
             force_reuse: Cell::new(false),
             force_recompose: Cell::new(false),
-            group_index: Cell::new(None),
             recompose: RefCell::new(None),
             local_stack: RefCell::new(Vec::new()),
         }
@@ -111,7 +109,7 @@ impl RecomposeScope {
         }
     }
 
-    fn id(&self) -> ScopeId {
+    pub fn id(&self) -> ScopeId {
         self.inner.id
     }
 
@@ -154,14 +152,6 @@ impl RecomposeScope {
 
     fn downgrade(&self) -> Weak<RecomposeScopeInner> {
         Rc::downgrade(&self.inner)
-    }
-
-    fn set_group_index(&self, index: usize) {
-        self.inner.group_index.set(Some(index));
-    }
-
-    fn group_index(&self) -> Option<usize> {
-        self.inner.group_index.get()
     }
 
     fn set_recompose(&self, callback: RecomposeCallback) {
@@ -690,7 +680,11 @@ pub struct SlotTable {
 }
 
 enum Slot {
-    Group { key: Key, len: usize },
+    Group {
+        key: Key,
+        len: usize,
+        scope: Option<ScopeId>,
+    },
     Value(Box<dyn Any>),
     Node(NodeId),
 }
@@ -728,13 +722,69 @@ impl Slot {
 
 impl Default for Slot {
     fn default() -> Self {
-        Slot::Group { key: 0, len: 0 }
+        Slot::Group {
+            key: 0,
+            len: 0,
+            scope: None,
+        }
     }
 }
 
 impl SlotTable {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn set_group_scope(&mut self, index: usize, scope: ScopeId) {
+        let slot = self
+            .slots
+            .get_mut(index)
+            .expect("set_group_scope: index out of bounds");
+        match slot {
+            Slot::Group {
+                scope: scope_opt, ..
+            } => {
+                if let Some(existing) = scope_opt {
+                    debug_assert_eq!(
+                        *existing, scope,
+                        "Group scope id changed unexpectedly at slot {}",
+                        index
+                    );
+                } else {
+                    *scope_opt = Some(scope);
+                }
+            }
+            _ => panic!("set_group_scope: slot at index is not a group"),
+        }
+    }
+
+    pub fn find_group_index_by_scope(&self, scope: ScopeId) -> Option<usize> {
+        self.slots
+            .iter()
+            .enumerate()
+            .find_map(|(i, slot)| match slot {
+                Slot::Group {
+                    scope: Some(id), ..
+                } if *id == scope => Some(i),
+                _ => None,
+            })
+    }
+
+    pub fn start_recompose_at_scope(&mut self, scope: ScopeId) -> Option<usize> {
+        let index = self.find_group_index_by_scope(scope)?;
+        self.start_recompose(index);
+        Some(index)
+    }
+
+    pub fn debug_dump_groups(&self) -> Vec<(usize, Key, Option<ScopeId>, usize)> {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(|(i, slot)| match slot {
+                Slot::Group { key, len, scope } => Some((i, *key, *scope, *len)),
+                _ => None,
+            })
+            .collect()
     }
 
     fn update_group_bounds(&mut self) {
@@ -783,6 +833,7 @@ impl SlotTable {
             Some(Slot::Group {
                 key: existing_key,
                 len,
+                scope: _,
             }) if *existing_key == key => {
                 debug_assert_eq!(*existing_key, key, "group key mismatch");
                 Some(*len)
@@ -814,6 +865,7 @@ impl SlotTable {
                 Some(Slot::Group {
                     key: existing_key,
                     len,
+                    scope: _,
                 }) => {
                     let group_len = *len;
                     if *existing_key == key {
@@ -850,7 +902,14 @@ impl SlotTable {
         }
 
         self.shift_group_frames(cursor, 1);
-        self.slots.insert(cursor, Slot::Group { key, len: 0 });
+        self.slots.insert(
+            cursor,
+            Slot::Group {
+                key,
+                len: 0,
+                scope: None,
+            },
+        );
         self.cursor = cursor + 1;
         self.group_stack.push(GroupFrame {
             key,
@@ -871,7 +930,7 @@ impl SlotTable {
                     "slot kind mismatch at {}",
                     frame.start
                 );
-                if let Slot::Group { key, len } = slot {
+                if let Slot::Group { key, len, .. } = slot {
                     debug_assert_eq!(*key, frame.key, "group key mismatch");
                     *len = end.saturating_sub(frame.start);
                 }
@@ -892,7 +951,7 @@ impl SlotTable {
                 "slot kind mismatch at {}",
                 index
             );
-            if let Slot::Group { key, len } = *slot {
+            if let Slot::Group { key, len, .. } = *slot {
                 let frame = GroupFrame {
                     key,
                     start: index,
@@ -1073,7 +1132,7 @@ impl SlotTable {
                     "slot kind mismatch at {}",
                     frame.start
                 );
-                if let Slot::Group { key, len } = slot {
+                if let Slot::Group { key, len, .. } = slot {
                     debug_assert_eq!(*key, frame.key, "group key mismatch");
                     *len = frame.end.saturating_sub(frame.start);
                 }
@@ -1327,7 +1386,7 @@ impl<'a> Composer<'a> {
                 scope_ref.force_reuse();
             }
         }
-        scope_ref.set_group_index(index);
+        self.slots.set_group_scope(index, scope_ref.id());
         self.scope_stack.push(scope_ref.clone());
         if let Some(frame) = self.subcompose_stack.last_mut() {
             frame.scopes.push(scope_ref.clone());
@@ -1534,8 +1593,7 @@ impl<'a> Composer<'a> {
     }
 
     fn recompose_group(&mut self, scope: &RecomposeScope) {
-        if let Some(index) = scope.group_index() {
-            self.slots.start_recompose(index);
+        if let Some(_index) = self.slots.start_recompose_at_scope(scope.id()) {
             self.scope_stack.push(scope.clone());
             let saved_locals = std::mem::take(&mut self.local_stack);
             self.local_stack = scope.local_stack();
@@ -1543,6 +1601,8 @@ impl<'a> Composer<'a> {
             self.local_stack = saved_locals;
             self.scope_stack.pop();
             self.slots.end_recompose();
+            scope.mark_recomposed();
+        } else {
             scope.mark_recomposed();
         }
     }

@@ -813,6 +813,151 @@ fn state_update_schedules_render() {
 }
 
 #[test]
+fn recompose_does_not_use_stale_indices_when_prior_scope_changes_length() {
+    thread_local! {
+        static STABLE_RECOMPOSE_A: Cell<usize> = Cell::new(0);
+        static STABLE_RECOMPOSE_B: Cell<usize> = Cell::new(0);
+    }
+
+    #[composable]
+    fn logging_group_a(state_a: MutableState<i32>, toggle_a: MutableState<bool>) {
+        STABLE_RECOMPOSE_A.with(|count| count.set(count.get() + 1));
+        let _ = state_a.value();
+        let expand = toggle_a.value();
+        if expand {
+            let _ = compose_core::remember(|| ());
+            let _ = compose_core::remember(|| ());
+            compose_core::with_key(&"nested", || {});
+        } else {
+            let _ = compose_core::remember(|| ());
+        }
+    }
+
+    #[composable]
+    fn logging_group_b(state_b: MutableState<i32>) {
+        STABLE_RECOMPOSE_B.with(|count| count.set(count.get() + 1));
+        let _ = state_b.value();
+    }
+
+    #[composable]
+    fn logging_root(
+        state_a: MutableState<i32>,
+        state_b: MutableState<i32>,
+        toggle_a: MutableState<bool>,
+    ) {
+        compose_core::with_key(&"root", || {
+            compose_core::with_key(&"A", || logging_group_a(state_a.clone(), toggle_a.clone()));
+            compose_core::with_key(&"B", || logging_group_b(state_b.clone()));
+        });
+    }
+
+    let mut composition = Composition::new(MemoryApplier::new());
+    let runtime = composition.runtime_handle();
+    let state_a = MutableState::with_runtime(0i32, runtime.clone());
+    let state_b = MutableState::with_runtime(0i32, runtime.clone());
+    let toggle_a = MutableState::with_runtime(false, runtime.clone());
+
+    let mut render = {
+        let state_a = state_a.clone();
+        let state_b = state_b.clone();
+        let toggle_a = toggle_a.clone();
+        move || logging_root(state_a.clone(), state_b.clone(), toggle_a.clone())
+    };
+
+    composition
+        .render(location_key(file!(), line!(), column!()), &mut render)
+        .expect("initial render");
+
+    STABLE_RECOMPOSE_A.with(|count| assert_eq!(count.get(), 1));
+    STABLE_RECOMPOSE_B.with(|count| assert_eq!(count.get(), 1));
+
+    STABLE_RECOMPOSE_A.with(|count| count.set(0));
+    STABLE_RECOMPOSE_B.with(|count| count.set(0));
+
+    state_b.set_value(1);
+    toggle_a.set_value(true);
+    state_a.set_value(1);
+
+    let recomposed = composition
+        .process_invalid_scopes()
+        .expect("recomposition succeeds");
+    assert!(recomposed, "expected at least one scope to recompose");
+
+    STABLE_RECOMPOSE_A.with(|count| assert!(count.get() >= 1));
+    STABLE_RECOMPOSE_B.with(|count| assert!(count.get() >= 1));
+}
+
+#[test]
+fn recompose_handles_removed_scopes_gracefully() {
+    thread_local! {
+        static REMOVED_SCOPE_LOG: RefCell<Vec<&'static str>> = RefCell::new(Vec::new());
+    }
+
+    fn render_optional_scope(
+        composer: &mut Composer<'_>,
+        state_a: &MutableState<i32>,
+        toggle_group: &MutableState<bool>,
+    ) {
+        if toggle_group.value() {
+            let state_clone = state_a.clone();
+            composer.with_group(21, |composer| {
+                let state_capture = state_clone.clone();
+                composer.set_recompose_callback({
+                    let state_capture = state_capture.clone();
+                    move |composer| {
+                        let _ = state_capture.value();
+                        composer.register_side_effect(|| {
+                            REMOVED_SCOPE_LOG.with(|log| log.borrow_mut().push("scope"));
+                        });
+                    }
+                });
+                let _ = state_capture.value();
+                composer.register_side_effect(|| {
+                    REMOVED_SCOPE_LOG.with(|log| log.borrow_mut().push("scope"));
+                });
+            });
+        }
+    }
+
+    let mut composition = Composition::new(MemoryApplier::new());
+    let runtime = composition.runtime_handle();
+    let state_a = MutableState::with_runtime(0i32, runtime.clone());
+    let toggle_group = MutableState::with_runtime(true, runtime.clone());
+
+    let mut render = {
+        let state_a = state_a.clone();
+        let toggle_group = toggle_group.clone();
+        move || {
+            with_current_composer(|composer| {
+                render_optional_scope(composer, &state_a, &toggle_group);
+            });
+        }
+    };
+
+    composition
+        .render(location_key(file!(), line!(), column!()), &mut render)
+        .expect("initial render");
+
+    REMOVED_SCOPE_LOG.with(|log| log.borrow_mut().clear());
+
+    state_a.set_value(1);
+    toggle_group.set_value(false);
+
+    composition
+        .render(location_key(file!(), line!(), column!()), &mut render)
+        .expect("render without scope");
+
+    let recomposed = composition
+        .process_invalid_scopes()
+        .expect("process invalid scopes succeeds");
+    assert!(!recomposed);
+
+    REMOVED_SCOPE_LOG.with(|log| {
+        assert!(log.borrow().is_empty());
+    });
+}
+
+#[test]
 fn side_effect_runs_after_composition() {
     let mut composition = Composition::new(MemoryApplier::new());
     SIDE_EFFECT_LOG.with(|log| log.borrow_mut().clear());
