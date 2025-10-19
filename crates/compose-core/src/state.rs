@@ -40,6 +40,16 @@ impl StateRecord {
     }
 }
 
+unsafe fn chain_contains(mut cursor: *mut StateRecord, target: *mut StateRecord) -> bool {
+    while !cursor.is_null() {
+        if cursor == target {
+            return true;
+        }
+        cursor = (*cursor).next();
+    }
+    false
+}
+
 pub(crate) trait MutationPolicy<T>: Send + Sync {
     fn equivalent(&self, a: &T, b: &T) -> bool;
     fn merge(&self, _previous: &T, _current: &T, _applied: &T) -> Option<T> {
@@ -140,11 +150,13 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
         }
 
         unsafe {
-            let record = self.readable_record(snapshot) as *const TRecord<T>;
+            let record = self.readable_record(snapshot.clone()) as *const TRecord<T>;
             assert!(
                 !record.is_null(),
-                "SnapshotMutableState::get found no readable record for state {:?}",
-                self.id
+                "SnapshotMutableState::get found no readable record for state {:?} (snapshot_id={}, pending_children={:?})",
+                self.id,
+                snapshot.id(),
+                snapshot.pending_children()
             );
             (*record).value.clone()
         }
@@ -171,7 +183,30 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
                 self.id
             );
             if snapshot.parent.is_some() {
+                if let Some(parent) = snapshot.parent.as_ref().and_then(|weak| weak.upgrade()) {
+                    let pending = parent.pending_children();
+                    assert!(
+                        pending.contains(&snapshot.id()),
+                        "SnapshotMutableState::set detected child snapshot {} missing from parent's pending set {:?} for state {:?}",
+                        snapshot.id(),
+                        pending,
+                        self.id
+                    );
+                } else {
+                    panic!(
+                        "SnapshotMutableState::set could not upgrade parent for child snapshot {} (state {:?})",
+                        snapshot.id(),
+                        self.id
+                    );
+                }
                 let top = &*head;
+                assert!(
+                    top.base.snapshot_id() <= snapshot.id(),
+                    "SnapshotMutableState::set found head record with newer id {} than active snapshot {} for state {:?}",
+                    top.base.snapshot_id(),
+                    snapshot.id(),
+                    self.id
+                );
                 if top.base.snapshot_id() == snapshot.id() {
                     if !self.policy.equivalent(&top.value, &new_value) {
                         let mut_ref = &mut *(self.head);
@@ -189,6 +224,15 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
                 let this = self as *const _ as *mut Self;
                 (*this).head = raw;
                 return;
+            }
+
+            if snapshot.has_pending_children() {
+                panic!(
+                    "SnapshotMutableState::set attempted global write while pending children {:?} exist (state {:?}, snapshot_id={})",
+                    snapshot.pending_children(),
+                    self.id,
+                    snapshot.id()
+                );
             }
 
             let new_id = alloc_record_id();
@@ -367,6 +411,26 @@ impl<T: Clone + 'static> StateObject for SnapshotMutableState<T> {
                 parent_readable
             };
 
+            assert!(
+                chain_contains(head, parent_readable),
+                "SnapshotMutableState::try_merge received parent record {:p} that is not in chain for state {:?} (child_id={}, base_parent_id={}, head={:p})",
+                parent_readable,
+                self.id,
+                child_id,
+                base_parent_id,
+                head
+            );
+
+            assert!(
+                chain_contains(head, previous),
+                "SnapshotMutableState::try_merge located previous record {:p} that is not in chain for state {:?} (child_id={}, base_parent_id={}, head={:p})",
+                previous,
+                self.id,
+                child_id,
+                base_parent_id,
+                head
+            );
+
             let mut applied: *mut StateRecord = ptr::null_mut();
             cursor = head;
             while !cursor.is_null() {
@@ -441,7 +505,12 @@ impl<T: Clone + 'static> StateObject for SnapshotMutableState<T> {
                 }
                 cursor = (&*cursor).next();
             }
-            Err("child record not found")
+            panic!(
+                "SnapshotMutableState::promote_record missing child record (state {:?}, child_id={}, head={:p})",
+                self.id,
+                child_id,
+                self.head
+            );
         }
     }
 }

@@ -134,6 +134,11 @@ impl Snapshot {
         !self.invalid.lock().unwrap().is_empty()
     }
 
+    #[inline]
+    pub(crate) fn pending_children(&self) -> Vec<SnapshotId> {
+        self.invalid.lock().unwrap().iter().copied().collect()
+    }
+
     pub(crate) fn record_read(&self, state: Arc<dyn StateObject>) {
         if let Some(observer) = &self.read_observer {
             observer(state);
