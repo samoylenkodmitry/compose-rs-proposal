@@ -476,7 +476,7 @@ fn async_runtime_example() {
                             state.last_frame_ms = dt_ms;
                         });
                         animation.update(|anim| {
-                            let next = anim.progress + anim.direction * (dt_ms / 600.0);
+                            let next = anim.progress + 0.1 * anim.direction * (dt_ms / 600.0);
                             if next >= 1.0 {
                                 anim.progress = 1.0;
                                 anim.direction = -1.0;
