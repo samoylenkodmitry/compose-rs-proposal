@@ -141,7 +141,11 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
 
         unsafe {
             let record = self.readable_record(snapshot) as *const TRecord<T>;
-            debug_assert!(!record.is_null(), "no readable state record");
+            assert!(
+                !record.is_null(),
+                "SnapshotMutableState::get found no readable record for state {:?}",
+                self.id
+            );
             (*record).value.clone()
         }
     }
@@ -161,6 +165,11 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
 
         unsafe {
             let head = self.head;
+            assert!(
+                !head.is_null(),
+                "SnapshotMutableState::set missing head record for state {:?}",
+                self.id
+            );
             if snapshot.parent.is_some() {
                 let top = &*head;
                 if top.base.snapshot_id() == snapshot.id() {
@@ -311,6 +320,11 @@ impl<T: Clone + 'static> StateObject for SnapshotMutableState<T> {
         child_id: SnapshotId,
     ) -> bool {
         unsafe {
+            assert!(
+                !head.is_null(),
+                "SnapshotMutableState::try_merge received null head for state {:?}",
+                self.id
+            );
             let mut previous: *mut StateRecord = ptr::null_mut();
             let mut cursor: *mut StateRecord = head;
             while !cursor.is_null() {
@@ -323,9 +337,27 @@ impl<T: Clone + 'static> StateObject for SnapshotMutableState<T> {
                 cursor = record.next();
             }
 
-            if previous.is_null() || parent_readable.is_null() {
-                return false;
-            }
+            let previous = if previous.is_null() {
+                panic!(
+                    "SnapshotMutableState::try_merge missing base record (state {:?}, base_parent_id={}, child_id={})",
+                    self.id,
+                    base_parent_id,
+                    child_id
+                );
+            } else {
+                previous
+            };
+
+            let parent_readable = if parent_readable.is_null() {
+                panic!(
+                    "SnapshotMutableState::try_merge missing parent readable record (state {:?}, base_parent_id={}, child_id={})",
+                    self.id,
+                    base_parent_id,
+                    child_id
+                );
+            } else {
+                parent_readable
+            };
 
             let mut applied: *mut StateRecord = ptr::null_mut();
             cursor = head;
@@ -338,9 +370,15 @@ impl<T: Clone + 'static> StateObject for SnapshotMutableState<T> {
                 cursor = record.next();
             }
 
-            if applied.is_null() {
-                return false;
-            }
+            let applied = if applied.is_null() {
+                panic!(
+                    "SnapshotMutableState::try_merge missing child record (state {:?}, child_id={})",
+                    self.id,
+                    child_id
+                );
+            } else {
+                applied
+            };
 
             let prev_value = &*(previous as *const TRecord<T>);
             let current_value = &*(parent_readable as *const TRecord<T>);
@@ -371,6 +409,11 @@ impl<T: Clone + 'static> StateObject for SnapshotMutableState<T> {
 
     fn promote_record(&self, child_id: SnapshotId) -> Result<(), &'static str> {
         unsafe {
+            assert!(
+                !self.head.is_null(),
+                "SnapshotMutableState::promote_record missing head for state {:?}",
+                self.id
+            );
             let mut cursor = self.first_record();
             while !cursor.is_null() {
                 if (&*cursor).snapshot_id() == child_id {

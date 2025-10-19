@@ -1561,5 +1561,22 @@ fn snapshot_state_concurrent_children_merge() {
     assert_eq!(state.get(), 3);
 }
 
+#[test]
+fn snapshot_state_child_apply_after_parent_history() {
+    let state = SnapshotMutableState::new_in_arc(0, Arc::new(SumPolicy));
+
+    for value in 1..=5 {
+        state.set(value);
+    }
+
+    let child = take_mutable_snapshot(None, None);
+    child.enter(|| state.set(42));
+
+    child
+        .apply()
+        .expect("child snapshot should apply after parent history");
+    assert_eq!(state.get(), 42);
+}
+
 // Note: Tests for ComposeTestRule and run_test_composition have been moved to
 // the compose-testing crate to avoid circular dependencies.
