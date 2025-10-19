@@ -1,7 +1,6 @@
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::mem;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -113,22 +112,15 @@ impl Snapshot {
 }
 
 #[derive(Clone, Copy, Eq, PartialEq, Hash)]
-struct StateObjectHandle {
-    data: usize,
-    metadata: usize,
-}
+struct StateObjectHandle(*const dyn StateObject);
 
 impl StateObjectHandle {
     fn new(ptr: *const dyn StateObject) -> Self {
-        let raw: (usize, usize) = unsafe { mem::transmute(ptr) };
-        Self {
-            data: raw.0,
-            metadata: raw.1,
-        }
+        Self(ptr)
     }
 
     fn as_ptr(self) -> *const dyn StateObject {
-        unsafe { mem::transmute((self.data, self.metadata)) }
+        self.0
     }
 }
 
@@ -157,15 +149,16 @@ thread_local! {
 static NEXT_SNAPSHOT_ID: AtomicU32 = AtomicU32::new(1);
 
 struct GlobalState {
-    snapshot: Arc<Snapshot>,
+    id: SnapshotId,
+    invalid: SnapshotIdSet,
     write_observers: Vec<Arc<dyn Fn(&dyn Any) + Send + Sync>>,
 }
 
 impl GlobalState {
     fn new() -> Self {
-        let snapshot = Arc::new(Snapshot::new(0, false));
         Self {
-            snapshot,
+            id: 0,
+            invalid: SnapshotIdSet::default(),
             write_observers: Vec::new(),
         }
     }
@@ -193,7 +186,11 @@ pub fn current_snapshot() -> Arc<Snapshot> {
         } else {
             GLOBAL_STATE
                 .lock()
-                .map(|state| Arc::clone(&state.snapshot))
+                .map(|state| {
+                    let mut snapshot = Snapshot::new(state.id, false);
+                    snapshot.invalid = state.invalid.clone();
+                    Arc::new(snapshot)
+                })
                 .unwrap_or_else(|_| Arc::new(Snapshot::new(0, false)))
         }
     })
@@ -278,29 +275,28 @@ fn apply_snapshot(snapshot: &Arc<Snapshot>) -> SnapshotApplyResult {
         Err(_) => return SnapshotApplyResult::Failure,
     };
 
-    let global_snapshot = Arc::make_mut(&mut state.snapshot);
     let mut any_failure = false;
 
     for object_ptr in objects {
-        unsafe {
-            let object = &*object_ptr;
-            let first = object.first_record();
-            let base = readable(first, global_snapshot.id, &global_snapshot.invalid);
-            let pending = readable(first, snapshot.id, &snapshot.invalid);
-            match (base, pending) {
-                (Some(base), Some(pending)) => {
-                    if base.snapshot_id() == pending.snapshot_id() {
-                        continue;
-                    }
-                    let mut applied = pending.boxed_clone();
-                    applied.set_snapshot_id(global_snapshot.id + 1);
-                    applied.set_next(None);
-                    object.set_first_record(applied);
+        // Safety: state objects live for the duration of the program and we only
+        // record pointers produced by `StateObject` implementors.
+        let object = unsafe { &*object_ptr };
+        let first = object.first_record();
+        let base = readable(first, state.id, &state.invalid);
+        let pending = readable(first, snapshot.id, &snapshot.invalid);
+        match (base, pending) {
+            (Some(base), Some(pending)) => {
+                if base.snapshot_id() == pending.snapshot_id() {
+                    continue;
                 }
-                _ => {
-                    any_failure = true;
-                    break;
-                }
+                let mut applied = pending.boxed_clone();
+                applied.set_snapshot_id(state.id + 1);
+                applied.set_next(None);
+                object.set_first_record(applied);
+            }
+            _ => {
+                any_failure = true;
+                break;
             }
         }
     }
@@ -308,7 +304,7 @@ fn apply_snapshot(snapshot: &Arc<Snapshot>) -> SnapshotApplyResult {
     if any_failure {
         SnapshotApplyResult::Failure
     } else {
-        global_snapshot.id = global_snapshot.id.saturating_add(1);
+        state.id = state.id.saturating_add(1);
         SnapshotApplyResult::Success
     }
 }
