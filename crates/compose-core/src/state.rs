@@ -80,10 +80,8 @@ pub(crate) struct SnapshotMutableState<T> {
     policy: Arc<dyn MutationPolicy<T>>,
     id: ObjectId,
     weak_self: Mutex<Option<Weak<dyn StateObject>>>,
+    apply_observers: Mutex<Vec<Box<dyn Fn() + 'static>>>,
 }
-
-unsafe impl<T: Send> Send for SnapshotMutableState<T> {}
-unsafe impl<T: Sync> Sync for SnapshotMutableState<T> {}
 
 impl<T: Clone + 'static> SnapshotMutableState<T> {
     pub(crate) fn new_in_arc(initial: T, policy: Arc<dyn MutationPolicy<T>>) -> Arc<Self> {
@@ -98,6 +96,7 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
             policy,
             id: ObjectId::default(),
             weak_self: Mutex::new(None),
+            apply_observers: Mutex::new(Vec::new()),
         });
 
         let id = ObjectId::new(&state);
@@ -110,6 +109,17 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
         advance_global_snapshot(record_id);
 
         state
+    }
+
+    pub(crate) fn add_apply_observer(&self, observer: Box<dyn Fn() + 'static>) {
+        self.apply_observers.lock().unwrap().push(observer);
+    }
+
+    fn notify_applied(&self) {
+        let observers = self.apply_observers.lock().unwrap();
+        for observer in observers.iter() {
+            observer();
+        }
     }
 
     #[inline]
@@ -182,6 +192,7 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
             let this = self as *const _ as *mut Self;
             (*this).head = raw;
             advance_global_snapshot(new_id);
+            self.notify_applied();
 
             if snapshot.parent.is_none() && !snapshot.has_pending_children() {
                 let head_state = (*this).head as *mut StateRecord;
@@ -351,6 +362,7 @@ impl<T: Clone + 'static> StateObject for SnapshotMutableState<T> {
                 let this = self as *const _ as *mut Self;
                 (*this).head = raw;
                 advance_global_snapshot(new_id);
+                self.notify_applied();
                 true
             } else {
                 false
@@ -374,6 +386,7 @@ impl<T: Clone + 'static> StateObject for SnapshotMutableState<T> {
                     let this = self as *const _ as *mut Self;
                     (*this).head = raw;
                     advance_global_snapshot(new_id);
+                    self.notify_applied();
                     return Ok(());
                 }
                 cursor = (&*cursor).next();

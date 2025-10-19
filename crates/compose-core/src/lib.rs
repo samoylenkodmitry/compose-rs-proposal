@@ -1912,6 +1912,20 @@ impl<T: Clone + 'static> MutableStateInner<T> {
         }
     }
 
+    fn install_snapshot_observer(this: &Rc<Self>) {
+        let runtime_handle = this.runtime.clone();
+        let weak_inner = Rc::downgrade(this);
+        this.state.add_apply_observer(Box::new(move || {
+            let runtime = runtime_handle.clone();
+            let weak_for_task = weak_inner.clone();
+            runtime.enqueue_ui_task(Box::new(move || {
+                if let Some(inner) = weak_for_task.upgrade() {
+                    inner.invalidate_watchers();
+                }
+            }));
+        }));
+    }
+
     fn with_value<R>(&self, f: impl FnOnce(&T) -> R) -> R {
         let value = self.state.get();
         f(&value)
@@ -1976,9 +1990,9 @@ impl<T: Clone + 'static> Clone for MutableState<T> {
 
 impl<T: Clone + 'static> MutableState<T> {
     pub fn with_runtime(value: T, runtime: RuntimeHandle) -> Self {
-        Self {
-            inner: Rc::new(MutableStateInner::new(value, runtime)),
-        }
+        let inner = Rc::new(MutableStateInner::new(value, runtime));
+        MutableStateInner::install_snapshot_observer(&inner);
+        Self { inner }
     }
 
     pub fn as_state(&self) -> State<T> {
