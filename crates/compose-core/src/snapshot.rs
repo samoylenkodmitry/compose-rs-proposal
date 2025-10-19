@@ -41,6 +41,10 @@ fn push_snapshot(snapshot: Arc<Snapshot>) {
 fn pop_snapshot() {
     SNAPSHOT_STACK.with(|stack| {
         let mut stack = stack.borrow_mut();
+        assert!(
+            !stack.is_empty(),
+            "pop_snapshot called with empty stack (expected at least global snapshot)"
+        );
         if stack.len() > 1 {
             stack.pop();
         }
@@ -162,6 +166,14 @@ impl Snapshot {
         let modified = self.modified.borrow();
         for (_id, state) in modified.iter() {
             let parent_head = state.first_record();
+            assert!(
+                !parent_head.is_null(),
+                "Snapshot::apply missing parent head for state {:?} (child_id={}, base_parent_id={})",
+                state.object_id(),
+                self.id.get(),
+                self.base_parent_id,
+            );
+
             let parent_readable = state.readable_record(parent.clone());
 
             if !parent_readable.is_null()
@@ -180,7 +192,14 @@ impl Snapshot {
             }
         }
 
-        parent.invalid.lock().unwrap().remove(&self.id.get());
+        let removed = parent.invalid.lock().unwrap().remove(&self.id.get());
+        assert!(
+            removed,
+            "Snapshot::apply removed child {:?} that parent did not track (parent_id={}, base_parent_id={})",
+            self.id.get(),
+            parent.id(),
+            self.base_parent_id,
+        );
 
         if !modified.is_empty() {
             let changed: Vec<Arc<dyn StateObject>> = modified.values().cloned().collect();
@@ -216,7 +235,18 @@ pub(crate) fn take_mutable_snapshot(
 
     let mut child = Arc::new(Snapshot::new_child(child_id, parent.clone()));
 
-    parent.invalid.lock().unwrap().insert(child_id);
+    let mut parent_invalid = parent.invalid.lock().unwrap();
+    let inserted = parent_invalid.insert(child_id);
+    if !inserted {
+        let pending: Vec<_> = parent_invalid.iter().copied().collect();
+        panic!(
+            "take_mutable_snapshot reused child id {} for parent {} (pending ids={:?})",
+            child_id,
+            parent.id(),
+            pending
+        );
+    }
+    drop(parent_invalid);
 
     if let Some(inner) = Arc::get_mut(&mut child) {
         inner.read_observer = read_observer;
@@ -242,5 +272,12 @@ where
 
 pub(crate) fn advance_global_snapshot(id: SnapshotId) {
     let snapshot = global_snapshot();
+    let current = snapshot.id();
+    assert!(
+        id >= current,
+        "advance_global_snapshot regressed global id from {} to {}",
+        current,
+        id
+    );
     snapshot.set_id(id);
 }

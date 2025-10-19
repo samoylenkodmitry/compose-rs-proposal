@@ -308,6 +308,14 @@ impl<T: Clone + 'static> StateObject for SnapshotMutableState<T> {
                 }
                 cursor = record.next();
             }
+            if best.is_null() {
+                panic!(
+                    "SnapshotMutableState::readable_record returned null (state={:?}, snapshot_id={}, head={:p})",
+                    self.id,
+                    snapshot.id(),
+                    self.head
+                );
+            }
             best
         }
     }
