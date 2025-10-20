@@ -24,6 +24,18 @@ thread_local! {
     static COUNTER_TEXT_ID: RefCell<Option<NodeId>> = RefCell::new(None);
 }
 
+fn find_layout(node: &LayoutBox, target: NodeId) -> Option<&LayoutBox> {
+    if node.node_id == target {
+        return Some(node);
+    }
+    for child in &node.children {
+        if let Some(found) = find_layout(child, target) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 #[test]
 fn row_with_alignment_updates_node_fields() {
     let mut composition = run_test_composition(|| {
@@ -138,17 +150,74 @@ fn demo_row_buttons_remain_within_container_bounds() {
         )
         .expect("compute layout");
 
-    fn find_layout(node: &LayoutBox, target: NodeId) -> Option<&LayoutBox> {
-        if node.node_id == target {
-            return Some(node);
-        }
-        for child in &node.children {
-            if let Some(found) = find_layout(child, target) {
-                return Some(found);
-            }
-        }
-        None
+    let row_layout = find_layout(layout_tree.root(), row_id).expect("row layout");
+    let row_right = row_layout.rect.x + row_layout.rect.width;
+    let row_bottom = row_layout.rect.y + row_layout.rect.height;
+
+    for child in &row_layout.children {
+        assert!(child.rect.x >= row_layout.rect.x - 1e-3);
+        assert!(child.rect.y >= row_layout.rect.y - 1e-3);
+        assert!(child.rect.x + child.rect.width <= row_right + 1e-3);
+        assert!(child.rect.y + child.rect.height <= row_bottom + 1e-3);
     }
+}
+
+#[test]
+fn demo_spaced_row_children_remain_within_container_bounds() {
+    let row_slot: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+    let row_capture = Rc::clone(&row_slot);
+
+    let mut composition = run_test_composition(move || {
+        let row_capture = Rc::clone(&row_capture);
+        Column(
+            Modifier::padding(16.0)
+                .then(Modifier::rounded_corners(12.0))
+                .then(Modifier::background(Color(0.1, 0.1, 0.15, 0.6)))
+                .then(Modifier::padding(16.0)),
+            ColumnSpec::default(),
+            move || {
+                let row_id = Row(
+                    Modifier::padding(8.0)
+                        .then(Modifier::rounded_corners(12.0))
+                        .then(Modifier::background(Color(0.1, 0.1, 0.15, 0.6)))
+                        .then(Modifier::padding(8.0)),
+                    RowSpec::new()
+                        .horizontal_arrangement(LinearArrangement::SpacedBy(12.0))
+                        .vertical_alignment(VerticalAlignment::CenterVertically),
+                    || {
+                        Button(
+                            Modifier::rounded_corners(16.0).then(Modifier::padding(12.0)),
+                            || {},
+                            || {
+                                Text("Pause animation", Modifier::padding(6.0));
+                            },
+                        );
+                        Button(
+                            Modifier::rounded_corners(16.0).then(Modifier::padding(12.0)),
+                            || {},
+                            || {
+                                Text("Reset", Modifier::padding(6.0));
+                            },
+                        );
+                    },
+                );
+                *row_capture.borrow_mut() = Some(row_id);
+            },
+        );
+    });
+
+    let row_id = row_slot.borrow().expect("row captured");
+    let root = composition.root().expect("composition root");
+    let layout_tree = composition
+        .applier_mut()
+        .compute_layout(
+            root,
+            Size {
+                width: 420.0,
+                height: 320.0,
+            },
+        )
+        .expect("compute layout");
 
     let row_layout = find_layout(layout_tree.root(), row_id).expect("row layout");
     let row_right = row_layout.rect.x + row_layout.rect.width;
@@ -160,6 +229,68 @@ fn demo_row_buttons_remain_within_container_bounds() {
         assert!(child.rect.x + child.rect.width <= row_right + 1e-3);
         assert!(child.rect.y + child.rect.height <= row_bottom + 1e-3);
     }
+}
+
+#[test]
+fn demo_fetch_button_text_remains_within_button_bounds() {
+    let button_slot: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+    let text_slot: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+
+    let mut composition = run_test_composition({
+        let button_slot = Rc::clone(&button_slot);
+        let text_slot = Rc::clone(&text_slot);
+        move || {
+            let button_slot = Rc::clone(&button_slot);
+            let text_slot = Rc::clone(&text_slot);
+            Column(
+                Modifier::padding(16.0)
+                    .then(Modifier::rounded_corners(12.0))
+                    .then(Modifier::background(Color(0.1, 0.1, 0.15, 0.6)))
+                    .then(Modifier::padding(16.0)),
+                ColumnSpec::default(),
+                move || {
+                    let button_slot = Rc::clone(&button_slot);
+                    let text_slot = Rc::clone(&text_slot);
+                    let button_id = Button(
+                        Modifier::rounded_corners(16.0).then(Modifier::padding(12.0)),
+                        || {},
+                        {
+                            let text_slot = Rc::clone(&text_slot);
+                            move || {
+                                let text_id = Text("Fetch async value", Modifier::padding(6.0));
+                                *text_slot.borrow_mut() = Some(text_id);
+                            }
+                        },
+                    );
+                    *button_slot.borrow_mut() = Some(button_id);
+                },
+            );
+        }
+    });
+
+    let button_id = button_slot.borrow().expect("button captured");
+    let text_id = text_slot.borrow().expect("text captured");
+    let root = composition.root().expect("composition root");
+    let layout_tree = composition
+        .applier_mut()
+        .compute_layout(
+            root,
+            Size {
+                width: 420.0,
+                height: 320.0,
+            },
+        )
+        .expect("compute layout");
+
+    let button_layout = find_layout(layout_tree.root(), button_id).expect("button layout");
+    let text_layout = find_layout(layout_tree.root(), text_id).expect("text layout");
+    let button_right = button_layout.rect.x + button_layout.rect.width;
+    let button_bottom = button_layout.rect.y + button_layout.rect.height;
+
+    assert!(text_layout.rect.x >= button_layout.rect.x - 1e-3);
+    assert!(text_layout.rect.y >= button_layout.rect.y - 1e-3);
+    assert!(text_layout.rect.x + text_layout.rect.width <= button_right + 1e-3);
+    assert!(text_layout.rect.y + text_layout.rect.height <= button_bottom + 1e-3);
 }
 
 fn measure_subcompose_node(

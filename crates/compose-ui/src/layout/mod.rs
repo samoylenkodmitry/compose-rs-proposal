@@ -241,22 +241,8 @@ impl<'a> LayoutBuilder<'a> {
         let mut width = measure_result.size.width + padding.horizontal_sum();
         let mut height = measure_result.size.height + padding.vertical_sum();
 
-        width = resolve_dimension(
-            width,
-            props.width(),
-            props.min_width(),
-            props.max_width(),
-            constraints.min_width,
-            constraints.max_width,
-        );
-        height = resolve_dimension(
-            height,
-            props.height(),
-            props.min_height(),
-            props.max_height(),
-            constraints.min_height,
-            constraints.max_height,
-        );
+        width = clamp_dimension(width, constraints.min_width, constraints.max_width);
+        height = clamp_dimension(height, constraints.min_height, constraints.max_height);
 
         let mut children = Vec::new();
         for placement in measure_result.placements {
@@ -328,22 +314,8 @@ impl<'a> LayoutBuilder<'a> {
         let mut width = policy_result.size.width + padding.horizontal_sum();
         let mut height = policy_result.size.height + padding.vertical_sum();
 
-        width = resolve_dimension(
-            width,
-            props.width(),
-            props.min_width(),
-            props.max_width(),
-            constraints.min_width,
-            constraints.max_width,
-        );
-        height = resolve_dimension(
-            height,
-            props.height(),
-            props.min_height(),
-            props.max_height(),
-            constraints.min_height,
-            constraints.max_height,
-        );
+        width = clamp_dimension(width, constraints.min_width, constraints.max_width);
+        height = clamp_dimension(height, constraints.min_height, constraints.max_height);
 
         let mut placement_map: HashMap<NodeId, Point> = policy_result
             .placements
