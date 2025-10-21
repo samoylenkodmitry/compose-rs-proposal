@@ -15,7 +15,7 @@ use crate::modifier::{
 };
 use crate::primitives::{ButtonNode, LayoutNode, SpacerNode, TextNode};
 use crate::subcompose_layout::SubcomposeLayoutNode;
-use compose_ui_layout::{Constraints, IntrinsicSize};
+use compose_ui_layout::{Constraints, IntrinsicSize, Placement};
 
 /// Result of running layout for a Compose tree.
 #[derive(Debug, Clone)]
@@ -339,27 +339,26 @@ impl<'a> LayoutBuilder<'a> {
             constraints.max_height,
         );
 
-        let mut placement_map: HashMap<NodeId, Point> = policy_result
+        let mut placement_map: HashMap<NodeId, Placement> = policy_result
             .placements
             .into_iter()
-            .map(|placement| {
-                (
-                    placement.node_id,
-                    Point {
-                        x: placement.x,
-                        y: placement.y,
-                    },
-                )
-            })
+            .map(|placement| (placement.node_id, placement))
             .collect();
 
         let mut children = Vec::new();
         for child_id in node.children.iter().copied() {
             if let Some(record) = records.remove(&child_id) {
                 if let Some(measured) = record.measured.borrow_mut().take() {
-                    let base_position = placement_map
-                        .remove(&child_id)
-                        .or_else(|| record.last_position.borrow().clone())
+                    let base_position = record
+                        .last_position
+                        .borrow()
+                        .clone()
+                        .or_else(|| {
+                            placement_map.remove(&child_id).map(|placement| Point {
+                                x: placement.x,
+                                y: placement.y,
+                            })
+                        })
                         .unwrap_or(Point { x: 0.0, y: 0.0 });
                     let position = Point {
                         x: padding.left + base_position.x,

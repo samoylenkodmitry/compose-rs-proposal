@@ -23,6 +23,7 @@ impl MeasurePolicy for VerticalStackPolicy {
             let placeable = measurable.measure(constraints);
             width = width.max(placeable.width());
             let height = placeable.height();
+            placeable.place(0.0, y);
             placements.push(Placement::new(placeable.node_id(), 0.0, y, 0));
             y += height;
         }
