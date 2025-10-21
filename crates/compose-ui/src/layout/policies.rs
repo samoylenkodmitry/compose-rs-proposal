@@ -128,44 +128,85 @@ impl MeasurePolicy for ColumnMeasurePolicy {
         measurables: &[Box<dyn Measurable>],
         constraints: Constraints,
     ) -> MeasureResult {
-        let child_constraints = Constraints {
-            min_width: constraints.min_width,
-            max_width: constraints.max_width,
-            min_height: 0.0,
-            max_height: constraints.max_height,
-        };
-
-        let mut placeables = Vec::with_capacity(measurables.len());
-        let mut total_height = 0.0_f32;
-        let mut max_width = 0.0_f32;
-
-        for measurable in measurables {
-            let placeable = measurable.measure(child_constraints);
-            total_height += placeable.height();
-            max_width = max_width.max(placeable.width());
-            placeables.push(placeable);
-        }
-
+        let use_manual_spacing =
+            matches!(self.vertical_arrangement, LinearArrangement::SpacedBy(_));
         let spacing = match self.vertical_arrangement {
             LinearArrangement::SpacedBy(value) => value.max(0.0),
             _ => 0.0,
         };
-        let total_spacing = if placeables.len() > 1 {
-            spacing * (placeables.len() - 1) as f32
+
+        let mut placeables = Vec::with_capacity(measurables.len());
+        let mut child_heights = Vec::with_capacity(measurables.len());
+        let mut actual_spacings: Vec<f32> = Vec::new();
+        let mut max_width = 0.0_f32;
+        let mut remaining_height = constraints.max_height;
+        let has_height_limit = remaining_height.is_finite();
+
+        for (index, measurable) in measurables.iter().enumerate() {
+            let mut child_constraints = Constraints {
+                min_width: constraints.min_width,
+                max_width: constraints.max_width,
+                min_height: 0.0,
+                max_height: constraints.max_height,
+            };
+
+            if has_height_limit {
+                let remaining_children = measurables.len().saturating_sub(index + 1);
+                let mut reserved_spacing = spacing * remaining_children as f32;
+                if reserved_spacing.is_finite() {
+                    reserved_spacing = reserved_spacing.min(remaining_height);
+                } else {
+                    reserved_spacing = remaining_height;
+                }
+                child_constraints.max_height = (remaining_height - reserved_spacing).max(0.0);
+            }
+
+            let placeable = measurable.measure(child_constraints);
+            let child_height = placeable.height();
+            let child_width = placeable.width();
+
+            child_heights.push(child_height);
+            max_width = max_width.max(child_width);
+            placeables.push(placeable);
+
+            if has_height_limit {
+                remaining_height = (remaining_height - child_height).max(0.0);
+                if index + 1 < measurables.len() && use_manual_spacing {
+                    let spacing_used = spacing.min(remaining_height);
+                    actual_spacings.push(spacing_used);
+                    remaining_height = (remaining_height - spacing_used).max(0.0);
+                }
+            } else if use_manual_spacing && index + 1 < measurables.len() {
+                actual_spacings.push(spacing);
+            }
+        }
+
+        let spacing_total: f32 = if use_manual_spacing {
+            actual_spacings.iter().sum()
         } else {
             0.0
         };
 
-        total_height += total_spacing;
+        let total_height = child_heights.iter().copied().sum::<f32>() + spacing_total;
 
         let width = max_width.clamp(constraints.min_width, constraints.max_width);
         let height = total_height.clamp(constraints.min_height, constraints.max_height);
 
         // Arrange children vertically
-        let child_heights: Vec<f32> = placeables.iter().map(|p| p.height()).collect();
         let mut positions = vec![0.0; child_heights.len()];
-        self.vertical_arrangement
-            .arrange(height, &child_heights, &mut positions);
+        if use_manual_spacing {
+            let mut cursor = 0.0_f32;
+            for (index, position) in positions.iter_mut().enumerate() {
+                *position = cursor;
+                cursor += child_heights[index];
+                if index < actual_spacings.len() {
+                    cursor += actual_spacings[index];
+                }
+            }
+        } else {
+            self.vertical_arrangement
+                .arrange(height, &child_heights, &mut positions);
+        }
 
         let mut placements = Vec::with_capacity(placeables.len());
         for (placeable, y) in placeables.into_iter().zip(positions.into_iter()) {
@@ -259,44 +300,85 @@ impl MeasurePolicy for RowMeasurePolicy {
         measurables: &[Box<dyn Measurable>],
         constraints: Constraints,
     ) -> MeasureResult {
-        let child_constraints = Constraints {
-            min_width: 0.0,
-            max_width: constraints.max_width,
-            min_height: constraints.min_height,
-            max_height: constraints.max_height,
-        };
-
-        let mut placeables = Vec::with_capacity(measurables.len());
-        let mut total_width = 0.0_f32;
-        let mut max_height = 0.0_f32;
-
-        for measurable in measurables {
-            let placeable = measurable.measure(child_constraints);
-            total_width += placeable.width();
-            max_height = max_height.max(placeable.height());
-            placeables.push(placeable);
-        }
-
+        let use_manual_spacing =
+            matches!(self.horizontal_arrangement, LinearArrangement::SpacedBy(_));
         let spacing = match self.horizontal_arrangement {
             LinearArrangement::SpacedBy(value) => value.max(0.0),
             _ => 0.0,
         };
-        let total_spacing = if placeables.len() > 1 {
-            spacing * (placeables.len() - 1) as f32
+
+        let mut placeables = Vec::with_capacity(measurables.len());
+        let mut child_widths = Vec::with_capacity(measurables.len());
+        let mut actual_spacings: Vec<f32> = Vec::new();
+        let mut max_height = 0.0_f32;
+        let mut remaining_width = constraints.max_width;
+        let has_width_limit = remaining_width.is_finite();
+
+        for (index, measurable) in measurables.iter().enumerate() {
+            let mut child_constraints = Constraints {
+                min_width: 0.0,
+                max_width: constraints.max_width,
+                min_height: constraints.min_height,
+                max_height: constraints.max_height,
+            };
+
+            if has_width_limit {
+                let remaining_children = measurables.len().saturating_sub(index + 1);
+                let mut reserved_spacing = spacing * remaining_children as f32;
+                if reserved_spacing.is_finite() {
+                    reserved_spacing = reserved_spacing.min(remaining_width);
+                } else {
+                    reserved_spacing = remaining_width;
+                }
+                child_constraints.max_width = (remaining_width - reserved_spacing).max(0.0);
+            }
+
+            let placeable = measurable.measure(child_constraints);
+            let child_width = placeable.width();
+            let child_height = placeable.height();
+
+            child_widths.push(child_width);
+            max_height = max_height.max(child_height);
+            placeables.push(placeable);
+
+            if has_width_limit {
+                remaining_width = (remaining_width - child_width).max(0.0);
+                if index + 1 < measurables.len() && use_manual_spacing {
+                    let spacing_used = spacing.min(remaining_width);
+                    actual_spacings.push(spacing_used);
+                    remaining_width = (remaining_width - spacing_used).max(0.0);
+                }
+            } else if use_manual_spacing && index + 1 < measurables.len() {
+                actual_spacings.push(spacing);
+            }
+        }
+
+        let spacing_total: f32 = if use_manual_spacing {
+            actual_spacings.iter().sum()
         } else {
             0.0
         };
 
-        total_width += total_spacing;
+        let total_width = child_widths.iter().copied().sum::<f32>() + spacing_total;
 
         let width = total_width.clamp(constraints.min_width, constraints.max_width);
         let height = max_height.clamp(constraints.min_height, constraints.max_height);
 
         // Arrange children horizontally
-        let child_widths: Vec<f32> = placeables.iter().map(|p| p.width()).collect();
         let mut positions = vec![0.0; child_widths.len()];
-        self.horizontal_arrangement
-            .arrange(width, &child_widths, &mut positions);
+        if use_manual_spacing {
+            let mut cursor = 0.0_f32;
+            for (index, position) in positions.iter_mut().enumerate() {
+                *position = cursor;
+                cursor += child_widths[index];
+                if index < actual_spacings.len() {
+                    cursor += actual_spacings[index];
+                }
+            }
+        } else {
+            self.horizontal_arrangement
+                .arrange(width, &child_widths, &mut positions);
+        }
 
         let mut placements = Vec::with_capacity(placeables.len());
         for (placeable, x) in placeables.into_iter().zip(positions.into_iter()) {

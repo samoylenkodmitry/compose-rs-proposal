@@ -361,10 +361,14 @@ impl<'a> LayoutBuilder<'a> {
                         .remove(&child_id)
                         .or_else(|| record.last_position.borrow().clone())
                         .unwrap_or(Point { x: 0.0, y: 0.0 });
-                    let position = Point {
+                    let mut position = Point {
                         x: padding.left + base_position.x,
                         y: padding.top + base_position.y,
                     };
+                    let max_x = (width - measured.size.width).max(0.0);
+                    let max_y = (height - measured.size.height).max(0.0);
+                    position.x = position.x.clamp(0.0, max_x);
+                    position.y = position.y.clamp(0.0, max_y);
                     children.push(MeasuredChild {
                         node: measured,
                         offset: position,
