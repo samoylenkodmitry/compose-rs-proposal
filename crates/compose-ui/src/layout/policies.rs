@@ -103,275 +103,45 @@ impl MeasurePolicy for BoxMeasurePolicy {
     }
 }
 
-/// MeasurePolicy for Column layout - arranges children vertically.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ColumnMeasurePolicy {
-    pub vertical_arrangement: LinearArrangement,
-    pub horizontal_alignment: HorizontalAlignment,
-}
-
-impl ColumnMeasurePolicy {
-    pub fn new(
-        vertical_arrangement: LinearArrangement,
-        horizontal_alignment: HorizontalAlignment,
-    ) -> Self {
-        Self {
-            vertical_arrangement,
-            horizontal_alignment,
-        }
-    }
-}
-
-impl MeasurePolicy for ColumnMeasurePolicy {
-    fn measure(
-        &self,
-        measurables: &[Box<dyn Measurable>],
-        constraints: Constraints,
-    ) -> MeasureResult {
-        let child_constraints = Constraints {
-            min_width: constraints.min_width,
-            max_width: constraints.max_width,
-            min_height: 0.0,
-            max_height: constraints.max_height,
-        };
-
-        let mut placeables = Vec::with_capacity(measurables.len());
-        let mut total_height = 0.0_f32;
-        let mut max_width = 0.0_f32;
-
-        for measurable in measurables {
-            let placeable = measurable.measure(child_constraints);
-            total_height += placeable.height();
-            max_width = max_width.max(placeable.width());
-            placeables.push(placeable);
-        }
-
-        let spacing = match self.vertical_arrangement {
-            LinearArrangement::SpacedBy(value) => value.max(0.0),
-            _ => 0.0,
-        };
-        let total_spacing = if placeables.len() > 1 {
-            spacing * (placeables.len() - 1) as f32
-        } else {
-            0.0
-        };
-
-        total_height += total_spacing;
-
-        let width = max_width.clamp(constraints.min_width, constraints.max_width);
-        let height = total_height.clamp(constraints.min_height, constraints.max_height);
-
-        // Arrange children vertically
-        let child_heights: Vec<f32> = placeables.iter().map(|p| p.height()).collect();
-        let mut positions = vec![0.0; child_heights.len()];
-        self.vertical_arrangement
-            .arrange(height, &child_heights, &mut positions);
-
-        let mut placements = Vec::with_capacity(placeables.len());
-        for (placeable, y) in placeables.into_iter().zip(positions.into_iter()) {
-            let child_width = placeable.width();
-            let x = match self.horizontal_alignment {
-                HorizontalAlignment::Start => 0.0,
-                HorizontalAlignment::CenterHorizontally => ((width - child_width) / 2.0).max(0.0),
-                HorizontalAlignment::End => (width - child_width).max(0.0),
-            };
-
-            placeable.place(x, y);
-            placements.push(Placement::new(placeable.node_id(), x, y, 0));
-        }
-
-        MeasureResult::new(crate::modifier::Size { width, height }, placements)
-    }
-
-    fn min_intrinsic_width(&self, measurables: &[Box<dyn Measurable>], height: f32) -> f32 {
-        measurables
-            .iter()
-            .map(|m| m.min_intrinsic_width(height))
-            .fold(0.0, f32::max)
-    }
-
-    fn max_intrinsic_width(&self, measurables: &[Box<dyn Measurable>], height: f32) -> f32 {
-        measurables
-            .iter()
-            .map(|m| m.max_intrinsic_width(height))
-            .fold(0.0, f32::max)
-    }
-
-    fn min_intrinsic_height(&self, measurables: &[Box<dyn Measurable>], width: f32) -> f32 {
-        let spacing = match self.vertical_arrangement {
-            LinearArrangement::SpacedBy(value) => value.max(0.0),
-            _ => 0.0,
-        };
-        let total_spacing = if measurables.len() > 1 {
-            spacing * (measurables.len() - 1) as f32
-        } else {
-            0.0
-        };
-
-        measurables
-            .iter()
-            .map(|m| m.min_intrinsic_height(width))
-            .sum::<f32>()
-            + total_spacing
-    }
-
-    fn max_intrinsic_height(&self, measurables: &[Box<dyn Measurable>], width: f32) -> f32 {
-        let spacing = match self.vertical_arrangement {
-            LinearArrangement::SpacedBy(value) => value.max(0.0),
-            _ => 0.0,
-        };
-        let total_spacing = if measurables.len() > 1 {
-            spacing * (measurables.len() - 1) as f32
-        } else {
-            0.0
-        };
-
-        measurables
-            .iter()
-            .map(|m| m.max_intrinsic_height(width))
-            .sum::<f32>()
-            + total_spacing
-    }
-}
-
-/// MeasurePolicy for Row layout - arranges children horizontally.
-#[derive(Clone, Debug, PartialEq)]
-pub struct RowMeasurePolicy {
-    pub horizontal_arrangement: LinearArrangement,
-    pub vertical_alignment: VerticalAlignment,
-}
-
-impl RowMeasurePolicy {
-    pub fn new(
-        horizontal_arrangement: LinearArrangement,
-        vertical_alignment: VerticalAlignment,
-    ) -> Self {
-        Self {
-            horizontal_arrangement,
-            vertical_alignment,
-        }
-    }
-}
-
-impl MeasurePolicy for RowMeasurePolicy {
-    fn measure(
-        &self,
-        measurables: &[Box<dyn Measurable>],
-        constraints: Constraints,
-    ) -> MeasureResult {
-        let child_constraints = Constraints {
-            min_width: 0.0,
-            max_width: constraints.max_width,
-            min_height: constraints.min_height,
-            max_height: constraints.max_height,
-        };
-
-        let mut placeables = Vec::with_capacity(measurables.len());
-        let mut total_width = 0.0_f32;
-        let mut max_height = 0.0_f32;
-
-        for measurable in measurables {
-            let placeable = measurable.measure(child_constraints);
-            total_width += placeable.width();
-            max_height = max_height.max(placeable.height());
-            placeables.push(placeable);
-        }
-
-        let spacing = match self.horizontal_arrangement {
-            LinearArrangement::SpacedBy(value) => value.max(0.0),
-            _ => 0.0,
-        };
-        let total_spacing = if placeables.len() > 1 {
-            spacing * (placeables.len() - 1) as f32
-        } else {
-            0.0
-        };
-
-        total_width += total_spacing;
-
-        let width = total_width.clamp(constraints.min_width, constraints.max_width);
-        let height = max_height.clamp(constraints.min_height, constraints.max_height);
-
-        // Arrange children horizontally
-        let child_widths: Vec<f32> = placeables.iter().map(|p| p.width()).collect();
-        let mut positions = vec![0.0; child_widths.len()];
-        self.horizontal_arrangement
-            .arrange(width, &child_widths, &mut positions);
-
-        let mut placements = Vec::with_capacity(placeables.len());
-        for (placeable, x) in placeables.into_iter().zip(positions.into_iter()) {
-            let child_height = placeable.height();
-            let y = match self.vertical_alignment {
-                VerticalAlignment::Top => 0.0,
-                VerticalAlignment::CenterVertically => ((height - child_height) / 2.0).max(0.0),
-                VerticalAlignment::Bottom => (height - child_height).max(0.0),
-            };
-
-            placeable.place(x, y);
-            placements.push(Placement::new(placeable.node_id(), x, y, 0));
-        }
-
-        MeasureResult::new(crate::modifier::Size { width, height }, placements)
-    }
-
-    fn min_intrinsic_width(&self, measurables: &[Box<dyn Measurable>], height: f32) -> f32 {
-        let spacing = match self.horizontal_arrangement {
-            LinearArrangement::SpacedBy(value) => value.max(0.0),
-            _ => 0.0,
-        };
-        let total_spacing = if measurables.len() > 1 {
-            spacing * (measurables.len() - 1) as f32
-        } else {
-            0.0
-        };
-
-        measurables
-            .iter()
-            .map(|m| m.min_intrinsic_width(height))
-            .sum::<f32>()
-            + total_spacing
-    }
-
-    fn max_intrinsic_width(&self, measurables: &[Box<dyn Measurable>], height: f32) -> f32 {
-        let spacing = match self.horizontal_arrangement {
-            LinearArrangement::SpacedBy(value) => value.max(0.0),
-            _ => 0.0,
-        };
-        let total_spacing = if measurables.len() > 1 {
-            spacing * (measurables.len() - 1) as f32
-        } else {
-            0.0
-        };
-
-        measurables
-            .iter()
-            .map(|m| m.max_intrinsic_width(height))
-            .sum::<f32>()
-            + total_spacing
-    }
-
-    fn min_intrinsic_height(&self, measurables: &[Box<dyn Measurable>], width: f32) -> f32 {
-        measurables
-            .iter()
-            .map(|m| m.min_intrinsic_height(width))
-            .fold(0.0, f32::max)
-    }
-
-    fn max_intrinsic_height(&self, measurables: &[Box<dyn Measurable>], width: f32) -> f32 {
-        measurables
-            .iter()
-            .map(|m| m.max_intrinsic_height(width))
-            .fold(0.0, f32::max)
-    }
-}
+// Note: RowMeasurePolicy and ColumnMeasurePolicy have been replaced by FlexMeasurePolicy.
+// See FlexMeasurePolicy below for the unified flex layout implementation.
 
 /// Unified Flex layout policy that powers both Row and Column.
 ///
 /// This policy implements Jetpack Compose's flex layout semantics:
-/// - Measures children with proper loose constraints
+/// - Measures children with proper loose constraints (min = 0 on both axes)
 /// - Supports weighted distribution of remaining space
 /// - Handles bounded/unbounded main axis correctly
 /// - Implements correct intrinsics for both axes
+///
+/// ## Overflow Behavior
+///
+/// Like Jetpack Compose, this policy **allows children to overflow** their container bounds:
+/// - Children can be positioned outside the parent's measured size
+/// - Overflowing content is rendered (unless clipped by a modifier)
+/// - When content overflows, arrangement switches to `Start` to avoid negative spacing
+///
+/// Example: A Row with 300px of content in a 200px container will:
+/// 1. Measure children at their natural sizes
+/// 2. Detect overflow (300px > 200px)
+/// 3. Switch to Start arrangement (pack children at the start)
+/// 4. Position last children beyond the 200px boundary
+///
+/// To prevent overflow:
+/// - Use weights for flexible sizing: `.weight(1.0, true)`
+/// - Use `fillMaxWidth()`/`fillMaxHeight()` modifiers
+/// - Design UI to fit within available space
+/// - Add a clip modifier (when implemented) to hide overflowing content
+///
+/// ## Weighted Children
+///
+/// When the main axis is bounded and children have weights:
+/// 1. Fixed children (no weight) are measured first
+/// 2. Remaining space is distributed proportionally to weights
+/// 3. Each weighted child gets: `remaining * (weight / total_weight)`
+/// 4. If `fill=true`, child gets tight constraints; if `fill=false`, loose constraints
+///
+/// When the main axis is unbounded, weights are ignored (all children wrap content).
 #[derive(Clone, Debug, PartialEq)]
 pub struct FlexMeasurePolicy {
     /// Main axis direction (Horizontal for Row, Vertical for Column)

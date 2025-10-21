@@ -389,10 +389,10 @@ impl<'a> LayoutBuilder<'a> {
         constraints: Constraints,
     ) -> Result<MeasuredNode, NodeError> {
         // Button is just a layout with column-like behavior
-        use crate::layout::policies::ColumnMeasurePolicy;
+        use crate::layout::policies::FlexMeasurePolicy;
         let mut layout = LayoutNode::new(
             node.modifier.clone(),
-            Rc::new(ColumnMeasurePolicy::new(
+            Rc::new(FlexMeasurePolicy::column(
                 LinearArrangement::Start,
                 HorizontalAlignment::Start,
             )),
