@@ -1,0 +1,19 @@
+[package]
+name = "compose-app"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["desktop", "renderer-pixels"]
+desktop = ["compose-platform-desktop-winit", "dep:winit"]
+renderer-pixels = ["compose-render-pixels", "dep:pixels"]
+renderer-wgpu = ["compose-render-wgpu"]
+
+[dependencies]
+compose-app-shell = { path = "../compose-app-shell" }
+compose-platform-desktop-winit = { path = "../compose-platform/desktop-winit", optional = true }
+compose-render-pixels = { path = "../compose-render/pixels", optional = true }
+compose-render-wgpu = { path = "../compose-render/wgpu", optional = true }
+pixels = { version = "0.13", optional = true }
+winit = { version = "0.28", optional = true }
+log = "0.4"
