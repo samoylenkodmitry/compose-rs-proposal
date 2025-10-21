@@ -24,10 +24,10 @@ fn main() {
     println!("Press 'D' key to dump debug info about what's on screen");
     println!();
 
-    compose_app::composeApp!(
+    compose_app::ComposeApp!(
         options: ComposeAppOptions::default()
-            .with_title("Compose Counter")
-            .with_size(800, 600),
+            .WithTitle("Compose Counter")
+            .WithSize(800, 600),
         {
             combined_app();
         }

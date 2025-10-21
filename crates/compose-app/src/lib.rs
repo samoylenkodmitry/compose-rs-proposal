@@ -25,25 +25,49 @@ pub struct ComposeAppBuilder {
 
 impl ComposeAppBuilder {
     /// Creates a new builder with default configuration.
-    pub fn new() -> Self {
+    #[allow(non_snake_case)]
+    pub fn New() -> Self {
         Self::default()
     }
 
     /// Sets the window title for the application.
-    pub fn title(mut self, title: impl Into<String>) -> Self {
+    #[allow(non_snake_case)]
+    pub fn Title(mut self, title: impl Into<String>) -> Self {
         self.options.title = title.into();
         self
     }
 
     /// Sets the initial logical size of the application window.
-    pub fn size(mut self, width: u32, height: u32) -> Self {
+    #[allow(non_snake_case)]
+    pub fn Size(mut self, width: u32, height: u32) -> Self {
         self.options.initial_size = (width, height);
         self
     }
 
     /// Runs the application using the configured options and provided Compose content.
-    pub fn run(self, content: impl FnMut() + 'static) -> ! {
+    #[allow(non_snake_case)]
+    pub fn Run(self, content: impl FnMut() + 'static) -> ! {
         run_app(self.options, content)
+    }
+
+    #[doc(hidden)]
+    pub fn new() -> Self {
+        Self::New()
+    }
+
+    #[doc(hidden)]
+    pub fn title(self, title: impl Into<String>) -> Self {
+        self.Title(title)
+    }
+
+    #[doc(hidden)]
+    pub fn size(self, width: u32, height: u32) -> Self {
+        self.Size(width, height)
+    }
+
+    #[doc(hidden)]
+    pub fn run(self, content: impl FnMut() + 'static) -> ! {
+        self.Run(content)
     }
 }
 
@@ -65,51 +89,84 @@ impl Default for ComposeAppOptions {
 
 impl ComposeAppOptions {
     /// Sets the title used for the application window.
-    pub fn with_title(mut self, title: impl Into<String>) -> Self {
+    #[allow(non_snake_case)]
+    pub fn WithTitle(mut self, title: impl Into<String>) -> Self {
         self.title = title.into();
         self
     }
 
     /// Sets the initial window size in logical pixels.
-    pub fn with_size(mut self, width: u32, height: u32) -> Self {
+    #[allow(non_snake_case)]
+    pub fn WithSize(mut self, width: u32, height: u32) -> Self {
         self.initial_size = (width, height);
         self
+    }
+
+    #[doc(hidden)]
+    pub fn with_title(self, title: impl Into<String>) -> Self {
+        self.WithTitle(title)
+    }
+
+    #[doc(hidden)]
+    pub fn with_size(self, width: u32, height: u32) -> Self {
+        self.WithSize(width, height)
     }
 }
 
 /// Launches a Compose application using the default options.
-pub fn compose_app(content: impl FnMut() + 'static) -> ! {
-    ComposeAppBuilder::default().run(content)
+#[allow(non_snake_case)]
+pub fn ComposeApp(content: impl FnMut() + 'static) -> ! {
+    ComposeAppBuilder::New().Run(content)
 }
 
 /// Launches a Compose application using the provided options.
-pub fn compose_app_with_options(options: ComposeAppOptions, content: impl FnMut() + 'static) -> ! {
+#[allow(non_snake_case)]
+pub fn ComposeAppWithOptions(options: ComposeAppOptions, content: impl FnMut() + 'static) -> ! {
     run_app(options, content)
 }
 
 /// Alias with Kotlin-inspired casing for use in DSL-like code.
 #[allow(non_snake_case)]
+#[doc(hidden)]
 pub fn composeApp(content: impl FnMut() + 'static) -> ! {
-    compose_app(content)
+    ComposeApp(content)
 }
 
-/// Macro helper that allows calling [`compose_app`] using a block without a closure wrapper.
+#[doc(hidden)]
+pub fn compose_app(content: impl FnMut() + 'static) -> ! {
+    ComposeApp(content)
+}
+
+#[doc(hidden)]
+pub fn compose_app_with_options(options: ComposeAppOptions, content: impl FnMut() + 'static) -> ! {
+    ComposeAppWithOptions(options, content)
+}
+
+/// Macro helper that allows calling [`ComposeApp`] using a block without a closure wrapper.
 #[macro_export]
-macro_rules! composeApp {
+macro_rules! ComposeApp {
     (options: $options:expr, { $($body:tt)* }) => {
-        $crate::compose_app_with_options($options, || { $($body)* })
+        $crate::ComposeAppWithOptions($options, || { $($body)* })
     };
     (options: $options:expr, $body:block) => {
-        $crate::compose_app_with_options($options, || $body)
+        $crate::ComposeAppWithOptions($options, || $body)
     };
     ({ $($body:tt)* }) => {
-        $crate::compose_app(|| { $($body)* })
+        $crate::ComposeApp(|| { $($body)* })
     };
     ($body:block) => {
-        $crate::compose_app(|| $body)
+        $crate::ComposeApp(|| $body)
     };
     ($($body:tt)*) => {
-        $crate::compose_app(|| { $($body)* })
+        $crate::ComposeApp(|| { $($body)* })
+    };
+}
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! composeApp {
+    ($($body:tt)*) => {
+        $crate::ComposeApp!($($body)*)
     };
 }
 
@@ -118,7 +175,7 @@ fn run_app(options: ComposeAppOptions, content: impl FnMut() + 'static) -> ! {
 }
 
 fn run_pixels_app(options: &ComposeAppOptions, content: impl FnMut() + 'static) -> ! {
-    let event_loop = EventLoopBuilder::<()>::with_user_event().build();
+    let event_loop = EventLoopBuilder::new().build();
     let frame_proxy = event_loop.create_proxy();
 
     let initial_width = options.initial_size.0;
@@ -135,7 +192,7 @@ fn run_pixels_app(options: &ComposeAppOptions, content: impl FnMut() + 'static) 
 
     let size = window.inner_size();
     let surface_texture = SurfaceTexture::new(size.width, size.height, &window);
-    let mut pixels = Pixels::new(size.width, size.height, surface_texture)
+    let mut pixels = Pixels::new(initial_width, initial_height, surface_texture)
         .expect("failed to create pixel buffer");
 
     let renderer = PixelsRenderer::new();
@@ -150,7 +207,7 @@ fn run_pixels_app(options: &ComposeAppOptions, content: impl FnMut() + 'static) 
         }
     });
 
-    app.set_buffer_size(size.width, size.height);
+    app.set_buffer_size(initial_width, initial_height);
     app.set_viewport(size.width as f32, size.height as f32);
 
     event_loop.run(move |event, _, control_flow| {
