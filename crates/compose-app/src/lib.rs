@@ -198,7 +198,11 @@ fn run_pixels_app(options: &ComposeAppOptions, content: impl FnMut() + 'static) 
     let renderer = PixelsRenderer::new();
     let mut app = AppShell::new(renderer, default_root_key(), content);
     let mut platform = DesktopWinitPlatform::default();
-    platform.set_scale_factor(window.scale_factor());
+    // Defer updating the platform scale factor until winit notifies us of a
+    // change. Using the window's current scale factor here causes pointer
+    // coordinates to be scaled twice on high-DPI setups, which breaks
+    // hit-testing. The `ScaleFactorChanged` event below keeps the platform in
+    // sync instead.
 
     app.set_frame_waker({
         let proxy = frame_proxy.clone();
