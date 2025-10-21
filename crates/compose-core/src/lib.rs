@@ -1352,6 +1352,40 @@ impl<'a> Composer<'a> {
         result
     }
 
+    pub fn subcompose_in<R>(
+        &mut self,
+        slots: &mut SlotTable,
+        root: Option<NodeId>,
+        f: impl FnOnce(&mut Composer<'_>) -> R,
+    ) -> Result<R, NodeError> {
+        let runtime_handle = self.runtime_handle();
+        let applier_ptr = self.applier as *mut dyn Applier;
+        let (result, mut commands, side_effects) = unsafe {
+            let applier_ref = &mut *applier_ptr;
+            let mut inner = Composer::new(slots, applier_ref, runtime_handle.clone(), root);
+            inner.set_phase(self.phase());
+            inner.local_stack = self.local_stack.clone();
+            inner.install(|composer| {
+                let out = f(composer);
+                let cmds = composer.take_commands();
+                let effects = composer.take_side_effects();
+                (out, cmds, effects)
+            })
+        };
+        for mut command in commands.drain(..) {
+            command(self.applier)?;
+        }
+        for mut update in runtime_handle.take_updates() {
+            update(self.applier)?;
+        }
+        runtime_handle.drain_ui();
+        for effect in side_effects {
+            effect();
+        }
+        runtime_handle.drain_ui();
+        Ok(result)
+    }
+
     pub fn with_group<R>(&mut self, key: Key, f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
         let index = self.slots.start(key);
         let scope_ref = self

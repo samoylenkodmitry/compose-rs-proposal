@@ -77,7 +77,8 @@ fn measure_subcompose_node(
                 let applier_ref: &mut MemoryApplier = &mut *applier_ptr;
                 let mut composer = Composer::new(slots, applier_ref, handle.clone(), Some(root));
                 composer.enter_phase(Phase::Measure);
-                node.measure(&mut composer, constraints);
+                node.measure(&mut composer, root, constraints)
+                    .expect("measure subcompose node");
             })
             .expect("node available");
     }
