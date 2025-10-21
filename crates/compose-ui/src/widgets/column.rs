@@ -4,7 +4,7 @@
 
 use super::layout::Layout;
 use crate::composable;
-use crate::layout::policies::ColumnMeasurePolicy;
+use crate::layout::policies::FlexMeasurePolicy;
 use crate::modifier::Modifier;
 use compose_core::NodeId;
 use compose_ui_layout::{HorizontalAlignment, LinearArrangement};
@@ -46,6 +46,6 @@ pub fn Column<F>(modifier: Modifier, spec: ColumnSpec, content: F) -> NodeId
 where
     F: FnMut() + 'static,
 {
-    let policy = ColumnMeasurePolicy::new(spec.vertical_arrangement, spec.horizontal_alignment);
+    let policy = FlexMeasurePolicy::column(spec.vertical_arrangement, spec.horizontal_alignment);
     Layout(modifier, policy, content)
 }

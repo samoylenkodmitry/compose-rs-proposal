@@ -4,6 +4,28 @@ use crate::constraints::Constraints;
 use compose_core::NodeId;
 use compose_ui_graphics::Size;
 
+/// Parent data for flex layouts (Row/Column weights and alignment).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FlexParentData {
+    /// Weight for distributing remaining space in the main axis.
+    /// If > 0.0, this child participates in weighted distribution.
+    pub weight: f32,
+
+    /// Whether to fill the allocated space when using weight.
+    /// If true, child gets tight constraints; if false, child gets loose constraints.
+    pub fill: bool,
+}
+
+impl FlexParentData {
+    pub fn new(weight: f32, fill: bool) -> Self {
+        Self { weight, fill }
+    }
+
+    pub fn has_weight(&self) -> bool {
+        self.weight > 0.0
+    }
+}
+
 /// Object capable of measuring a layout child and exposing intrinsic sizes.
 pub trait Measurable {
     /// Measures the child with the provided constraints, returning a [`Placeable`].
@@ -20,6 +42,12 @@ pub trait Measurable {
 
     /// Returns the maximum height achievable for the given width.
     fn max_intrinsic_height(&self, width: f32) -> f32;
+
+    /// Returns flex parent data if this measurable has weight/fill properties.
+    /// Default implementation returns None (no weight).
+    fn flex_parent_data(&self) -> Option<FlexParentData> {
+        None
+    }
 }
 
 /// Result of running a measurement pass for a single child.
