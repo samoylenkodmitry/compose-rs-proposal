@@ -337,6 +337,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "compose-app"
+version = "0.1.0"
+dependencies = [
+ "compose-app-shell",
+ "compose-platform-desktop-winit",
+ "compose-render-pixels",
+ "compose-render-wgpu",
+ "log",
+ "pixels",
+ "winit",
+]
+
+[[package]]
 name = "compose-app-shell"
 version = "0.1.0"
 dependencies = [
@@ -598,20 +611,13 @@ name = "desktop-app"
 version = "0.1.0"
 dependencies = [
  "compose-animation",
- "compose-app-shell",
+ "compose-app",
  "compose-core",
  "compose-foundation",
- "compose-platform-desktop-winit",
- "compose-render-pixels",
- "compose-render-wgpu",
- "compose-runtime-std",
  "compose-ui",
  "compose-ui-graphics",
  "compose-ui-layout",
  "env_logger",
- "log",
- "pixels",
- "winit",
 ]
 
 [[package]]

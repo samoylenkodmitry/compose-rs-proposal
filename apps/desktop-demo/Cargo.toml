@@ -5,23 +5,16 @@ edition = "2021"
 
 [features]
 default = ["renderer-pixels", "desktop"]
-renderer-pixels = ["compose-render-pixels", "dep:pixels"]
-renderer-wgpu = ["compose-render-wgpu"]
-desktop = ["compose-platform-desktop-winit", "dep:winit"]
+renderer-pixels = ["compose-app/renderer-pixels"]
+renderer-wgpu = ["compose-app/renderer-wgpu"]
+desktop = ["compose-app/desktop"]
 
 [dependencies]
-compose-app-shell = { path = "../../crates/compose-app-shell" }
+compose-app = { path = "../../crates/compose-app", default-features = false }
 compose-animation = { path = "../../crates/compose-animation" }
 compose-core = { path = "../../crates/compose-core" }
 compose-foundation = { path = "../../crates/compose-foundation" }
-compose-render-pixels = { path = "../../crates/compose-render/pixels", optional = true }
-compose-render-wgpu = { path = "../../crates/compose-render/wgpu", optional = true }
-compose-runtime-std = { path = "../../crates/compose-runtime-std" }
 compose-ui = { path = "../../crates/compose-ui" }
 compose-ui-graphics = { path = "../../crates/compose-ui-graphics" }
 compose-ui-layout = { path = "../../crates/compose-ui-layout" }
-compose-platform-desktop-winit = { path = "../../crates/compose-platform/desktop-winit", optional = true }
-pixels = { version = "0.13", optional = true }
-winit = { version = "0.28", optional = true }
-log = "0.4"
 env_logger = "0.10"

@@ -1,34 +1,15 @@
 use compose_animation::animateFloatAsState;
-use compose_app_shell::{default_root_key, AppShell};
+use compose_app::ComposeAppOptions;
 use compose_core::{
     self, compositionLocalOf, CompositionLocal, CompositionLocalProvider, DisposableEffect,
     DisposableEffectResult, LaunchedEffect, LaunchedEffectAsync,
 };
 use compose_foundation::{PointerEvent, PointerEventKind};
-use compose_platform_desktop_winit::DesktopWinitPlatform;
-#[cfg(feature = "renderer-pixels")]
-use compose_render_pixels::{draw_scene, PixelsRenderer};
-#[cfg(feature = "renderer-pixels")]
-use pixels::{Pixels, SurfaceTexture};
-
-#[cfg(not(feature = "renderer-pixels"))]
-compile_error!("The desktop demo currently requires the `renderer-pixels` feature.");
-
-#[cfg(not(feature = "desktop"))]
-compile_error!("The desktop demo must be built with the `desktop` feature enabled.");
-
 use compose_ui::{
     composable, Brush, Button, Color, Column, ColumnSpec, CornerRadii, GraphicsLayer,
     IntrinsicSize, LinearArrangement, Modifier, Point, RoundedCornerShape, Row, RowSpec, Size,
     Spacer, Text, VerticalAlignment,
 };
-use winit::dpi::LogicalSize;
-use winit::event::{ElementState, Event, MouseButton, VirtualKeyCode, WindowEvent};
-use winit::event_loop::{ControlFlow, EventLoopBuilder};
-use winit::window::WindowBuilder;
-
-const INITIAL_WIDTH: u32 = 800;
-const INITIAL_HEIGHT: u32 = 600;
 
 fn main() {
     env_logger::init();
@@ -43,120 +24,14 @@ fn main() {
     println!("Press 'D' key to dump debug info about what's on screen");
     println!();
 
-    let event_loop = EventLoopBuilder::new().build();
-    let frame_proxy = event_loop.create_proxy();
-    let window = WindowBuilder::new()
-        .with_title("Compose Counter")
-        .with_inner_size(LogicalSize::new(
-            INITIAL_WIDTH as f64,
-            INITIAL_HEIGHT as f64,
-        ))
-        .build(&event_loop)
-        .expect("window");
-    let size = window.inner_size();
-    let surface_texture = SurfaceTexture::new(size.width, size.height, &window);
-    let mut pixels = Pixels::new(INITIAL_WIDTH, INITIAL_HEIGHT, surface_texture).expect("pixels");
-
-    let renderer = PixelsRenderer::new();
-    let mut app = AppShell::new(renderer, default_root_key(), combined_app);
-    let mut platform = DesktopWinitPlatform::default();
-    app.set_frame_waker({
-        let proxy = frame_proxy.clone();
-        move || {
-            let _ = proxy.send_event(());
+    compose_app::ComposeApp!(
+        options: ComposeAppOptions::default()
+            .WithTitle("Compose Counter")
+            .WithSize(800, 600),
+        {
+            combined_app();
         }
-    });
-    app.set_viewport(size.width as f32, size.height as f32);
-
-    event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::Wait;
-        match event {
-            Event::WindowEvent { event, .. } => match event {
-                WindowEvent::CloseRequested => {
-                    *control_flow = ControlFlow::Exit;
-                }
-                WindowEvent::Resized(new_size) => {
-                    if let Err(err) = pixels.resize_surface(new_size.width, new_size.height) {
-                        log::error!("failed to resize surface: {err}");
-                        *control_flow = ControlFlow::Exit;
-                        return;
-                    }
-                    if let Err(err) = pixels.resize_buffer(new_size.width, new_size.height) {
-                        log::error!("failed to resize buffer: {err}");
-                        *control_flow = ControlFlow::Exit;
-                        return;
-                    }
-                    app.set_buffer_size(new_size.width, new_size.height);
-                    app.set_viewport(new_size.width as f32, new_size.height as f32);
-                }
-                WindowEvent::ScaleFactorChanged {
-                    scale_factor,
-                    new_inner_size,
-                    ..
-                } => {
-                    platform.set_scale_factor(scale_factor);
-                    if let Err(err) =
-                        pixels.resize_surface(new_inner_size.width, new_inner_size.height)
-                    {
-                        log::error!("failed to resize surface: {err}");
-                        *control_flow = ControlFlow::Exit;
-                        return;
-                    }
-                    if let Err(err) =
-                        pixels.resize_buffer(new_inner_size.width, new_inner_size.height)
-                    {
-                        log::error!("failed to resize buffer: {err}");
-                        *control_flow = ControlFlow::Exit;
-                        return;
-                    }
-                    app.set_buffer_size(new_inner_size.width, new_inner_size.height);
-                    app.set_viewport(new_inner_size.width as f32, new_inner_size.height as f32);
-                }
-                WindowEvent::CursorMoved { position, .. } => {
-                    let logical = platform.pointer_position(position);
-                    app.set_cursor(logical.x, logical.y);
-                    if app.should_render() {
-                        app.update();
-                        window.request_redraw();
-                    }
-                }
-                WindowEvent::MouseInput {
-                    state,
-                    button: MouseButton::Left,
-                    ..
-                } => match state {
-                    ElementState::Pressed => app.pointer_pressed(),
-                    ElementState::Released => app.pointer_released(),
-                },
-                WindowEvent::KeyboardInput { input, .. } => {
-                    if let Some(keycode) = input.virtual_keycode {
-                        if input.state == ElementState::Pressed && keycode == VirtualKeyCode::D {
-                            app.log_debug_info();
-                        }
-                    }
-                }
-                _ => {}
-            },
-            Event::MainEventsCleared | Event::RedrawEventsCleared | Event::UserEvent(()) => {
-                if app.should_render() {
-                    window.request_redraw();
-                    *control_flow = ControlFlow::Poll;
-                }
-            }
-            Event::RedrawRequested(_) => {
-                app.update();
-
-                let frame = pixels.frame_mut();
-                let (buffer_width, buffer_height) = app.buffer_size();
-                draw_scene(frame, buffer_width, buffer_height, app.scene());
-                if let Err(err) = pixels.render() {
-                    log::error!("pixels render failed: {err}");
-                    *control_flow = ControlFlow::Exit;
-                }
-            }
-            _ => {}
-        }
-    });
+    );
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]

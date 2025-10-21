@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/compose-app-shell",
+    "crates/compose-app",
     "crates/compose-assets",
     "crates/compose-core",
     "crates/compose-macros",
