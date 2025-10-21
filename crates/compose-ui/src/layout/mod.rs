@@ -389,10 +389,10 @@ impl<'a> LayoutBuilder<'a> {
         constraints: Constraints,
     ) -> Result<MeasuredNode, NodeError> {
         // Button is just a layout with column-like behavior
-        use crate::layout::policies::ColumnMeasurePolicy;
+        use crate::layout::policies::FlexMeasurePolicy;
         let mut layout = LayoutNode::new(
             node.modifier.clone(),
-            Rc::new(ColumnMeasurePolicy::new(
+            Rc::new(FlexMeasurePolicy::column(
                 LinearArrangement::Start,
                 HorizontalAlignment::Start,
             )),
@@ -567,6 +567,24 @@ impl Measurable for LayoutChildMeasurable {
         })
         .map(|node| node.size.height)
         .unwrap_or(0.0)
+    }
+
+    fn flex_parent_data(&self) -> Option<compose_ui_layout::FlexParentData> {
+        // Access the node's modifier to extract weight information
+        // We use with_node which is safe, but we need to convert the raw pointer
+        // to a mutable reference temporarily for the API
+        unsafe {
+            let applier = &mut *(self.applier as *mut MemoryApplier);
+            applier
+                .with_node::<LayoutNode, _>(self.node_id, |layout_node| {
+                    let props = layout_node.modifier.layout_properties();
+                    props.weight().map(|weight_data| {
+                        compose_ui_layout::FlexParentData::new(weight_data.weight, weight_data.fill)
+                    })
+                })
+                .ok()
+                .flatten()
+        }
     }
 }
 

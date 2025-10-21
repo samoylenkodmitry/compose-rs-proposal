@@ -4,12 +4,14 @@
 
 mod alignment;
 mod arrangement;
+mod axis;
 mod constraints;
 mod core;
 mod intrinsics;
 
 pub use alignment::*;
 pub use arrangement::*;
+pub use axis::*;
 pub use constraints::*;
 pub use core::*;
 pub use intrinsics::*;

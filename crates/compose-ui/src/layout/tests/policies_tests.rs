@@ -87,7 +87,7 @@ fn box_measure_policy_takes_max_size() {
 
 #[test]
 fn column_measure_policy_sums_heights() {
-    let policy = ColumnMeasurePolicy::new(LinearArrangement::Start, HorizontalAlignment::Start);
+    let policy = FlexMeasurePolicy::column(LinearArrangement::Start, HorizontalAlignment::Start);
     let measurables: Vec<Box<dyn Measurable>> = vec![
         Box::new(MockMeasurable::new(40.0, 20.0, 1)),
         Box::new(MockMeasurable::new(60.0, 30.0, 2)),
@@ -112,7 +112,7 @@ fn column_measure_policy_sums_heights() {
 
 #[test]
 fn row_measure_policy_sums_widths() {
-    let policy = RowMeasurePolicy::new(
+    let policy = FlexMeasurePolicy::row(
         LinearArrangement::Start,
         VerticalAlignment::CenterVertically,
     );
