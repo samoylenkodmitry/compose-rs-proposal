@@ -13,9 +13,9 @@ use compose_core::{
     Applier, Composer, MemoryApplier, Node, NodeError, NodeId, Phase, RuntimeHandle, SlotTable,
 };
 
-use self::core::{
-    HorizontalAlignment, LinearArrangement, Measurable, Placeable, VerticalAlignment,
-};
+#[cfg(test)]
+use self::core::VerticalAlignment;
+use self::core::{HorizontalAlignment, LinearArrangement, Measurable, Placeable};
 use crate::modifier::{
     DimensionConstraint, EdgeInsets, Modifier, Point, Rect as GeometryRect, Size,
 };
@@ -249,7 +249,6 @@ impl<'a> LayoutBuilder<'a> {
                     self.applier,
                     child_id,
                     Rc::new(RefCell::new(None)),
-                    Rc::new(RefCell::new(None)),
                     Rc::clone(&intrinsic_error),
                     self.runtime_handle.clone(),
                 )) as Box<dyn Measurable>
@@ -352,19 +351,16 @@ impl<'a> LayoutBuilder<'a> {
 
         for child_id in node.children.iter().copied() {
             let measured = Rc::new(RefCell::new(None));
-            let position = Rc::new(RefCell::new(None));
             records.insert(
                 child_id,
                 ChildRecord {
                     measured: Rc::clone(&measured),
-                    last_position: Rc::clone(&position),
                 },
             );
             measurables.push(Box::new(LayoutChildMeasurable::new(
                 self.applier,
                 child_id,
                 measured,
-                position,
                 Rc::clone(&error),
                 self.runtime_handle.clone(),
             )));
@@ -538,14 +534,12 @@ struct MeasuredChild {
 
 struct ChildRecord {
     measured: Rc<RefCell<Option<MeasuredNode>>>,
-    last_position: Rc<RefCell<Option<Point>>>,
 }
 
 struct LayoutChildMeasurable {
     applier: *mut MemoryApplier,
     node_id: NodeId,
     measured: Rc<RefCell<Option<MeasuredNode>>>,
-    last_position: Rc<RefCell<Option<Point>>>,
     error: Rc<RefCell<Option<NodeError>>>,
     runtime_handle: Option<RuntimeHandle>,
     measured_in_pass: Cell<bool>,
@@ -557,7 +551,6 @@ impl LayoutChildMeasurable {
         applier: *mut MemoryApplier,
         node_id: NodeId,
         measured: Rc<RefCell<Option<MeasuredNode>>>,
-        last_position: Rc<RefCell<Option<Point>>>,
         error: Rc<RefCell<Option<NodeError>>>,
         runtime_handle: Option<RuntimeHandle>,
     ) -> Self {
@@ -566,7 +559,6 @@ impl LayoutChildMeasurable {
             applier,
             node_id,
             measured,
-            last_position,
             error,
             runtime_handle,
             measured_in_pass: Cell::new(false),
@@ -655,7 +647,6 @@ impl Measurable for LayoutChildMeasurable {
         Box::new(LayoutChildPlaceable::new(
             self.node_id,
             Rc::clone(&self.measured),
-            Rc::clone(&self.last_position),
         ))
     }
 
@@ -711,27 +702,16 @@ impl Measurable for LayoutChildMeasurable {
 struct LayoutChildPlaceable {
     node_id: NodeId,
     measured: Rc<RefCell<Option<MeasuredNode>>>,
-    last_position: Rc<RefCell<Option<Point>>>,
 }
 
 impl LayoutChildPlaceable {
-    fn new(
-        node_id: NodeId,
-        measured: Rc<RefCell<Option<MeasuredNode>>>,
-        last_position: Rc<RefCell<Option<Point>>>,
-    ) -> Self {
-        Self {
-            node_id,
-            measured,
-            last_position,
-        }
+    fn new(node_id: NodeId, measured: Rc<RefCell<Option<MeasuredNode>>>) -> Self {
+        Self { node_id, measured }
     }
 }
 
 impl Placeable for LayoutChildPlaceable {
-    fn place(&self, x: f32, y: f32) {
-        *self.last_position.borrow_mut() = Some(Point { x, y });
-    }
+    fn place(&self, _x: f32, _y: f32) {}
 
     fn width(&self) -> f32 {
         self.measured
@@ -867,22 +847,7 @@ fn measure_text_content(text: &str) -> Size {
     }
 }
 
-fn enforce_child_constraints(mut child: MeasuredNode, constraints: Constraints) -> MeasuredNode {
-    let width = clamp_dimension(
-        child.size.width,
-        constraints.min_width,
-        constraints.max_width,
-    );
-    let height = clamp_dimension(
-        child.size.height,
-        constraints.min_height,
-        constraints.max_height,
-    );
-    child.size.width = width;
-    child.size.height = height;
-    child
-}
-
+#[cfg(test)]
 fn align_horizontal(alignment: HorizontalAlignment, available: f32, child: f32) -> f32 {
     match alignment {
         HorizontalAlignment::Start => 0.0,
@@ -891,6 +856,7 @@ fn align_horizontal(alignment: HorizontalAlignment, available: f32, child: f32) 
     }
 }
 
+#[cfg(test)]
 fn align_vertical(alignment: VerticalAlignment, available: f32, child: f32) -> f32 {
     match alignment {
         VerticalAlignment::Top => 0.0,
@@ -1005,6 +971,7 @@ fn resolve_dimension_with_intrinsics(
     size.max(0.0)
 }
 
+#[cfg(test)]
 fn resolve_dimension(
     base: f32,
     explicit: DimensionConstraint,
@@ -1070,10 +1037,6 @@ fn normalize_constraints(mut constraints: Constraints) -> Constraints {
         constraints.max_height = constraints.min_height;
     }
     constraints
-}
-
-fn sum(values: &[f32]) -> f32 {
-    values.iter().copied().fold(0.0, |acc, value| acc + value)
 }
 
 fn try_clone<T: Node + Clone + 'static>(

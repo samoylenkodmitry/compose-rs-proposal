@@ -59,7 +59,7 @@ where
     pub fn set_viewport(&mut self, width: f32, height: f32) {
         self.viewport = (width, height);
         self.layout_dirty = true;
-        self.process_frame();
+        self.scene_dirty = true;
     }
 
     pub fn set_buffer_size(&mut self, width: u32, height: u32) {
@@ -221,4 +221,68 @@ where
 
 pub fn default_root_key() -> Key {
     location_key(file!(), line!(), column!())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use compose_render_common::{HitTestTarget, RenderScene, Renderer};
+
+    #[derive(Clone, Copy, Debug, Default)]
+    struct DummyHitTarget;
+
+    impl HitTestTarget for DummyHitTarget {
+        fn dispatch(&self, _kind: PointerEventKind, _x: f32, _y: f32) {}
+    }
+
+    #[derive(Debug, Default)]
+    struct DummyScene;
+
+    impl RenderScene for DummyScene {
+        type HitTarget = DummyHitTarget;
+
+        fn clear(&mut self) {}
+
+        fn hit_test(&self, _x: f32, _y: f32) -> Option<Self::HitTarget> {
+            None
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct DummyRenderer {
+        scene: DummyScene,
+    }
+
+    impl Renderer for DummyRenderer {
+        type Scene = DummyScene;
+        type Error = ();
+
+        fn scene(&self) -> &Self::Scene {
+            &self.scene
+        }
+
+        fn scene_mut(&mut self) -> &mut Self::Scene {
+            &mut self.scene
+        }
+
+        fn rebuild_scene(
+            &mut self,
+            _layout_tree: &LayoutTree,
+            _viewport: Size,
+        ) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn viewport_update_marks_shell_dirty() {
+        let renderer = DummyRenderer::default();
+        let mut shell = AppShell::new(renderer, default_root_key(), || {});
+        // AppShell::new processes an initial frame, so should_render may be false here.
+        shell.set_viewport(640.0, 480.0);
+        assert!(
+            shell.should_render(),
+            "viewport update should trigger redraw"
+        );
+    }
 }

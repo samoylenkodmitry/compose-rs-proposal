@@ -225,14 +225,17 @@ impl Modifier {
         self.state.layout
     }
 
+    #[allow(dead_code)]
     pub(crate) fn box_alignment(&self) -> Option<Alignment> {
         self.state.layout.box_alignment
     }
 
+    #[allow(dead_code)]
     pub(crate) fn column_alignment(&self) -> Option<HorizontalAlignment> {
         self.state.layout.column_alignment
     }
 
+    #[allow(dead_code)]
     pub(crate) fn row_alignment(&self) -> Option<VerticalAlignment> {
         self.state.layout.row_alignment
     }
@@ -433,14 +436,17 @@ impl LayoutProperties {
         self.weight
     }
 
+    #[allow(dead_code)]
     pub fn box_alignment(&self) -> Option<Alignment> {
         self.box_alignment
     }
 
+    #[allow(dead_code)]
     pub fn column_alignment(&self) -> Option<HorizontalAlignment> {
         self.column_alignment
     }
 
+    #[allow(dead_code)]
     pub fn row_alignment(&self) -> Option<VerticalAlignment> {
         self.row_alignment
     }

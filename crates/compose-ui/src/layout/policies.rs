@@ -239,19 +239,7 @@ impl MeasurePolicy for ColumnMeasurePolicy {
         let mut positions = vec![0.0; child_heights.len()];
         match self.vertical_arrangement {
             LinearArrangement::SpacedBy(value) => {
-                let slots = child_heights.len().saturating_sub(1) as f32;
-                let spacing = if slots > 0.0 {
-                    let base_height = fixed_height + weighted_height;
-                    let available = (height - base_height).max(0.0);
-                    (available / slots).min(value)
-                } else {
-                    0.0
-                };
-                LinearArrangement::SpacedBy(spacing).arrange(
-                    height,
-                    &child_heights,
-                    &mut positions,
-                );
+                LinearArrangement::SpacedBy(value).arrange(height, &child_heights, &mut positions);
             }
             _ => {
                 self.vertical_arrangement
@@ -428,7 +416,7 @@ impl MeasurePolicy for RowMeasurePolicy {
                         };
                         let child_constraints = Constraints {
                             min_width,
-                            max_width: share,
+                            max_width,
                             min_height: constraints.min_height,
                             max_height: constraints.max_height,
                         };
@@ -464,15 +452,7 @@ impl MeasurePolicy for RowMeasurePolicy {
         let mut positions = vec![0.0; child_widths.len()];
         match self.horizontal_arrangement {
             LinearArrangement::SpacedBy(value) => {
-                let slots = child_widths.len().saturating_sub(1) as f32;
-                let spacing = if slots > 0.0 {
-                    let base_width = fixed_width + weighted_width;
-                    let available = (width - base_width).max(0.0);
-                    (available / slots).min(value)
-                } else {
-                    0.0
-                };
-                LinearArrangement::SpacedBy(spacing).arrange(width, &child_widths, &mut positions);
+                LinearArrangement::SpacedBy(value).arrange(width, &child_widths, &mut positions);
             }
             _ => {
                 self.horizontal_arrangement
