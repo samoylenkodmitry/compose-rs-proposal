@@ -192,16 +192,11 @@ impl<'a> LayoutBuilder<'a> {
         let runtime_handle = self
             .runtime_handle
             .clone()
-            .or_else(|| unsafe { (*self.applier).runtime_handle() });
-        let runtime_handle = match runtime_handle {
-            Some(handle) => handle,
-            None => {
-                return Err(NodeError::MissingContext {
-                    id: node_id,
-                    reason: "runtime handle required for subcomposition",
-                })
-            }
-        };
+            .or_else(|| unsafe { (*self.applier).runtime_handle() })
+            .ok_or(NodeError::MissingContext {
+                id: node_id,
+                reason: "runtime handle required for subcomposition",
+            })?;
         self.runtime_handle = Some(runtime_handle.clone());
 
         let (modifier, props, offset) = unsafe {
@@ -215,15 +210,16 @@ impl<'a> LayoutBuilder<'a> {
         let inner_constraints = normalize_constraints(subtract_padding(constraints, padding));
 
         self.slots.reset();
-        let mut composer = Composer::new(
+        let mut outer = Composer::new(
             &mut self.slots,
             unsafe { &mut *self.applier },
             runtime_handle,
             Some(node_id),
         );
-        composer.enter_phase(Phase::Measure);
+        outer.enter_phase(Phase::Measure);
 
-        let measure_result = unsafe { (&mut *node_ptr).measure(&mut composer, inner_constraints) };
+        let measure_result =
+            unsafe { (&mut *node_ptr).measure(&mut outer, node_id, inner_constraints)? };
 
         let node_ids: Vec<NodeId> = measure_result
             .placements

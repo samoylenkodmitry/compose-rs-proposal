@@ -1,7 +1,7 @@
 use super::*;
 use std::cell::RefCell;
 
-use compose_core::{self, MutableState, SlotTable};
+use compose_core::{self, Applier, MutableState, SlotTable};
 
 #[derive(Default)]
 struct DummyNode;
@@ -36,13 +36,37 @@ fn measure_subcomposes_content() {
         }
         scope.layout(0.0, 0.0, Vec::new())
     });
-    let mut node =
-        SubcomposeLayoutNode::new(crate::modifier::Modifier::empty(), Rc::clone(&policy));
-    let mut composer = compose_core::Composer::new(&mut slots, &mut applier, handle.clone(), None);
-    composer.enter_phase(Phase::Measure);
-    let result = node.measure(&mut composer, Constraints::tight(0.0, 0.0));
+    let node_id = applier.create(Box::new(SubcomposeLayoutNode::new(
+        crate::modifier::Modifier::empty(),
+        Rc::clone(&policy),
+    )));
+    let node_ptr = {
+        let node = applier.get_mut(node_id).expect("node available");
+        let typed = node
+            .as_any_mut()
+            .downcast_mut::<SubcomposeLayoutNode>()
+            .expect("subcompose layout node");
+        typed as *mut SubcomposeLayoutNode
+    };
+    let result = {
+        let mut composer =
+            compose_core::Composer::new(&mut slots, &mut applier, handle.clone(), Some(node_id));
+        composer.enter_phase(Phase::Measure);
+        unsafe {
+            (&mut *node_ptr)
+                .measure(&mut composer, node_id, Constraints::tight(0.0, 0.0))
+                .expect("measure result")
+        }
+    };
     assert_eq!(result.size, Size::default());
-    assert!(!node.state().reusable().is_empty());
+    {
+        let node = applier.get_mut(node_id).expect("node available");
+        let typed = node
+            .as_any_mut()
+            .downcast_mut::<SubcomposeLayoutNode>()
+            .expect("subcompose layout node");
+        assert!(!typed.state().reusable().is_empty());
+    }
     assert_eq!(recorded.borrow().len(), 1);
 }
 
@@ -64,29 +88,54 @@ fn subcompose_reuses_nodes_across_measures() {
         }
         scope.layout(0.0, 0.0, Vec::new())
     });
-    let mut node =
-        SubcomposeLayoutNode::new(crate::modifier::Modifier::empty(), Rc::clone(&policy));
+    let node_id = applier.create(Box::new(SubcomposeLayoutNode::new(
+        crate::modifier::Modifier::empty(),
+        Rc::clone(&policy),
+    )));
+    let node_ptr = {
+        let node = applier.get_mut(node_id).expect("node available");
+        let typed = node
+            .as_any_mut()
+            .downcast_mut::<SubcomposeLayoutNode>()
+            .expect("subcompose layout node");
+        typed as *mut SubcomposeLayoutNode
+    };
 
     {
         let mut composer =
-            compose_core::Composer::new(&mut slots, &mut applier, handle.clone(), None);
+            compose_core::Composer::new(&mut slots, &mut applier, handle.clone(), Some(node_id));
         composer.enter_phase(Phase::Measure);
-        node.measure(&mut composer, Constraints::loose(100.0, 100.0));
+        unsafe {
+            (&mut *node_ptr)
+                .measure(&mut composer, node_id, Constraints::loose(100.0, 100.0))
+                .expect("first measure");
+        }
     }
 
     slots.reset();
 
     {
         let mut composer =
-            compose_core::Composer::new(&mut slots, &mut applier, handle.clone(), None);
+            compose_core::Composer::new(&mut slots, &mut applier, handle.clone(), Some(node_id));
         composer.enter_phase(Phase::Measure);
-        node.measure(&mut composer, Constraints::loose(200.0, 200.0));
+        unsafe {
+            (&mut *node_ptr)
+                .measure(&mut composer, node_id, Constraints::loose(200.0, 200.0))
+                .expect("second measure");
+        }
     }
 
     let recorded = recorded.borrow();
     assert_eq!(recorded.len(), 2);
     assert_eq!(recorded[0], recorded[1]);
-    assert!(!node.state().reusable().is_empty());
+    {
+        let node = applier.get_mut(node_id).expect("node available");
+        let typed = node
+            .as_any_mut()
+            .downcast_mut::<SubcomposeLayoutNode>()
+            .expect("subcompose layout node");
+        assert!(!typed.state().reusable().is_empty());
+    }
 }
 
 #[test]
@@ -106,14 +155,28 @@ fn inactive_slots_move_to_reusable_pool() {
         }
         scope.layout(0.0, 0.0, Vec::new())
     });
-    let mut node =
-        SubcomposeLayoutNode::new(crate::modifier::Modifier::empty(), Rc::clone(&policy));
+    let node_id = applier.create(Box::new(SubcomposeLayoutNode::new(
+        crate::modifier::Modifier::empty(),
+        Rc::clone(&policy),
+    )));
+    let node_ptr = {
+        let node = applier.get_mut(node_id).expect("node available");
+        let typed = node
+            .as_any_mut()
+            .downcast_mut::<SubcomposeLayoutNode>()
+            .expect("subcompose layout node");
+        typed as *mut SubcomposeLayoutNode
+    };
 
     {
         let mut composer =
-            compose_core::Composer::new(&mut slots, &mut applier, handle.clone(), None);
+            compose_core::Composer::new(&mut slots, &mut applier, handle.clone(), Some(node_id));
         composer.enter_phase(Phase::Measure);
-        node.measure(&mut composer, Constraints::loose(50.0, 50.0));
+        unsafe {
+            (&mut *node_ptr)
+                .measure(&mut composer, node_id, Constraints::loose(50.0, 50.0))
+                .expect("initial measure");
+        }
     }
 
     slots.reset();
@@ -121,10 +184,21 @@ fn inactive_slots_move_to_reusable_pool() {
 
     {
         let mut composer =
-            compose_core::Composer::new(&mut slots, &mut applier, handle.clone(), None);
+            compose_core::Composer::new(&mut slots, &mut applier, handle.clone(), Some(node_id));
         composer.enter_phase(Phase::Measure);
-        node.measure(&mut composer, Constraints::loose(50.0, 50.0));
+        unsafe {
+            (&mut *node_ptr)
+                .measure(&mut composer, node_id, Constraints::loose(50.0, 50.0))
+                .expect("second measure");
+        }
     }
 
-    assert!(!node.state().reusable().is_empty());
+    {
+        let node = applier.get_mut(node_id).expect("node available");
+        let typed = node
+            .as_any_mut()
+            .downcast_mut::<SubcomposeLayoutNode>()
+            .expect("subcompose layout node");
+        assert!(!typed.state().reusable().is_empty());
+    }
 }
