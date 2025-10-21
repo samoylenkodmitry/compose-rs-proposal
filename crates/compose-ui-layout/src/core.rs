@@ -3,9 +3,17 @@
 use crate::constraints::Constraints;
 use compose_core::NodeId;
 use compose_ui_graphics::Size;
+use std::any::Any;
+
+/// Layout weight applied via parent scopes such as [`Row`](https://developer.android.com/reference/kotlin/androidx/compose/foundation/layout/Row).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LayoutWeight {
+    pub weight: f32,
+    pub fill: bool,
+}
 
 /// Object capable of measuring a layout child and exposing intrinsic sizes.
-pub trait Measurable {
+pub trait Measurable: Any {
     /// Measures the child with the provided constraints, returning a [`Placeable`].
     fn measure(&self, constraints: Constraints) -> Box<dyn Placeable>;
 
@@ -20,6 +28,11 @@ pub trait Measurable {
 
     /// Returns the maximum height achievable for the given width.
     fn max_intrinsic_height(&self, width: f32) -> f32;
+
+    /// Returns any weight requested for this measurable.
+    fn layout_weight(&self) -> Option<LayoutWeight> {
+        None
+    }
 }
 
 /// Result of running a measurement pass for a single child.

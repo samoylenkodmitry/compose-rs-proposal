@@ -1,7 +1,13 @@
 pub mod core;
 pub mod policies;
 
-use std::{cell::RefCell, collections::HashMap, fmt, marker::PhantomData, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    fmt,
+    marker::PhantomData,
+    rc::Rc,
+};
 
 use compose_core::{
     Applier, Composer, MemoryApplier, Node, NodeError, NodeId, Phase, RuntimeHandle, SlotTable,
@@ -15,7 +21,7 @@ use crate::modifier::{
 };
 use crate::primitives::{ButtonNode, LayoutNode, SpacerNode, TextNode};
 use crate::subcompose_layout::SubcomposeLayoutNode;
-use compose_ui_layout::{Constraints, IntrinsicSize};
+use compose_ui_layout::{Constraints, IntrinsicSize, LayoutWeight};
 
 /// Result of running layout for a Compose tree.
 #[derive(Debug, Clone)]
@@ -235,24 +241,75 @@ impl<'a> LayoutBuilder<'a> {
             node.set_active_children(node_ids.iter().copied());
         }
 
-        let mut width = measure_result.size.width + padding.horizontal_sum();
-        let mut height = measure_result.size.height + padding.vertical_sum();
+        let intrinsic_error = Rc::new(RefCell::new(None));
+        let intrinsic_measurables: Vec<Box<dyn Measurable>> = node_ids
+            .iter()
+            .map(|&child_id| {
+                Box::new(LayoutChildMeasurable::new(
+                    self.applier,
+                    child_id,
+                    Rc::new(RefCell::new(None)),
+                    Rc::new(RefCell::new(None)),
+                    Rc::clone(&intrinsic_error),
+                    self.runtime_handle.clone(),
+                )) as Box<dyn Measurable>
+            })
+            .collect();
 
-        width = resolve_dimension(
+        if let Some(err) = intrinsic_error.borrow_mut().take() {
+            return Err(err);
+        }
+
+        let horizontal_padding = padding.horizontal_sum();
+        let vertical_padding = padding.vertical_sum();
+        let content_width = measure_result.size.width;
+        let content_height = measure_result.size.height;
+        let cross_for_width = if inner_constraints.max_height.is_finite() {
+            inner_constraints.max_height
+        } else {
+            content_height
+        };
+        let cross_for_height = if inner_constraints.max_width.is_finite() {
+            inner_constraints.max_width
+        } else {
+            content_width
+        };
+        let (min_intrinsic_width, max_intrinsic_width) =
+            query_intrinsic_size(&intrinsic_measurables, true, cross_for_width, f32::max);
+        let (min_intrinsic_height, max_intrinsic_height) =
+            query_intrinsic_size(&intrinsic_measurables, false, cross_for_height, f32::max);
+
+        let padded_min_intrinsic_width = min_intrinsic_width + horizontal_padding;
+        let padded_max_intrinsic_width = max_intrinsic_width + horizontal_padding;
+        let padded_min_intrinsic_height = min_intrinsic_height + vertical_padding;
+        let padded_max_intrinsic_height = max_intrinsic_height + vertical_padding;
+
+        let mut width = content_width + horizontal_padding;
+        let mut height = content_height + vertical_padding;
+
+        width = resolve_dimension_with_intrinsics(
             width,
             props.width(),
             props.min_width(),
             props.max_width(),
             constraints.min_width,
             constraints.max_width,
+            |size| match size {
+                IntrinsicSize::Min => padded_min_intrinsic_width,
+                IntrinsicSize::Max => padded_max_intrinsic_width,
+            },
         );
-        height = resolve_dimension(
+        height = resolve_dimension_with_intrinsics(
             height,
             props.height(),
             props.min_height(),
             props.max_height(),
             constraints.min_height,
             constraints.max_height,
+            |size| match size {
+                IntrinsicSize::Min => padded_min_intrinsic_height,
+                IntrinsicSize::Max => padded_max_intrinsic_height,
+            },
         );
 
         let mut children = Vec::new();
@@ -283,7 +340,7 @@ impl<'a> LayoutBuilder<'a> {
         node: LayoutNode,
         constraints: Constraints,
     ) -> Result<MeasuredNode, NodeError> {
-        let mut node = node;
+        let node = node;
         let modifier = node.modifier.clone();
         let props = modifier.layout_properties();
         let padding = props.padding();
@@ -319,24 +376,63 @@ impl<'a> LayoutBuilder<'a> {
             return Err(err);
         }
 
-        let mut width = policy_result.size.width + padding.horizontal_sum();
-        let mut height = policy_result.size.height + padding.vertical_sum();
+        let horizontal_padding = padding.horizontal_sum();
+        let vertical_padding = padding.vertical_sum();
+        let content_width = policy_result.size.width;
+        let content_height = policy_result.size.height;
+        let cross_for_width = if inner_constraints.max_height.is_finite() {
+            inner_constraints.max_height
+        } else {
+            content_height
+        };
+        let cross_for_height = if inner_constraints.max_width.is_finite() {
+            inner_constraints.max_width
+        } else {
+            content_width
+        };
+        let min_intrinsic_width = node
+            .measure_policy
+            .min_intrinsic_width(&measurables, cross_for_width);
+        let max_intrinsic_width = node
+            .measure_policy
+            .max_intrinsic_width(&measurables, cross_for_width);
+        let min_intrinsic_height = node
+            .measure_policy
+            .min_intrinsic_height(&measurables, cross_for_height);
+        let max_intrinsic_height = node
+            .measure_policy
+            .max_intrinsic_height(&measurables, cross_for_height);
+        let padded_min_intrinsic_width = min_intrinsic_width + horizontal_padding;
+        let padded_max_intrinsic_width = max_intrinsic_width + horizontal_padding;
+        let padded_min_intrinsic_height = min_intrinsic_height + vertical_padding;
+        let padded_max_intrinsic_height = max_intrinsic_height + vertical_padding;
 
-        width = resolve_dimension(
+        let mut width = content_width + horizontal_padding;
+        let mut height = content_height + vertical_padding;
+
+        width = resolve_dimension_with_intrinsics(
             width,
             props.width(),
             props.min_width(),
             props.max_width(),
             constraints.min_width,
             constraints.max_width,
+            |size| match size {
+                IntrinsicSize::Min => padded_min_intrinsic_width,
+                IntrinsicSize::Max => padded_max_intrinsic_width,
+            },
         );
-        height = resolve_dimension(
+        height = resolve_dimension_with_intrinsics(
             height,
             props.height(),
             props.min_height(),
             props.max_height(),
             constraints.min_height,
             constraints.max_height,
+            |size| match size {
+                IntrinsicSize::Min => padded_min_intrinsic_height,
+                IntrinsicSize::Max => padded_max_intrinsic_height,
+            },
         );
 
         let mut placement_map: HashMap<NodeId, Point> = policy_result
@@ -357,18 +453,16 @@ impl<'a> LayoutBuilder<'a> {
         for child_id in node.children.iter().copied() {
             if let Some(record) = records.remove(&child_id) {
                 if let Some(measured) = record.measured.borrow_mut().take() {
-                    let base_position = placement_map
-                        .remove(&child_id)
-                        .or_else(|| record.last_position.borrow().clone())
-                        .unwrap_or(Point { x: 0.0, y: 0.0 });
-                    let position = Point {
-                        x: padding.left + base_position.x,
-                        y: padding.top + base_position.y,
-                    };
-                    children.push(MeasuredChild {
-                        node: measured,
-                        offset: position,
-                    });
+                    if let Some(base_position) = placement_map.remove(&child_id) {
+                        let position = Point {
+                            x: padding.left + base_position.x,
+                            y: padding.top + base_position.y,
+                        };
+                        children.push(MeasuredChild {
+                            node: measured,
+                            offset: position,
+                        });
+                    }
                 }
             }
         }
@@ -454,6 +548,8 @@ struct LayoutChildMeasurable {
     last_position: Rc<RefCell<Option<Point>>>,
     error: Rc<RefCell<Option<NodeError>>>,
     runtime_handle: Option<RuntimeHandle>,
+    measured_in_pass: Cell<bool>,
+    weight: Option<LayoutWeight>,
 }
 
 impl LayoutChildMeasurable {
@@ -465,6 +561,7 @@ impl LayoutChildMeasurable {
         error: Rc<RefCell<Option<NodeError>>>,
         runtime_handle: Option<RuntimeHandle>,
     ) -> Self {
+        let weight = resolve_layout_weight(applier, node_id);
         Self {
             applier,
             node_id,
@@ -472,6 +569,8 @@ impl LayoutChildMeasurable {
             last_position,
             error,
             runtime_handle,
+            measured_in_pass: Cell::new(false),
+            weight,
         }
     }
 
@@ -500,8 +599,43 @@ impl LayoutChildMeasurable {
     }
 }
 
+fn resolve_layout_weight(applier: *mut MemoryApplier, node_id: NodeId) -> Option<LayoutWeight> {
+    unsafe {
+        let applier_ref = &mut *applier;
+        let candidates = [
+            applier_ref.with_node(node_id, |node: &mut LayoutNode| {
+                node.modifier.layout_properties().weight()
+            }),
+            applier_ref.with_node(node_id, |node: &mut TextNode| {
+                node.modifier.layout_properties().weight()
+            }),
+            applier_ref.with_node(node_id, |node: &mut ButtonNode| {
+                node.modifier.layout_properties().weight()
+            }),
+            applier_ref.with_node(node_id, |node: &mut SubcomposeLayoutNode| {
+                node.modifier.layout_properties().weight()
+            }),
+        ];
+
+        for result in candidates.into_iter() {
+            if let Ok(Some(weight)) = result {
+                if weight.weight > 0.0 {
+                    return Some(weight);
+                }
+            }
+        }
+    }
+    None
+}
+
 impl Measurable for LayoutChildMeasurable {
     fn measure(&self, constraints: Constraints) -> Box<dyn Placeable> {
+        let already_measured = self.measured_in_pass.replace(true);
+        debug_assert!(
+            !already_measured,
+            "child {:?} measured more than once in a single layout pass",
+            self.node_id
+        );
         match unsafe {
             measure_node_via_ptr(
                 self.applier,
@@ -567,6 +701,10 @@ impl Measurable for LayoutChildMeasurable {
         })
         .map(|node| node.size.height)
         .unwrap_or(0.0)
+    }
+
+    fn layout_weight(&self) -> Option<LayoutWeight> {
+        self.weight
     }
 }
 
@@ -691,24 +829,31 @@ fn measure_leaf(
     let padding = props.padding();
     let offset = data.modifier.total_offset();
 
-    let mut width = base_size.width + padding.horizontal_sum();
-    let mut height = base_size.height + padding.vertical_sum();
+    let horizontal_padding = padding.horizontal_sum();
+    let vertical_padding = padding.vertical_sum();
+    let padded_base_width = base_size.width + horizontal_padding;
+    let padded_base_height = base_size.height + vertical_padding;
 
-    width = resolve_dimension(
+    let mut width = padded_base_width;
+    let mut height = padded_base_height;
+
+    width = resolve_dimension_with_intrinsics(
         width,
         props.width(),
         props.min_width(),
         props.max_width(),
         constraints.min_width,
         constraints.max_width,
+        |_| padded_base_width,
     );
-    height = resolve_dimension(
+    height = resolve_dimension_with_intrinsics(
         height,
         props.height(),
         props.min_height(),
         props.max_height(),
         constraints.min_height,
         constraints.max_height,
+        |_| padded_base_height,
     );
 
     MeasuredNode::new(node_id, Size { width, height }, offset, data, Vec::new())
@@ -778,7 +923,7 @@ fn subtract_padding(constraints: Constraints, padding: EdgeInsets) -> Constraint
 /// Resolves intrinsic dimensions from a list of measurables.
 /// Returns (min_intrinsic, max_intrinsic) for the given dimension.
 fn query_intrinsic_size(
-    measurables: &[impl Measurable],
+    measurables: &[Box<dyn Measurable>],
     is_width: bool,
     cross_axis_size: f32,
     combiner: impl Fn(f32, f32) -> f32,

@@ -24,7 +24,9 @@ pub use compose_foundation::{
 pub use compose_ui_graphics::{
     Brush, Color, CornerRadii, EdgeInsets, GraphicsLayer, Point, Rect, RoundedCornerShape, Size,
 };
-use compose_ui_layout::{Alignment, HorizontalAlignment, IntrinsicSize, VerticalAlignment};
+use compose_ui_layout::{
+    Alignment, HorizontalAlignment, IntrinsicSize, LayoutWeight, VerticalAlignment,
+};
 
 use crate::modifier_nodes::SizeElement;
 
@@ -381,12 +383,6 @@ pub(crate) enum DimensionConstraint {
     Points(f32),
     Fraction(f32),
     Intrinsic(IntrinsicSize),
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct LayoutWeight {
-    pub weight: f32,
-    pub fill: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
