@@ -1531,6 +1531,48 @@ impl<'a> Composer<'a> {
         self.subcompose(state, slot_id, content)
     }
 
+    /// Run a nested composition using alternate slots while preserving the
+    /// current applier/runtime, phase, and local context.
+    pub fn subcompose_in<R>(
+        &mut self,
+        slots: &mut SlotTable,
+        root: Option<NodeId>,
+        f: impl FnOnce(&mut Composer<'_>) -> R,
+    ) -> Result<R, NodeError> {
+        let runtime_handle = self.runtime_handle();
+        slots.reset();
+        let phase = self.phase();
+        let locals = self.local_stack.clone();
+        let (result, mut commands, side_effects) = {
+            let mut inner = {
+                let applier = &mut *self.applier;
+                Composer::new(slots, applier, runtime_handle.clone(), root)
+            };
+            inner.set_phase(phase);
+            inner.local_stack = locals;
+            inner.install(|composer| {
+                let output = f(composer);
+                let commands = composer.take_commands();
+                let side_effects = composer.take_side_effects();
+                (output, commands, side_effects)
+            })
+        };
+
+        for mut command in commands.drain(..) {
+            command(&mut *self.applier)?;
+        }
+        for mut update in runtime_handle.take_updates() {
+            update(&mut *self.applier)?;
+        }
+        runtime_handle.drain_ui();
+        for effect in side_effects {
+            effect();
+        }
+        runtime_handle.drain_ui();
+        slots.trim_to_cursor();
+        Ok(result)
+    }
+
     pub fn skip_current_group(&mut self) {
         let nodes = self.slots.node_ids_in_current_group();
         self.slots.skip_current();
