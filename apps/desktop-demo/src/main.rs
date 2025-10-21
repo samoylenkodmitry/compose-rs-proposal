@@ -116,7 +116,10 @@ fn combined_app() {
     Column(Modifier::padding(20.0), ColumnSpec::default(), move || {
         let tab_state_for_row = active_tab.clone();
         let tab_state_for_content = active_tab.clone();
-        Row(Modifier::padding(8.0), RowSpec::default(), move || {
+        Row(
+            Modifier::fill_max_width().then(Modifier::padding(8.0)),
+            RowSpec::new().horizontal_arrangement(LinearArrangement::SpacedBy(8.0)),
+            move || {
             let tab_state = tab_state_for_row.clone();
             let render_tab_button = move |tab: DemoTab| {
                 let tab_state = tab_state.clone();
@@ -153,15 +156,7 @@ fn combined_app() {
             };
 
             render_tab_button(DemoTab::Counter);
-            Spacer(Size {
-                width: 8.0,
-                height: 0.0,
-            });
             render_tab_button(DemoTab::CompositionLocal);
-            Spacer(Size {
-                width: 8.0,
-                height: 0.0,
-            });
             render_tab_button(DemoTab::Async);
         });
 
@@ -396,7 +391,8 @@ fn async_runtime_example() {
                 let progress_value = animation_snapshot.progress.clamp(0.0, 1.0);
                 let fill_width = 320.0 * progress_value;
                 Column(
-                    Modifier::padding(8.0)
+                    Modifier::fill_max_width()
+                        .then(Modifier::padding(8.0))
                         .then(Modifier::background(Color(0.06, 0.10, 0.22, 0.8)))
                         .then(Modifier::rounded_corners(18.0))
                         .then(Modifier::padding(12.0)),
@@ -414,37 +410,33 @@ fn async_runtime_example() {
                             });
 
                             Row(
-                                Modifier::size(Size {
-                                    width: 360.0,
-                                    height: 26.0,
-                                })
-                                .then(Modifier::rounded_corners(13.0))
-                                .then(Modifier::draw_behind(|scope| {
-                                    scope.draw_round_rect(
-                                        Brush::solid(Color(0.12, 0.16, 0.30, 1.0)),
-                                        CornerRadii::uniform(13.0),
-                                    );
-                                })),
+                                Modifier::fill_max_width()
+                                    .then(Modifier::height(26.0))
+                                    .then(Modifier::rounded_corners(13.0))
+                                    .then(Modifier::draw_behind(|scope| {
+                                        scope.draw_round_rect(
+                                            Brush::solid(Color(0.12, 0.16, 0.30, 1.0)),
+                                            CornerRadii::uniform(13.0),
+                                        );
+                                    })),
                                 RowSpec::default(),
                                 {
                                     let progress_width = fill_width;
                                     move || {
                                         if progress_width > 0.0 {
                                             Row(
-                                                Modifier::size(Size {
-                                                    width: progress_width,
-                                                    height: 26.0,
-                                                })
-                                                .then(Modifier::rounded_corners(13.0))
-                                                .then(Modifier::draw_behind(|scope| {
-                                                    scope.draw_round_rect(
-                                                        Brush::linear_gradient(vec![
-                                                            Color(0.25, 0.55, 0.95, 1.0),
-                                                            Color(0.15, 0.35, 0.80, 1.0),
-                                                        ]),
-                                                        CornerRadii::uniform(13.0),
-                                                    );
-                                                })),
+                                                Modifier::width(progress_width.min(360.0))
+                                                    .then(Modifier::height(26.0))
+                                                    .then(Modifier::rounded_corners(13.0))
+                                                    .then(Modifier::draw_behind(|scope| {
+                                                        scope.draw_round_rect(
+                                                            Brush::linear_gradient(vec![
+                                                                Color(0.25, 0.55, 0.95, 1.0),
+                                                                Color(0.15, 0.35, 0.80, 1.0),
+                                                            ]),
+                                                            CornerRadii::uniform(13.0),
+                                                        );
+                                                    })),
                                                 RowSpec::default(),
                                                 || {},
                                             );
@@ -483,7 +475,7 @@ fn async_runtime_example() {
                 });
 
                 Row(
-                    Modifier::padding(4.0),
+                    Modifier::fill_max_width().then(Modifier::padding(4.0)),
                     RowSpec::new()
                         .horizontal_arrangement(LinearArrangement::SpacedBy(12.0))
                         .vertical_alignment(VerticalAlignment::CenterVertically),
@@ -690,7 +682,7 @@ fn counter_app() {
                 });
 
                 Row(
-                    Modifier::padding(8.0),
+                    Modifier::fill_max_width().then(Modifier::padding(8.0)),
                     RowSpec::new()
                         .horizontal_arrangement(LinearArrangement::SpacedBy(12.0))
                         .vertical_alignment(VerticalAlignment::CenterVertically),
@@ -728,11 +720,8 @@ fn counter_app() {
                 let async_message_state = async_message.clone();
                 let fetch_request_state = fetch_request.clone();
                 Column(
-                    Modifier::size(Size {
-                        width: 360.0,
-                        height: 180.0,
-                    })
-                    .then(Modifier::rounded_corners(20.0))
+                    Modifier::width(360.0)
+                        .then(Modifier::rounded_corners(20.0))
                     .then(Modifier::draw_with_cache(|cache| {
                         cache.on_draw_behind(|scope| {
                             scope.draw_round_rect(
@@ -793,11 +782,14 @@ fn counter_app() {
                         });
 
                         Row(
-                            Modifier::padding(8.0)
+                            Modifier::fill_max_width()
+                                .then(Modifier::padding(8.0))
                                 .then(Modifier::rounded_corners(12.0))
                                 .then(Modifier::background(Color(0.1, 0.1, 0.15, 0.6)))
                                 .then(Modifier::padding(8.0)),
-                            RowSpec::default(),
+                            RowSpec::new()
+                                .horizontal_arrangement(LinearArrangement::SpacedBy(8.0))
+                                .vertical_alignment(VerticalAlignment::CenterVertically),
                             || {
                                 Button(
                                     Modifier::width_intrinsic(IntrinsicSize::Max)
@@ -820,10 +812,6 @@ fn counter_app() {
                                         );
                                     },
                                 );
-                                Spacer(Size {
-                                    width: 8.0,
-                                    height: 0.0,
-                                });
                                 Button(
                                     Modifier::width_intrinsic(IntrinsicSize::Max)
                                         .then(Modifier::rounded_corners(12.0))
@@ -839,10 +827,6 @@ fn counter_app() {
                                         Text("Cancel", Modifier::padding(4.0));
                                     },
                                 );
-                                Spacer(Size {
-                                    width: 8.0,
-                                    height: 0.0,
-                                });
                                 Button(
                                     Modifier::width_intrinsic(IntrinsicSize::Max)
                                         .then(Modifier::rounded_corners(12.0))
@@ -868,34 +852,33 @@ fn counter_app() {
 
                         let counter_inc = counter.clone();
                         let counter_dec = counter.clone();
-                        Row(Modifier::padding(8.0), RowSpec::default(), move || {
-                            Button(
-                                Modifier::rounded_corners(16.0)
-                                    .then(Modifier::draw_with_cache(|cache| {
-                                        cache.on_draw_behind(|scope| {
-                                            scope.draw_round_rect(
-                                                Brush::linear_gradient(vec![
-                                                    Color(0.2, 0.45, 0.9, 1.0),
-                                                    Color(0.15, 0.3, 0.65, 1.0),
-                                                ]),
-                                                CornerRadii::uniform(16.0),
-                                            );
-                                        });
-                                    }))
-                                    .then(Modifier::padding(12.0)),
-                                {
-                                    let counter = counter_inc.clone();
-                                    move || counter.set(counter.get() + 1)
-                                },
-                                || {
-                                    Text("Increment", Modifier::padding(6.0));
-                                },
-                            );
-                            Spacer(Size {
-                                width: 12.0,
-                                height: 0.0,
-                            });
-                            Button(
+                        Row(
+                            Modifier::fill_max_width().then(Modifier::padding(8.0)),
+                            RowSpec::new().horizontal_arrangement(LinearArrangement::SpacedBy(12.0)),
+                            move || {
+                                Button(
+                                    Modifier::rounded_corners(16.0)
+                                        .then(Modifier::draw_with_cache(|cache| {
+                                            cache.on_draw_behind(|scope| {
+                                                scope.draw_round_rect(
+                                                    Brush::linear_gradient(vec![
+                                                        Color(0.2, 0.45, 0.9, 1.0),
+                                                        Color(0.15, 0.3, 0.65, 1.0),
+                                                    ]),
+                                                    CornerRadii::uniform(16.0),
+                                                );
+                                            });
+                                        }))
+                                        .then(Modifier::padding(12.0)),
+                                    {
+                                        let counter = counter_inc.clone();
+                                        move || counter.set(counter.get() + 1)
+                                    },
+                                    || {
+                                        Text("Increment", Modifier::padding(6.0));
+                                    },
+                                );
+                                Button(
                                 Modifier::rounded_corners(16.0)
                                     .then(Modifier::draw_behind(|scope| {
                                         scope.draw_round_rect(
