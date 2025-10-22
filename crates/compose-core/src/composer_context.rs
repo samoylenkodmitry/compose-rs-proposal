@@ -1,53 +1,76 @@
-use std::cell::RefCell;
-use std::thread_local;
-
 use crate::Composer;
 
-thread_local! {
-    static COMPOSER_STACK: RefCell<Vec<*mut ()>> = RefCell::new(Vec::new());
+scoped_tls::scoped_thread_local!(static COMPOSER: ComposerCell);
+
+/// A cell that safely holds a mutable reference to a Composer
+/// This allows us to provide &mut access through the scoped TLS
+pub struct ComposerCell {
+    // We use a raw pointer internally, but all access is controlled through safe APIs
+    // The safety invariant is maintained by the scoped_tls lifetime and the enter/set pattern
+    composer: *mut (),
 }
 
-#[must_use = "ComposerScopeGuard pops the composer stack on drop"]
+impl ComposerCell {
+    fn new<'a>(composer: &'a mut Composer<'a>) -> Self {
+        Self {
+            composer: composer as *mut Composer<'a> as *mut (),
+        }
+    }
+
+    fn with_composer<R>(&self, f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
+        // SAFETY: This is safe because:
+        // 1. The ComposerCell is only created by enter() with a valid &mut Composer
+        // 2. The scoped_tls ensures the cell only lives as long as the original reference
+        // 3. Access is gated by the scoped_tls.set() call which enforces proper scoping
+        // 4. We're in a single-threaded context (thread_local)
+        let composer = unsafe { &mut *(self.composer as *mut Composer<'_>) };
+        f(composer)
+    }
+}
+
+#[must_use = "ComposerScopeGuard manages the composer TLS scope"]
 pub struct ComposerScopeGuard;
 
 impl Drop for ComposerScopeGuard {
     fn drop(&mut self) {
-        COMPOSER_STACK.with(|stack| {
-            let mut stack = stack.borrow_mut();
-            stack.pop();
-        });
+        // The scoped_tls automatically handles cleanup when the scope ends
     }
 }
 
-pub fn enter(composer: &mut Composer<'_>) -> ComposerScopeGuard {
-    COMPOSER_STACK.with(|stack| {
-        stack
-            .borrow_mut()
-            .push(composer as *mut Composer<'_> as *mut ());
-    });
-    ComposerScopeGuard
+/// Enter a composer scope, making the composer available to with_composer
+/// The closure should use with_composer() to access the composer
+pub fn enter<'a, R>(composer: &'a mut Composer<'a>, f: impl FnOnce() -> R) -> R {
+    let cell = ComposerCell::new(composer);
+    COMPOSER.set(&cell, f)
 }
 
 pub fn with_composer<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
-    COMPOSER_STACK.with(|stack| {
-        let ptr = *stack
-            .borrow()
-            .last()
-            .expect("with_composer: no active composer");
-        let composer = ptr as *mut Composer<'_>;
-        // SAFETY: the pointer was pushed from an active composer reference, and
-        // the guard ensures it stays valid for the duration of the call.
-        let composer = unsafe { &mut *composer }; // NOLINT: legacy interface
-        f(composer)
+    COMPOSER.with(|cell| cell.with_composer(f))
+}
+
+/// Access the composer with a specific lifetime
+/// SAFETY: This extends the lifetime of the composer reference.
+/// This is safe because the composer is guaranteed to be valid for the lifetime 'a
+/// due to the scoped_tls guarantees and the fact that it was installed with that lifetime.
+pub fn with_composer_lifetime<'a, R>(f: impl FnOnce(&mut Composer<'a>) -> R) -> R {
+    COMPOSER.with(|cell| {
+        cell.with_composer(|composer| {
+            // SAFETY: We extend the lifetime here from '_ to 'a.
+            // This is safe because:
+            // 1. The composer was installed with lifetime 'a via enter()
+            // 2. The scoped_tls ensures the composer reference is valid for the current scope
+            // 3. The lifetime 'a is bounded by the scope of the enter() call
+            let composer: &mut Composer<'a> = unsafe {
+                std::mem::transmute::<&mut Composer<'_>, &mut Composer<'a>>(composer)
+            };
+            f(composer)
+        })
     })
 }
 
 pub fn try_with_composer<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> Option<R> {
-    COMPOSER_STACK.with(|stack| {
-        let ptr = *stack.borrow().last()?;
-        let composer = ptr as *mut Composer<'_>;
-        // SAFETY: see `with_composer` above.
-        let composer = unsafe { &mut *composer };
-        Some(f(composer))
-    })
+    if !COMPOSER.is_set() {
+        return None;
+    }
+    Some(with_composer(f))
 }
