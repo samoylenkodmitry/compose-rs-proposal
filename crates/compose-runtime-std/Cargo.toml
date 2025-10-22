@@ -3,7 +3,7 @@ name = "compose-runtime-std"
 version = "0.1.0"
 edition = "2021"
 description = "Standard library backed runtime services for Compose-RS"
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 
 [dependencies]
 compose-core = { path = "../compose-core" }

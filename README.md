@@ -62,3 +62,7 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md) for detailed progress tracking, impleme
 ## Contributing
 
 This repository is currently a design playground; issues and pull requests are welcome for discussions, experiments, and early prototypes that move the Jetpack Compose–style experience forward in Rust.
+
+## License
+
+This project is available under the terms of the Apache License (Version 2.0). See [`LICENSE-APACHE`](LICENSE-APACHE) for the full license text.
