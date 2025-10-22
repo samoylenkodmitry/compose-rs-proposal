@@ -12,6 +12,7 @@ pub struct DrawShape {
     pub brush: Brush,
     pub shape: Option<RoundedCornerShape>,
     pub z_index: usize,
+    pub clip: Option<Rect>,
 }
 
 #[derive(Clone)]
@@ -21,6 +22,7 @@ pub struct TextDraw {
     pub color: Color,
     pub scale: f32,
     pub z_index: usize,
+    pub clip: Option<Rect>,
 }
 
 #[derive(Clone)]
@@ -48,6 +50,7 @@ pub struct HitRegion {
     pub click_actions: Vec<ClickAction>,
     pub pointer_inputs: Vec<Rc<dyn Fn(PointerEvent)>>,
     pub z_index: usize,
+    pub hit_clip: Option<Rect>,
 }
 
 impl HitTestTarget for HitRegion {
@@ -100,6 +103,11 @@ impl HitTestTarget for HitRegion {
 
 impl HitRegion {
     pub fn contains(&self, x: f32, y: f32) -> bool {
+        if let Some(clip) = self.hit_clip {
+            if !clip.contains(x, y) {
+                return false;
+            }
+        }
         if let Some(shape) = self.shape {
             super::style::point_in_rounded_rect(x, y, self.rect, shape)
         } else {
@@ -125,7 +133,13 @@ impl Scene {
         }
     }
 
-    pub fn push_shape(&mut self, rect: Rect, brush: Brush, shape: Option<RoundedCornerShape>) {
+    pub fn push_shape(
+        &mut self,
+        rect: Rect,
+        brush: Brush,
+        shape: Option<RoundedCornerShape>,
+        clip: Option<Rect>,
+    ) {
         let z_index = self.next_z;
         self.next_z += 1;
         self.shapes.push(DrawShape {
@@ -133,10 +147,18 @@ impl Scene {
             brush,
             shape,
             z_index,
+            clip,
         });
     }
 
-    pub fn push_text(&mut self, rect: Rect, text: String, color: Color, scale: f32) {
+    pub fn push_text(
+        &mut self,
+        rect: Rect,
+        text: String,
+        color: Color,
+        scale: f32,
+        clip: Option<Rect>,
+    ) {
         let z_index = self.next_z;
         self.next_z += 1;
         self.texts.push(TextDraw {
@@ -145,6 +167,7 @@ impl Scene {
             color,
             scale,
             z_index,
+            clip,
         });
     }
 
@@ -154,6 +177,7 @@ impl Scene {
         shape: Option<RoundedCornerShape>,
         click_actions: Vec<ClickAction>,
         pointer_inputs: Vec<Rc<dyn Fn(PointerEvent)>>,
+        hit_clip: Option<Rect>,
     ) {
         if click_actions.is_empty() && pointer_inputs.is_empty() {
             return;
@@ -166,6 +190,7 @@ impl Scene {
             click_actions,
             pointer_inputs,
             z_index,
+            hit_clip,
         });
     }
 }
