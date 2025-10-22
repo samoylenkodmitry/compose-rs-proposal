@@ -124,14 +124,9 @@ fn combined_app() {
             let render_tab_button = move |tab: DemoTab| {
                 let tab_state = tab_state.clone();
                 let is_active = tab_state.get() == tab;
-                let draw_counter = compose_core::useState(|| 0);
-                println!("button recomposition");
                 Button(
                     Modifier::rounded_corners(12.0)
                         .then(Modifier::draw_behind(move |scope| {
-                            let counter = draw_counter.get();
-                            draw_counter.set(1 + counter);
-                            println!("button draw behind, redraws: {counter}");
                             scope.draw_round_rect(
                                 Brush::solid(if is_active {
                                     Color(0.2, 0.45, 0.9, 1.0)
