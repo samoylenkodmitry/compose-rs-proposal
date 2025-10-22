@@ -400,6 +400,83 @@ fn modifier_offset_translates_layout() {
 }
 
 #[test]
+fn column_child_alignment_overrides_parent_alignment() {
+    const EPSILON: f32 = 1e-3;
+
+    fn find_layout<'a>(node: &'a LayoutBox, target: NodeId) -> Option<&'a LayoutBox> {
+        if node.node_id == target {
+            return Some(node);
+        }
+        node.children
+            .iter()
+            .find_map(|child| find_layout(child, target))
+    }
+
+    let mut composition = Composition::new(MemoryApplier::new());
+    let key = location_key(file!(), line!(), column!());
+
+    let start_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+    let center_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+    let end_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+
+    let start_capture = Rc::clone(&start_id);
+    let center_capture = Rc::clone(&center_id);
+    let end_capture = Rc::clone(&end_id);
+
+    composition
+        .render(key, move || {
+            let start_capture = Rc::clone(&start_capture);
+            let center_capture = Rc::clone(&center_capture);
+            let end_capture = Rc::clone(&end_capture);
+            Column(Modifier::width(200.0), ColumnSpec::default(), move || {
+                *start_capture.borrow_mut() =
+                    Some(Text("start", Modifier::size_points(40.0, 10.0)));
+                *center_capture.borrow_mut() = Some(Text(
+                    "center",
+                    Modifier::size_points(40.0, 10.0)
+                        .alignInColumn(HorizontalAlignment::CenterHorizontally),
+                ));
+                *end_capture.borrow_mut() = Some(Text(
+                    "end",
+                    Modifier::size_points(40.0, 10.0).alignInColumn(HorizontalAlignment::End),
+                ));
+            });
+        })
+        .expect("initial render");
+
+    let root = composition.root().expect("root node");
+    let layout_tree = composition
+        .applier_mut()
+        .compute_layout(
+            root,
+            Size {
+                width: 200.0,
+                height: 200.0,
+            },
+        )
+        .expect("compute layout");
+
+    let root_layout = layout_tree.root().clone();
+    assert!((root_layout.rect.width - 200.0).abs() < EPSILON);
+
+    let start_node = start_id.borrow().as_ref().copied().expect("start node id");
+    let center_node = center_id
+        .borrow()
+        .as_ref()
+        .copied()
+        .expect("center node id");
+    let end_node = end_id.borrow().as_ref().copied().expect("end node id");
+
+    let start_layout = find_layout(&root_layout, start_node).expect("start layout");
+    let center_layout = find_layout(&root_layout, center_node).expect("center layout");
+    let end_layout = find_layout(&root_layout, end_node).expect("end layout");
+
+    assert!((start_layout.rect.x - 0.0).abs() < EPSILON);
+    assert!((center_layout.rect.x - 80.0).abs() < EPSILON);
+    assert!((end_layout.rect.x - 160.0).abs() < EPSILON);
+}
+
+#[test]
 fn desktop_counter_layout_respects_container_bounds() {
     const EPSILON: f32 = 1e-3;
 
@@ -529,7 +606,7 @@ fn desktop_counter_layout_respects_container_bounds() {
                             height: 48.0,
                         }));
                         *row_chip_tertiary_inner.borrow_mut() = Some(Spacer(Size {
-                            width: 84.0,
+                            width: 32.0,
                             height: 48.0,
                         }));
                     },
@@ -551,7 +628,7 @@ fn desktop_counter_layout_respects_container_bounds() {
                 *panel_column_capture.borrow_mut() = Some(Column(
                     Modifier::padding(12.0).then(Modifier::size(Size {
                         width: 360.0,
-                        height: 180.0,
+                        height: 232.0,
                     })),
                     ColumnSpec::default(),
                     move || {
@@ -578,7 +655,7 @@ fn desktop_counter_layout_respects_container_bounds() {
                                     height: 48.0,
                                 }));
                                 *action_secondary_leaf.borrow_mut() = Some(Spacer(Size {
-                                    width: 132.0,
+                                    width: 96.0,
                                     height: 48.0,
                                 }));
                             },
@@ -598,11 +675,11 @@ fn desktop_counter_layout_respects_container_bounds() {
                                 .vertical_alignment(VerticalAlignment::CenterVertically),
                             move || {
                                 *footer_status_leaf.borrow_mut() = Some(Spacer(Size {
-                                    width: 220.0,
+                                    width: 200.0,
                                     height: 52.0,
                                 }));
                                 *footer_extra_leaf.borrow_mut() = Some(Spacer(Size {
-                                    width: 80.0,
+                                    width: 32.0,
                                     height: 52.0,
                                 }));
                             },
@@ -620,7 +697,7 @@ fn desktop_counter_layout_respects_container_bounds() {
             root,
             Size {
                 width: 320.0,
-                height: 220.0,
+                height: 396.0,
             },
         )
         .expect("compute layout");
@@ -711,7 +788,7 @@ fn desktop_counter_layout_respects_container_bounds() {
         find_layout(&root_layout, footer_extra_id).expect("footer extra layout");
 
     assert_approx_eq(root_layout.rect.width, 320.0, "root width");
-    assert_approx_eq(root_layout.rect.height, 220.0, "root height");
+    assert_approx_eq(root_layout.rect.height, 396.0, "root height");
 
     assert_approx_eq(header_layout.rect.x, 16.0, "header x");
     assert_approx_eq(header_layout.rect.y, 16.0, "header y");
@@ -743,7 +820,7 @@ fn desktop_counter_layout_respects_container_bounds() {
 
     assert_approx_eq(tertiary_chip_layout.rect.x, 264.0, "tertiary chip x");
     assert_approx_eq(tertiary_chip_layout.rect.y, 76.0, "tertiary chip y");
-    assert_approx_eq(tertiary_chip_layout.rect.width, 84.0, "tertiary chip width");
+    assert_approx_eq(tertiary_chip_layout.rect.width, 32.0, "tertiary chip width");
     assert_approx_eq(
         tertiary_chip_layout.rect.height,
         48.0,
@@ -753,7 +830,7 @@ fn desktop_counter_layout_respects_container_bounds() {
     assert_approx_eq(panel_layout.rect.x, 16.0, "panel x");
     assert_approx_eq(panel_layout.rect.y, 148.0, "panel y");
     assert_approx_eq(panel_layout.rect.width, 288.0, "panel width");
-    assert_approx_eq(panel_layout.rect.height, 180.0, "panel height");
+    assert_approx_eq(panel_layout.rect.height, 232.0, "panel height");
 
     assert_approx_eq(pointer_layout.rect.x, 28.0, "pointer panel x");
     assert_approx_eq(pointer_layout.rect.y, 160.0, "pointer panel y");
@@ -782,7 +859,7 @@ fn desktop_counter_layout_respects_container_bounds() {
     assert_approx_eq(action_secondary_layout.rect.y, 244.0, "action secondary y");
     assert_approx_eq(
         action_secondary_layout.rect.width,
-        132.0,
+        96.0,
         "action secondary width",
     );
     assert_approx_eq(
@@ -800,7 +877,7 @@ fn desktop_counter_layout_respects_container_bounds() {
     assert_approx_eq(footer_status_layout.rect.y, 320.0, "footer status y");
     assert_approx_eq(
         footer_status_layout.rect.width,
-        220.0,
+        200.0,
         "footer status width",
     );
     assert_approx_eq(
@@ -809,9 +886,9 @@ fn desktop_counter_layout_respects_container_bounds() {
         "footer status height",
     );
 
-    assert_approx_eq(footer_extra_layout.rect.x, 272.0, "footer extra x");
+    assert_approx_eq(footer_extra_layout.rect.x, 252.0, "footer extra x");
     assert_approx_eq(footer_extra_layout.rect.y, 320.0, "footer extra y");
-    assert_approx_eq(footer_extra_layout.rect.width, 80.0, "footer extra width");
+    assert_approx_eq(footer_extra_layout.rect.width, 32.0, "footer extra width");
     assert_approx_eq(footer_extra_layout.rect.height, 52.0, "footer extra height");
 
     assert_within(&root_layout, header_layout, "header panel");

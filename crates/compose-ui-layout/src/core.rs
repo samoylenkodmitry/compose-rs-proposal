@@ -1,5 +1,6 @@
 //! Core layout traits and types shared by Compose UI widgets.
 
+use crate::alignment::HorizontalAlignment;
 use crate::constraints::Constraints;
 use compose_core::NodeId;
 use compose_ui_graphics::Size;
@@ -35,6 +36,16 @@ pub trait Placeable {
 
     /// Returns the identifier for the underlying layout node.
     fn node_id(&self) -> NodeId;
+
+    /// Returns a per-child horizontal alignment override when placed in a column layout.
+    ///
+    /// Layout primitives such as Compose UI's `Column` honour the parent's
+    /// [`HorizontalAlignment`] by default. Children can override this behaviour via
+    /// modifier data (e.g. `Modifier::alignInColumn`). When present the override is used
+    /// instead of the parent's alignment during placement.
+    fn column_alignment_override(&self) -> Option<HorizontalAlignment> {
+        None
+    }
 }
 
 /// Scope for measurement operations.

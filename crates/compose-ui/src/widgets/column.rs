@@ -46,6 +46,11 @@ pub fn Column<F>(modifier: Modifier, spec: ColumnSpec, content: F) -> NodeId
 where
     F: FnMut() + 'static,
 {
-    let policy = ColumnMeasurePolicy::new(spec.vertical_arrangement, spec.horizontal_alignment);
+    let layout_properties = modifier.layout_properties();
+    let policy = ColumnMeasurePolicy::new(
+        spec.vertical_arrangement,
+        spec.horizontal_alignment,
+        layout_properties,
+    );
     Layout(modifier, policy, content)
 }

@@ -1,6 +1,8 @@
+use super::resolve_dimension;
 use crate::layout::core::{
     Alignment, Arrangement, HorizontalAlignment, LinearArrangement, Measurable, VerticalAlignment,
 };
+use crate::modifier::LayoutProperties;
 use compose_ui_layout::{Constraints, MeasurePolicy, MeasureResult, Placement};
 
 /// MeasurePolicy for Box layout - overlays children according to alignment.
@@ -108,16 +110,19 @@ impl MeasurePolicy for BoxMeasurePolicy {
 pub struct ColumnMeasurePolicy {
     pub vertical_arrangement: LinearArrangement,
     pub horizontal_alignment: HorizontalAlignment,
+    layout_properties: LayoutProperties,
 }
 
 impl ColumnMeasurePolicy {
     pub fn new(
         vertical_arrangement: LinearArrangement,
         horizontal_alignment: HorizontalAlignment,
+        layout_properties: LayoutProperties,
     ) -> Self {
         Self {
             vertical_arrangement,
             horizontal_alignment,
+            layout_properties,
         }
     }
 }
@@ -168,13 +173,24 @@ impl MeasurePolicy for ColumnMeasurePolicy {
             .arrange(height, &child_heights, &mut positions);
 
         let mut placements = Vec::with_capacity(placeables.len());
+        let padding = self.layout_properties.padding();
+        let padding_width = padding.horizontal_sum();
+        let resolved_width = resolve_dimension(
+            width + padding_width,
+            self.layout_properties.width(),
+            self.layout_properties.min_width(),
+            self.layout_properties.max_width(),
+            constraints.min_width,
+            constraints.max_width,
+        ) - padding_width;
+        let available_width = resolved_width.max(width);
+
         for (placeable, y) in placeables.into_iter().zip(positions.into_iter()) {
             let child_width = placeable.width();
-            let x = match self.horizontal_alignment {
-                HorizontalAlignment::Start => 0.0,
-                HorizontalAlignment::CenterHorizontally => ((width - child_width) / 2.0).max(0.0),
-                HorizontalAlignment::End => (width - child_width).max(0.0),
-            };
+            let alignment = placeable
+                .column_alignment_override()
+                .unwrap_or(self.horizontal_alignment);
+            let x = alignment.align(available_width, child_width);
 
             placeable.place(x, y);
             placements.push(Placement::new(placeable.node_id(), x, y, 0));

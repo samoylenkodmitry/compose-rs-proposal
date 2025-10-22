@@ -1,5 +1,6 @@
 use super::*;
 use crate::layout::core::Placeable;
+use crate::modifier::LayoutProperties;
 
 struct MockMeasurable {
     width: f32,
@@ -87,7 +88,11 @@ fn box_measure_policy_takes_max_size() {
 
 #[test]
 fn column_measure_policy_sums_heights() {
-    let policy = ColumnMeasurePolicy::new(LinearArrangement::Start, HorizontalAlignment::Start);
+    let policy = ColumnMeasurePolicy::new(
+        LinearArrangement::Start,
+        HorizontalAlignment::Start,
+        LayoutProperties::default(),
+    );
     let measurables: Vec<Box<dyn Measurable>> = vec![
         Box::new(MockMeasurable::new(40.0, 20.0, 1)),
         Box::new(MockMeasurable::new(60.0, 30.0, 2)),

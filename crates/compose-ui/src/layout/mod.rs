@@ -395,6 +395,7 @@ impl<'a> LayoutBuilder<'a> {
             Rc::new(ColumnMeasurePolicy::new(
                 LinearArrangement::Start,
                 HorizontalAlignment::Start,
+                node.modifier.layout_properties(),
             )),
         );
         layout.children = node.children.clone();
@@ -613,6 +614,17 @@ impl Placeable for LayoutChildPlaceable {
 
     fn node_id(&self) -> NodeId {
         self.node_id
+    }
+
+    fn column_alignment_override(&self) -> Option<HorizontalAlignment> {
+        self.measured.borrow().as_ref().and_then(|node| {
+            let modifier = &node.data.modifier;
+            modifier.column_alignment().or_else(|| {
+                modifier
+                    .box_alignment()
+                    .map(|alignment| alignment.horizontal)
+            })
+        })
     }
 }
 
@@ -860,7 +872,7 @@ fn resolve_dimension_with_intrinsics(
     size.max(0.0)
 }
 
-fn resolve_dimension(
+pub(super) fn resolve_dimension(
     base: f32,
     explicit: DimensionConstraint,
     min_override: Option<f32>,
