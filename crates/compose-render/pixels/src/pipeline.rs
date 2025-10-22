@@ -11,33 +11,55 @@ use crate::style::{
 };
 
 pub(crate) fn render_layout_tree(root: &LayoutBox, scene: &mut Scene) {
-    render_layout_node(root, GraphicsLayer::default(), scene, None);
+    render_layout_node(root, GraphicsLayer::default(), scene, None, None);
 }
 
 fn render_layout_node(
     layout: &LayoutBox,
     parent_layer: GraphicsLayer,
     scene: &mut Scene,
-    parent_clip: Option<Rect>,
+    parent_visual_clip: Option<Rect>,
+    parent_hit_clip: Option<Rect>,
 ) {
     match &layout.node_data.kind {
         LayoutNodeKind::Text { value } => {
-            render_text(layout, value, parent_layer, parent_clip, scene);
+            render_text(
+                layout,
+                value,
+                parent_layer,
+                parent_visual_clip,
+                parent_hit_clip,
+                scene,
+            );
         }
         LayoutNodeKind::Spacer => {
-            render_spacer(layout, parent_layer, parent_clip, scene);
+            render_spacer(
+                layout,
+                parent_layer,
+                parent_visual_clip,
+                parent_hit_clip,
+                scene,
+            );
         }
         LayoutNodeKind::Button { on_click } => {
             render_button(
                 layout,
                 Rc::clone(on_click),
                 parent_layer,
-                parent_clip,
+                parent_visual_clip,
+                parent_hit_clip,
                 scene,
             );
         }
         LayoutNodeKind::Layout | LayoutNodeKind::Subcompose | LayoutNodeKind::Unknown => {
-            render_container(layout, parent_layer, parent_clip, scene, Vec::new());
+            render_container(
+                layout,
+                parent_layer,
+                parent_visual_clip,
+                parent_hit_clip,
+                scene,
+                Vec::new(),
+            );
         }
     }
 }
@@ -45,7 +67,8 @@ fn render_layout_node(
 fn render_container(
     layout: &LayoutBox,
     parent_layer: GraphicsLayer,
-    parent_clip: Option<Rect>,
+    parent_visual_clip: Option<Rect>,
+    parent_hit_clip: Option<Rect>,
     scene: &mut Scene,
     mut extra_clicks: Vec<ClickAction>,
 ) {
@@ -58,6 +81,32 @@ fn render_container(
         height: rect.height,
     };
     let origin = (rect.x, rect.y);
+    let transformed_rect = apply_layer_to_rect(rect, origin, node_layer);
+
+    if transformed_rect.width <= 0.0 || transformed_rect.height <= 0.0 {
+        return;
+    }
+
+    let requested_visual_clip = style.clip_to_bounds.then_some(transformed_rect);
+    let visual_clip = match (parent_visual_clip, requested_visual_clip) {
+        (Some(parent), Some(current)) => intersect_rect(parent, current),
+        (Some(parent), None) => Some(parent),
+        (None, Some(current)) => Some(current),
+        (None, None) => None,
+    };
+
+    if style.clip_to_bounds && visual_clip.is_none() {
+        return;
+    }
+
+    let requested_hit_clip = style.clip_to_bounds.then_some(transformed_rect);
+    let hit_clip = match (parent_hit_clip, requested_hit_clip) {
+        (Some(parent), Some(current)) => intersect_rect(parent, current),
+        (Some(parent), None) => Some(parent),
+        (None, Some(current)) => Some(current),
+        (None, None) => None,
+    };
+
     apply_draw_commands(
         &style.draw_commands,
         DrawPlacement::Behind,
@@ -65,44 +114,36 @@ fn render_container(
         origin,
         size,
         node_layer,
-        parent_clip,
+        visual_clip,
         scene,
     );
+
     let scaled_shape = style.shape.map(|shape| {
         let resolved = shape.resolve(rect.width, rect.height);
         RoundedCornerShape::with_radii(scale_corner_radii(resolved, node_layer.scale))
     });
-    let transformed_rect = apply_layer_to_rect(rect, origin, node_layer);
-    let clip_rect = match parent_clip {
-        Some(clip) => intersect_rect(clip, transformed_rect),
-        None => Some(transformed_rect),
-    };
-    let clip_rect = match clip_rect {
-        Some(rect) if rect.width > 0.0 && rect.height > 0.0 => rect,
-        _ => return,
-    };
+
     if let Some(color) = style.background {
         let brush = apply_layer_to_brush(Brush::solid(color), node_layer);
-        scene.push_shape(
-            transformed_rect,
-            brush,
-            scaled_shape.clone(),
-            Some(clip_rect),
-        );
+        scene.push_shape(transformed_rect, brush, scaled_shape.clone(), visual_clip);
     }
+
     if let Some(handler) = style.clickable {
         extra_clicks.push(ClickAction::WithPoint(handler));
     }
+
     scene.push_hit(
         transformed_rect,
         scaled_shape.clone(),
         extra_clicks,
         style.pointer_inputs.clone(),
-        Some(clip_rect),
+        hit_clip,
     );
+
     for child_layout in &layout.children {
-        render_layout_node(child_layout, node_layer, scene, Some(clip_rect));
+        render_layout_node(child_layout, node_layer, scene, visual_clip, hit_clip);
     }
+
     apply_draw_commands(
         &style.draw_commands,
         DrawPlacement::Overlay,
@@ -110,7 +151,7 @@ fn render_container(
         origin,
         size,
         node_layer,
-        Some(clip_rect),
+        visual_clip,
         scene,
     );
 }
@@ -119,7 +160,8 @@ fn render_text(
     layout: &LayoutBox,
     value: &str,
     parent_layer: GraphicsLayer,
-    parent_clip: Option<Rect>,
+    parent_visual_clip: Option<Rect>,
+    parent_hit_clip: Option<Rect>,
     scene: &mut Scene,
 ) {
     let modifier = &layout.node_data.modifier;
@@ -131,6 +173,32 @@ fn render_text(
         height: rect.height,
     };
     let origin = (rect.x, rect.y);
+    let transformed_rect = apply_layer_to_rect(rect, origin, node_layer);
+
+    if transformed_rect.width <= 0.0 || transformed_rect.height <= 0.0 {
+        return;
+    }
+
+    let requested_visual_clip = style.clip_to_bounds.then_some(transformed_rect);
+    let visual_clip = match (parent_visual_clip, requested_visual_clip) {
+        (Some(parent), Some(current)) => intersect_rect(parent, current),
+        (Some(parent), None) => Some(parent),
+        (None, Some(current)) => Some(current),
+        (None, None) => None,
+    };
+
+    if style.clip_to_bounds && visual_clip.is_none() {
+        return;
+    }
+
+    let requested_hit_clip = style.clip_to_bounds.then_some(transformed_rect);
+    let hit_clip = match (parent_hit_clip, requested_hit_clip) {
+        (Some(parent), Some(current)) => intersect_rect(parent, current),
+        (Some(parent), None) => Some(parent),
+        (None, Some(current)) => Some(current),
+        (None, None) => None,
+    };
+
     apply_draw_commands(
         &style.draw_commands,
         DrawPlacement::Behind,
@@ -138,30 +206,16 @@ fn render_text(
         origin,
         size,
         node_layer,
-        parent_clip,
+        visual_clip,
         scene,
     );
     let scaled_shape = style.shape.map(|shape| {
         let resolved = shape.resolve(rect.width, rect.height);
         RoundedCornerShape::with_radii(scale_corner_radii(resolved, node_layer.scale))
     });
-    let transformed_rect = apply_layer_to_rect(rect, origin, node_layer);
-    let clip_rect = match parent_clip {
-        Some(clip) => intersect_rect(clip, transformed_rect),
-        None => Some(transformed_rect),
-    };
-    let clip_rect = match clip_rect {
-        Some(rect) if rect.width > 0.0 && rect.height > 0.0 => rect,
-        _ => return,
-    };
     if let Some(color) = style.background {
         let brush = apply_layer_to_brush(Brush::solid(color), node_layer);
-        scene.push_shape(
-            transformed_rect,
-            brush,
-            scaled_shape.clone(),
-            Some(clip_rect),
-        );
+        scene.push_shape(transformed_rect, brush, scaled_shape.clone(), visual_clip);
     }
     let metrics = measure_text(value);
     let padding = style.padding;
@@ -177,7 +231,7 @@ fn render_text(
         value.to_string(),
         apply_layer_to_color(Color(1.0, 1.0, 1.0, 1.0), node_layer),
         node_layer.scale,
-        Some(clip_rect),
+        visual_clip,
     );
     let mut click_actions = Vec::new();
     if let Some(handler) = style.clickable {
@@ -188,7 +242,7 @@ fn render_text(
         scaled_shape.clone(),
         click_actions,
         style.pointer_inputs.clone(),
-        Some(clip_rect),
+        hit_clip,
     );
     apply_draw_commands(
         &style.draw_commands,
@@ -197,7 +251,7 @@ fn render_text(
         origin,
         size,
         node_layer,
-        Some(clip_rect),
+        visual_clip,
         scene,
     );
 }
@@ -205,21 +259,37 @@ fn render_text(
 fn render_spacer(
     layout: &LayoutBox,
     parent_layer: GraphicsLayer,
-    parent_clip: Option<Rect>,
+    parent_visual_clip: Option<Rect>,
+    parent_hit_clip: Option<Rect>,
     scene: &mut Scene,
 ) {
-    render_container(layout, parent_layer, parent_clip, scene, Vec::new());
+    render_container(
+        layout,
+        parent_layer,
+        parent_visual_clip,
+        parent_hit_clip,
+        scene,
+        Vec::new(),
+    );
 }
 
 fn render_button(
     layout: &LayoutBox,
     on_click: Rc<std::cell::RefCell<dyn FnMut()>>,
     parent_layer: GraphicsLayer,
-    parent_clip: Option<Rect>,
+    parent_visual_clip: Option<Rect>,
+    parent_hit_clip: Option<Rect>,
     scene: &mut Scene,
 ) {
     let clicks = vec![ClickAction::Simple(on_click)];
-    render_container(layout, parent_layer, parent_clip, scene, clicks);
+    render_container(
+        layout,
+        parent_layer,
+        parent_visual_clip,
+        parent_hit_clip,
+        scene,
+        clicks,
+    );
 }
 
 fn intersect_rect(a: Rect, b: Rect) -> Option<Rect> {

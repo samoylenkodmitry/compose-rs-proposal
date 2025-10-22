@@ -16,6 +16,7 @@ pub(crate) struct NodeStyle {
     pub pointer_inputs: Vec<Rc<dyn Fn(PointerEvent)>>,
     pub draw_commands: Vec<DrawCommand>,
     pub graphics_layer: Option<GraphicsLayer>,
+    pub clip_to_bounds: bool,
 }
 
 impl NodeStyle {
@@ -28,6 +29,7 @@ impl NodeStyle {
             pointer_inputs: modifier.pointer_inputs(),
             draw_commands: modifier.draw_commands(),
             graphics_layer: modifier.graphics_layer_values(),
+            clip_to_bounds: modifier.clips_to_bounds(),
         }
     }
 }

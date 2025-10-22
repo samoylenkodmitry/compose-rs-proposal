@@ -173,6 +173,12 @@ impl Modifier {
         self.then(Self::weight_with_fill(weight, fill))
     }
 
+    pub fn clip_to_bounds() -> Self {
+        Self::with_state(|state| {
+            state.clip_to_bounds = true;
+        })
+    }
+
     pub fn then(&self, next: Modifier) -> Modifier {
         if self.elements.is_empty() && self.state.is_default() {
             return next;
@@ -259,6 +265,10 @@ impl Modifier {
         self.state.graphics_layer
     }
 
+    pub fn clips_to_bounds(&self) -> bool {
+        self.state.clip_to_bounds
+    }
+
     fn with_element<E, F>(element: E, update: F) -> Self
     where
         E: ModifierElement,
@@ -309,6 +319,7 @@ struct ModifierState {
     click_handler: Option<Rc<dyn Fn(Point)>>,
     pointer_inputs: Vec<Rc<dyn Fn(PointerEvent)>>,
     graphics_layer: Option<GraphicsLayer>,
+    clip_to_bounds: bool,
 }
 
 impl ModifierState {
@@ -341,6 +352,9 @@ impl ModifierState {
         if let Some(layer) = other.graphics_layer {
             self.graphics_layer = Some(layer);
         }
+        if other.clip_to_bounds {
+            self.clip_to_bounds = true;
+        }
         self.draw_commands
             .extend(other.draw_commands.iter().cloned());
         self.pointer_inputs
@@ -354,6 +368,7 @@ impl ModifierState {
             && self.corner_shape.is_none()
             && self.click_handler.is_none()
             && self.graphics_layer.is_none()
+            && !self.clip_to_bounds
             && self.draw_commands.is_empty()
             && self.pointer_inputs.is_empty()
     }
@@ -370,6 +385,7 @@ impl Default for ModifierState {
             click_handler: None,
             pointer_inputs: Vec::new(),
             graphics_layer: None,
+            clip_to_bounds: false,
         }
     }
 }

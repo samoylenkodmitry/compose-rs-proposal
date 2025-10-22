@@ -76,16 +76,7 @@ fn clip_rect_to_bounds(
 }
 
 fn clip_bounds_from_clip(clip: Option<Rect>, width: u32, height: u32) -> Option<ClipBounds> {
-    if let Some(rect) = clip {
-        clip_rect_to_bounds(rect, None, width, height)
-    } else {
-        Some(ClipBounds {
-            min_x: 0,
-            min_y: 0,
-            max_x: width as i32,
-            max_y: height as i32,
-        })
-    }
+    clip.and_then(|rect| clip_rect_to_bounds(rect, None, width, height))
 }
 
 impl TextMeasurer for RusttypeTextMeasurer {
@@ -193,33 +184,31 @@ fn draw_text(frame: &mut [u8], width: u32, height: u32, draw: TextDraw) {
     if text_scale == 0.0 {
         return;
     }
-    let clip_bounds = match clip_bounds_from_clip(draw.clip, width, height) {
-        Some(bounds) => bounds,
-        None => return,
-    };
+    let clip_bounds = clip_bounds_from_clip(draw.clip, width, height);
+    if draw.clip.is_some() && clip_bounds.is_none() {
+        return;
+    }
+    let clip_limits =
+        clip_bounds.map(|bounds| (bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y));
     let scale = Scale::uniform(TEXT_SIZE * text_scale);
     let font = &*FONT;
     let v_metrics = font.v_metrics(scale);
     let offset = point(draw.rect.x, draw.rect.y + v_metrics.ascent);
     for glyph in font.layout(&draw.text, scale, offset) {
         if let Some(bb) = glyph.pixel_bounding_box() {
-            if bb.max.x <= clip_bounds.min_x
-                || bb.min.x >= clip_bounds.max_x
-                || bb.max.y <= clip_bounds.min_y
-                || bb.min.y >= clip_bounds.max_y
-            {
-                continue;
+            if let Some((min_x, min_y, max_x, max_y)) = clip_limits {
+                if bb.max.x <= min_x || bb.min.x >= max_x || bb.max.y <= min_y || bb.min.y >= max_y
+                {
+                    continue;
+                }
             }
-            let clip_bounds = clip_bounds;
             glyph.draw(|gx, gy, value| {
                 let px = bb.min.x + gx as i32;
                 let py = bb.min.y + gy as i32;
-                if px < clip_bounds.min_x
-                    || px >= clip_bounds.max_x
-                    || py < clip_bounds.min_y
-                    || py >= clip_bounds.max_y
-                {
-                    return;
+                if let Some((min_x, min_y, max_x, max_y)) = clip_limits {
+                    if px < min_x || px >= max_x || py < min_y || py >= max_y {
+                        return;
+                    }
                 }
                 if px < 0 || py < 0 || px as u32 >= width || py as u32 >= height {
                     return;

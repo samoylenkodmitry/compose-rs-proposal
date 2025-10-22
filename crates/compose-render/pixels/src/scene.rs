@@ -50,7 +50,7 @@ pub struct HitRegion {
     pub click_actions: Vec<ClickAction>,
     pub pointer_inputs: Vec<Rc<dyn Fn(PointerEvent)>>,
     pub z_index: usize,
-    pub clip: Option<Rect>,
+    pub hit_clip: Option<Rect>,
 }
 
 impl HitTestTarget for HitRegion {
@@ -103,7 +103,7 @@ impl HitTestTarget for HitRegion {
 
 impl HitRegion {
     pub fn contains(&self, x: f32, y: f32) -> bool {
-        if let Some(clip) = self.clip {
+        if let Some(clip) = self.hit_clip {
             if !clip.contains(x, y) {
                 return false;
             }
@@ -177,7 +177,7 @@ impl Scene {
         shape: Option<RoundedCornerShape>,
         click_actions: Vec<ClickAction>,
         pointer_inputs: Vec<Rc<dyn Fn(PointerEvent)>>,
-        clip: Option<Rect>,
+        hit_clip: Option<Rect>,
     ) {
         if click_actions.is_empty() && pointer_inputs.is_empty() {
             return;
@@ -190,7 +190,7 @@ impl Scene {
             click_actions,
             pointer_inputs,
             z_index,
-            clip,
+            hit_clip,
         });
     }
 }
