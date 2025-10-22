@@ -1166,3 +1166,114 @@ fn test_fill_max_width_with_background_and_double_padding() {
         column_right
     );
 }
+
+#[test]
+fn test_fill_max_width_should_not_propagate_to_wrapping_parent() {
+    // Testing the issue where a child with fill_max_width() causes
+    // its parent (which should wrap content) to also fill parent
+    let mut composition = Composition::new(MemoryApplier::new());
+    let key = location_key(file!(), line!(), column!());
+
+    let outer_column_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+    let inner_column_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+    let row_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+
+    let outer_render = Rc::clone(&outer_column_id);
+    let inner_render = Rc::clone(&inner_column_id);
+    let row_render = Rc::clone(&row_id);
+
+    composition
+        .render(key, move || {
+            let outer_cap = Rc::clone(&outer_render);
+            let inner_cap = Rc::clone(&inner_render);
+            let row_cap = Rc::clone(&row_render);
+
+            // Outer Column - no size modifier (should wrap content)
+            *outer_cap.borrow_mut() = Some(Column(
+                Modifier::empty(),
+                ColumnSpec::default(),
+                move || {
+                    let inner_cap2 = Rc::clone(&inner_cap);
+                    let row_cap2 = Rc::clone(&row_cap);
+                    
+                    // Inner Column - no size modifier (should wrap content)
+                    *inner_cap2.borrow_mut() = Some(Column(
+                        Modifier::empty(),
+                        ColumnSpec::default(),
+                        move || {
+                            let row_cap3 = Rc::clone(&row_cap2);
+                            
+                            // Row with fill_max_width() containing fixed-width content
+                            *row_cap3.borrow_mut() = Some(Row(
+                                Modifier::fill_max_width(),
+                                RowSpec::default(),
+                                move || {
+                                    // Fixed width content: 100px + 100px = 200px
+                                    Spacer(Size { width: 100.0, height: 20.0 });
+                                    Spacer(Size { width: 100.0, height: 20.0 });
+                                },
+                            ));
+                        },
+                    ));
+                },
+            ));
+        })
+        .expect("initial render");
+
+    let root = composition.root().expect("root node");
+    let layout_tree = composition
+        .applier_mut()
+        .compute_layout(
+            root,
+            Size {
+                width: 800.0,
+                height: 600.0,
+            },
+        )
+        .expect("compute layout");
+
+    let root_layout = layout_tree.root();
+
+    fn find_layout<'a>(node: &'a LayoutBox, target: NodeId) -> Option<&'a LayoutBox> {
+        if node.node_id == target {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| find_layout(child, target))
+    }
+
+    let outer_node = outer_column_id.borrow().as_ref().copied().expect("outer");
+    let inner_node = inner_column_id.borrow().as_ref().copied().expect("inner");
+    let row_node = row_id.borrow().as_ref().copied().expect("row");
+
+    let outer_layout = find_layout(&root_layout, outer_node).expect("outer layout");
+    let inner_layout = find_layout(&root_layout, inner_node).expect("inner layout");
+    let row_layout = find_layout(&root_layout, row_node).expect("row layout");
+
+    println!("\n=== Fill Propagation Test ===");
+    println!("Window: 800px");
+    println!("Row content: 200px (100 + 100)");
+    println!("Outer Column (should wrap): width={}", outer_layout.rect.width);
+    println!("Inner Column (should wrap): width={}", inner_layout.rect.width);
+    println!("Row (fill_max_width): width={}", row_layout.rect.width);
+
+    // The issue: both Columns are 800px instead of wrapping to content
+    // Expected behavior:
+    // - Row should see that its parent (Inner Column) wants to wrap
+    // - Inner Column should determine its width from its children's MINIMUM intrinsic width
+    // - Row's minimum intrinsic width is 200px (from its content)
+    // - So Inner Column should be 200px
+    // - And Outer Column should also be 200px
+
+    // What's happening now:
+    println!("\nCurrent (incorrect) behavior:");
+    println!("  Row gets max_width=800 from constraints");
+    println!("  Row with fill_max_width takes all 800px");
+    println!("  Inner Column wraps around Row -> 800px");
+    println!("  Outer Column wraps around Inner Column -> 800px");
+    
+    // This test documents the current INCORRECT behavior
+    // When fixed, these assertions should be updated
+    assert_eq!(outer_layout.rect.width, 800.0, "CURRENT BUG: Outer Column fills parent instead of wrapping");
+    assert_eq!(inner_layout.rect.width, 800.0, "CURRENT BUG: Inner Column fills parent instead of wrapping");
+    assert_eq!(row_layout.rect.width, 800.0, "Row correctly fills its parent");
+}
