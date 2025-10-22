@@ -15,7 +15,7 @@ use crate::modifier::{
 };
 use crate::primitives::{ButtonNode, LayoutNode, SpacerNode, TextNode};
 use crate::subcompose_layout::SubcomposeLayoutNode;
-use compose_ui_layout::{Constraints, IntrinsicSize};
+use compose_ui_layout::{Constraints, IntrinsicSize, ParentData, Weight};
 
 /// Result of running layout for a Compose tree.
 #[derive(Debug, Clone)]
@@ -454,6 +454,7 @@ struct LayoutChildMeasurable {
     last_position: Rc<RefCell<Option<Point>>>,
     error: Rc<RefCell<Option<NodeError>>>,
     runtime_handle: Option<RuntimeHandle>,
+    parent_data: ParentData,
 }
 
 impl LayoutChildMeasurable {
@@ -465,6 +466,7 @@ impl LayoutChildMeasurable {
         error: Rc<RefCell<Option<NodeError>>>,
         runtime_handle: Option<RuntimeHandle>,
     ) -> Self {
+        let parent_data = unsafe { resolve_parent_data(applier, node_id) };
         Self {
             applier,
             node_id,
@@ -472,6 +474,7 @@ impl LayoutChildMeasurable {
             last_position,
             error,
             runtime_handle,
+            parent_data,
         }
     }
 
@@ -500,7 +503,57 @@ impl LayoutChildMeasurable {
     }
 }
 
+unsafe fn resolve_parent_data(applier: *mut MemoryApplier, node_id: NodeId) -> ParentData {
+    if applier.is_null() {
+        return ParentData::default();
+    }
+
+    let applier = &mut *applier;
+
+    if let Ok(modifier) = applier.with_node::<LayoutNode, _>(node_id, |node| node.modifier.clone())
+    {
+        return parent_data_from_modifier(&modifier);
+    }
+
+    if let Ok(modifier) =
+        applier.with_node::<SubcomposeLayoutNode, _>(node_id, |node| node.modifier.clone())
+    {
+        return parent_data_from_modifier(&modifier);
+    }
+
+    if let Ok(modifier) = applier.with_node::<ButtonNode, _>(node_id, |node| node.modifier.clone())
+    {
+        return parent_data_from_modifier(&modifier);
+    }
+
+    if let Ok(modifier) = applier.with_node::<TextNode, _>(node_id, |node| node.modifier.clone()) {
+        return parent_data_from_modifier(&modifier);
+    }
+
+    ParentData::default()
+}
+
+fn parent_data_from_modifier(modifier: &Modifier) -> ParentData {
+    let props = modifier.layout_properties();
+    let mut data = ParentData::default();
+    if let Some(weight) = props.weight() {
+        if weight.weight > 0.0 {
+            data.weight = Some(Weight {
+                value: weight.weight,
+                fill: weight.fill,
+            });
+        }
+    }
+    data.horizontal_alignment = props.column_alignment();
+    data.vertical_alignment = props.row_alignment();
+    data
+}
+
 impl Measurable for LayoutChildMeasurable {
+    fn parent_data(&self) -> ParentData {
+        self.parent_data
+    }
+
     fn measure(&self, constraints: Constraints) -> Box<dyn Placeable> {
         match unsafe {
             measure_node_via_ptr(

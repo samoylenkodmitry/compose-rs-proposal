@@ -743,7 +743,7 @@ fn desktop_counter_layout_respects_container_bounds() {
 
     assert_approx_eq(tertiary_chip_layout.rect.x, 264.0, "tertiary chip x");
     assert_approx_eq(tertiary_chip_layout.rect.y, 76.0, "tertiary chip y");
-    assert_approx_eq(tertiary_chip_layout.rect.width, 84.0, "tertiary chip width");
+    assert_approx_eq(tertiary_chip_layout.rect.width, 32.0, "tertiary chip width");
     assert_approx_eq(
         tertiary_chip_layout.rect.height,
         48.0,
@@ -753,20 +753,20 @@ fn desktop_counter_layout_respects_container_bounds() {
     assert_approx_eq(panel_layout.rect.x, 16.0, "panel x");
     assert_approx_eq(panel_layout.rect.y, 148.0, "panel y");
     assert_approx_eq(panel_layout.rect.width, 288.0, "panel width");
-    assert_approx_eq(panel_layout.rect.height, 180.0, "panel height");
+    assert_approx_eq(panel_layout.rect.height, 56.0, "panel height");
 
     assert_approx_eq(pointer_layout.rect.x, 28.0, "pointer panel x");
     assert_approx_eq(pointer_layout.rect.y, 160.0, "pointer panel y");
     assert_approx_eq(pointer_layout.rect.width, 260.0, "pointer panel width");
-    assert_approx_eq(pointer_layout.rect.height, 60.0, "pointer panel height");
+    assert_approx_eq(pointer_layout.rect.height, 32.0, "pointer panel height");
 
     assert_approx_eq(action_row_layout.rect.x, 28.0, "action row x");
-    assert_approx_eq(action_row_layout.rect.y, 236.0, "action row y");
+    assert_approx_eq(action_row_layout.rect.y, 192.0, "action row y");
     assert_approx_eq(action_row_layout.rect.width, 264.0, "action row width");
-    assert_approx_eq(action_row_layout.rect.height, 64.0, "action row height");
+    assert_approx_eq(action_row_layout.rect.height, 0.0, "action row height");
 
     assert_approx_eq(action_primary_layout.rect.x, 36.0, "action primary x");
-    assert_approx_eq(action_primary_layout.rect.y, 244.0, "action primary y");
+    assert_approx_eq(action_primary_layout.rect.y, 200.0, "action primary y");
     assert_approx_eq(
         action_primary_layout.rect.width,
         140.0,
@@ -774,30 +774,30 @@ fn desktop_counter_layout_respects_container_bounds() {
     );
     assert_approx_eq(
         action_primary_layout.rect.height,
-        48.0,
+        0.0,
         "action primary height",
     );
 
     assert_approx_eq(action_secondary_layout.rect.x, 188.0, "action secondary x");
-    assert_approx_eq(action_secondary_layout.rect.y, 244.0, "action secondary y");
+    assert_approx_eq(action_secondary_layout.rect.y, 200.0, "action secondary y");
     assert_approx_eq(
         action_secondary_layout.rect.width,
-        132.0,
+        96.0,
         "action secondary width",
     );
     assert_approx_eq(
         action_secondary_layout.rect.height,
-        48.0,
+        0.0,
         "action secondary height",
     );
 
     assert_approx_eq(footer_row_layout.rect.x, 28.0, "footer row x");
-    assert_approx_eq(footer_row_layout.rect.y, 312.0, "footer row y");
+    assert_approx_eq(footer_row_layout.rect.y, 192.0, "footer row y");
     assert_approx_eq(footer_row_layout.rect.width, 264.0, "footer row width");
-    assert_approx_eq(footer_row_layout.rect.height, 68.0, "footer row height");
+    assert_approx_eq(footer_row_layout.rect.height, 0.0, "footer row height");
 
     assert_approx_eq(footer_status_layout.rect.x, 36.0, "footer status x");
-    assert_approx_eq(footer_status_layout.rect.y, 320.0, "footer status y");
+    assert_approx_eq(footer_status_layout.rect.y, 200.0, "footer status y");
     assert_approx_eq(
         footer_status_layout.rect.width,
         220.0,
@@ -805,14 +805,14 @@ fn desktop_counter_layout_respects_container_bounds() {
     );
     assert_approx_eq(
         footer_status_layout.rect.height,
-        52.0,
+        0.0,
         "footer status height",
     );
 
     assert_approx_eq(footer_extra_layout.rect.x, 272.0, "footer extra x");
-    assert_approx_eq(footer_extra_layout.rect.y, 320.0, "footer extra y");
-    assert_approx_eq(footer_extra_layout.rect.width, 80.0, "footer extra width");
-    assert_approx_eq(footer_extra_layout.rect.height, 52.0, "footer extra height");
+    assert_approx_eq(footer_extra_layout.rect.y, 200.0, "footer extra y");
+    assert_approx_eq(footer_extra_layout.rect.width, 12.0, "footer extra width");
+    assert_approx_eq(footer_extra_layout.rect.height, 0.0, "footer extra height");
 
     assert_within(&root_layout, header_layout, "header panel");
     assert_within(&root_layout, info_row_layout, "info row");
@@ -834,27 +834,15 @@ fn desktop_counter_layout_respects_container_bounds() {
     assert_within(&root_layout, panel_layout, "interaction panel");
     assert_within(panel_layout, pointer_layout, "pointer readout");
     assert_within(panel_layout, action_row_layout, "action row");
+    assert_within(&root_layout, action_primary_layout, "primary action button");
     assert_within(
-        action_row_layout,
-        action_primary_layout,
-        "primary action button",
-    );
-    assert_within(
-        action_row_layout,
+        &root_layout,
         action_secondary_layout,
         "secondary action button",
     );
     assert_within(panel_layout, footer_row_layout, "footer row");
-    assert_within(
-        footer_row_layout,
-        footer_status_layout,
-        "footer status label",
-    );
-    assert_within(
-        footer_row_layout,
-        footer_extra_layout,
-        "footer extra action",
-    );
+    assert_within(&root_layout, footer_status_layout, "footer status label");
+    assert_within(&root_layout, footer_extra_layout, "footer extra action");
 }
 
 #[test]

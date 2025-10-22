@@ -1,13 +1,34 @@
 //! Core layout traits and types shared by Compose UI widgets.
 
+use crate::alignment::{HorizontalAlignment, VerticalAlignment};
 use crate::constraints::Constraints;
 use compose_core::NodeId;
 use compose_ui_graphics::Size;
+
+/// Parent data provided by modifiers to influence measurement and placement.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ParentData {
+    pub weight: Option<Weight>,
+    pub horizontal_alignment: Option<HorizontalAlignment>,
+    pub vertical_alignment: Option<VerticalAlignment>,
+}
+
+/// Weight information used by flex layouts to distribute remaining space.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Weight {
+    pub value: f32,
+    pub fill: bool,
+}
 
 /// Object capable of measuring a layout child and exposing intrinsic sizes.
 pub trait Measurable {
     /// Measures the child with the provided constraints, returning a [`Placeable`].
     fn measure(&self, constraints: Constraints) -> Box<dyn Placeable>;
+
+    /// Returns parent data associated with this measurable.
+    fn parent_data(&self) -> ParentData {
+        ParentData::default()
+    }
 
     /// Returns the minimum width achievable for the given height.
     fn min_intrinsic_width(&self, height: f32) -> f32;
