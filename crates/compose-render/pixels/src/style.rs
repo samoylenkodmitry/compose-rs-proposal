@@ -119,6 +119,7 @@ pub(crate) fn apply_draw_commands(
     origin: (f32, f32),
     size: Size,
     layer: GraphicsLayer,
+    clip: Option<Rect>,
     scene: &mut Scene,
 ) {
     for command in commands {
@@ -136,7 +137,7 @@ pub(crate) fn apply_draw_commands(
                     let draw_rect = local_rect.translate(rect.x, rect.y);
                     let transformed = apply_layer_to_rect(draw_rect, origin, layer);
                     let brush = apply_layer_to_brush(brush, layer);
-                    scene.push_shape(transformed, brush, None);
+                    scene.push_shape(transformed, brush, None, clip);
                 }
                 DrawPrimitive::RoundRect {
                     rect: local_rect,
@@ -148,7 +149,7 @@ pub(crate) fn apply_draw_commands(
                     let scaled_radii = scale_corner_radii(radii, layer.scale);
                     let shape = RoundedCornerShape::with_radii(scaled_radii);
                     let brush = apply_layer_to_brush(brush, layer);
-                    scene.push_shape(transformed, brush, Some(shape));
+                    scene.push_shape(transformed, brush, Some(shape), clip);
                 }
             }
         }

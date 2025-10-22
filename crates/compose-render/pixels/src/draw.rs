@@ -18,6 +18,76 @@ static FONT: Lazy<Font<'static>> = Lazy::new(|| {
 
 pub(crate) struct RusttypeTextMeasurer;
 
+#[derive(Clone, Copy)]
+struct ClipBounds {
+    min_x: i32,
+    min_y: i32,
+    max_x: i32,
+    max_y: i32,
+}
+
+fn clip_rect_to_bounds(
+    rect: Rect,
+    clip: Option<Rect>,
+    width: u32,
+    height: u32,
+) -> Option<ClipBounds> {
+    let mut min_x = rect.x;
+    let mut min_y = rect.y;
+    let mut max_x = rect.x + rect.width;
+    let mut max_y = rect.y + rect.height;
+
+    if let Some(clip_rect) = clip {
+        min_x = min_x.max(clip_rect.x);
+        min_y = min_y.max(clip_rect.y);
+        max_x = max_x.min(clip_rect.x + clip_rect.width);
+        max_y = max_y.min(clip_rect.y + clip_rect.height);
+    }
+
+    min_x = min_x.max(0.0);
+    min_y = min_y.max(0.0);
+    max_x = max_x.min(width as f32);
+    max_y = max_y.min(height as f32);
+
+    if max_x <= min_x || max_y <= min_y {
+        return None;
+    }
+
+    let min_x = min_x.floor() as i32;
+    let min_y = min_y.floor() as i32;
+    let max_x = max_x.ceil() as i32;
+    let max_y = max_y.ceil() as i32;
+
+    let min_x = min_x.clamp(0, width as i32);
+    let min_y = min_y.clamp(0, height as i32);
+    let max_x = max_x.clamp(0, width as i32);
+    let max_y = max_y.clamp(0, height as i32);
+
+    if min_x >= max_x || min_y >= max_y {
+        return None;
+    }
+
+    Some(ClipBounds {
+        min_x,
+        min_y,
+        max_x,
+        max_y,
+    })
+}
+
+fn clip_bounds_from_clip(clip: Option<Rect>, width: u32, height: u32) -> Option<ClipBounds> {
+    if let Some(rect) = clip {
+        clip_rect_to_bounds(rect, None, width, height)
+    } else {
+        Some(ClipBounds {
+            min_x: 0,
+            min_y: 0,
+            max_x: width as i32,
+            max_y: height as i32,
+        })
+    }
+}
+
 impl TextMeasurer for RusttypeTextMeasurer {
     fn measure(&self, text: &str) -> TextMetrics {
         measure_text_impl(text)
@@ -67,24 +137,23 @@ pub fn draw_scene(frame: &mut [u8], width: u32, height: u32, scene: &Scene) {
 }
 
 fn draw_shape(frame: &mut [u8], width: u32, height: u32, draw: crate::scene::DrawShape) {
+    let clip_bounds = match clip_rect_to_bounds(draw.rect, draw.clip, width, height) {
+        Some(bounds) => bounds,
+        None => return,
+    };
     let Rect {
-        x,
-        y,
         width: rect_width,
         height: rect_height,
+        ..
     } = draw.rect;
-    let start_x = x.floor().max(0.0) as i32;
-    let start_y = y.floor().max(0.0) as i32;
-    let end_x = (x + rect_width).ceil().min(width as f32) as i32;
-    let end_y = (y + rect_height).ceil().min(height as f32) as i32;
     let resolved_shape = draw
         .shape
         .map(|shape| shape.resolve(rect_width, rect_height));
-    for py in start_y.max(0)..end_y.max(start_y) {
+    for py in clip_bounds.min_y..clip_bounds.max_y {
         if py < 0 || py >= height as i32 {
             continue;
         }
-        for px in start_x.max(0)..end_x.max(start_x) {
+        for px in clip_bounds.min_x..clip_bounds.max_x {
             if px < 0 || px >= width as i32 {
                 continue;
             }
@@ -124,15 +193,34 @@ fn draw_text(frame: &mut [u8], width: u32, height: u32, draw: TextDraw) {
     if text_scale == 0.0 {
         return;
     }
+    let clip_bounds = match clip_bounds_from_clip(draw.clip, width, height) {
+        Some(bounds) => bounds,
+        None => return,
+    };
     let scale = Scale::uniform(TEXT_SIZE * text_scale);
     let font = &*FONT;
     let v_metrics = font.v_metrics(scale);
     let offset = point(draw.rect.x, draw.rect.y + v_metrics.ascent);
     for glyph in font.layout(&draw.text, scale, offset) {
         if let Some(bb) = glyph.pixel_bounding_box() {
+            if bb.max.x <= clip_bounds.min_x
+                || bb.min.x >= clip_bounds.max_x
+                || bb.max.y <= clip_bounds.min_y
+                || bb.min.y >= clip_bounds.max_y
+            {
+                continue;
+            }
+            let clip_bounds = clip_bounds;
             glyph.draw(|gx, gy, value| {
                 let px = bb.min.x + gx as i32;
                 let py = bb.min.y + gy as i32;
+                if px < clip_bounds.min_x
+                    || px >= clip_bounds.max_x
+                    || py < clip_bounds.min_y
+                    || py >= clip_bounds.max_y
+                {
+                    return;
+                }
                 if px < 0 || py < 0 || px as u32 >= width || py as u32 >= height {
                     return;
                 }
