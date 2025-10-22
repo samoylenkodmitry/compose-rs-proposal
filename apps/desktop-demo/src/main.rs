@@ -720,8 +720,7 @@ fn counter_app() {
                 let async_message_state = async_message.clone();
                 let fetch_request_state = fetch_request.clone();
                 Column(
-                    Modifier::width(360.0)
-                        .then(Modifier::rounded_corners(20.0))
+                    Modifier::rounded_corners(20.0)
                     .then(Modifier::draw_with_cache(|cache| {
                         cache.on_draw_behind(|scope| {
                             scope.draw_round_rect(
@@ -782,8 +781,7 @@ fn counter_app() {
                         });
 
                         Row(
-                            Modifier::fill_max_width()
-                                .then(Modifier::padding(8.0))
+                            Modifier::padding(8.0)
                                 .then(Modifier::rounded_corners(12.0))
                                 .then(Modifier::background(Color(0.1, 0.1, 0.15, 0.6)))
                                 .then(Modifier::padding(8.0)),
