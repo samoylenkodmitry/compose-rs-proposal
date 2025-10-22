@@ -323,24 +323,71 @@ impl<'a> LayoutBuilder<'a> {
             return Err(err);
         }
 
-        let mut width = policy_result.size.width + padding.horizontal_sum();
-        let mut height = policy_result.size.height + padding.vertical_sum();
+        let min_intrinsic_width = node
+            .measure_policy
+            .min_intrinsic_width(&measurables, inner_constraints.max_height);
+        let max_intrinsic_width = node
+            .measure_policy
+            .max_intrinsic_width(&measurables, inner_constraints.max_height);
+        let min_intrinsic_height = node
+            .measure_policy
+            .min_intrinsic_height(&measurables, inner_constraints.max_width);
+        let max_intrinsic_height = node
+            .measure_policy
+            .max_intrinsic_height(&measurables, inner_constraints.max_width);
 
-        width = resolve_dimension(
+        let wrap_width =
+            is_wrap_content_dimension(props.width(), props.min_width(), props.max_width());
+        let mut content_width = policy_result.size.width;
+        if wrap_width {
+            let intrinsic_width = max_intrinsic_width.max(min_intrinsic_width);
+            content_width = content_width.max(min_intrinsic_width).min(intrinsic_width);
+        }
+
+        let wrap_height =
+            is_wrap_content_dimension(props.height(), props.min_height(), props.max_height());
+        let mut content_height = policy_result.size.height;
+        if wrap_height {
+            let intrinsic_height = max_intrinsic_height.max(min_intrinsic_height);
+            content_height = content_height
+                .max(min_intrinsic_height)
+                .min(intrinsic_height);
+        }
+
+        let horizontal_padding = padding.horizontal_sum();
+        let vertical_padding = padding.vertical_sum();
+
+        let mut width = content_width + horizontal_padding;
+        let mut height = content_height + vertical_padding;
+
+        let min_intrinsic_width_with_padding = min_intrinsic_width + horizontal_padding;
+        let max_intrinsic_width_with_padding = max_intrinsic_width + horizontal_padding;
+        let min_intrinsic_height_with_padding = min_intrinsic_height + vertical_padding;
+        let max_intrinsic_height_with_padding = max_intrinsic_height + vertical_padding;
+
+        width = resolve_dimension_with_intrinsics(
             width,
             props.width(),
             props.min_width(),
             props.max_width(),
             constraints.min_width,
             constraints.max_width,
+            |intrinsic| match intrinsic {
+                IntrinsicSize::Min => min_intrinsic_width_with_padding,
+                IntrinsicSize::Max => max_intrinsic_width_with_padding,
+            },
         );
-        height = resolve_dimension(
+        height = resolve_dimension_with_intrinsics(
             height,
             props.height(),
             props.min_height(),
             props.max_height(),
             constraints.min_height,
             constraints.max_height,
+            |intrinsic| match intrinsic {
+                IntrinsicSize::Min => min_intrinsic_height_with_padding,
+                IntrinsicSize::Max => max_intrinsic_height_with_padding,
+            },
         );
 
         let mut placement_map: HashMap<NodeId, Point> = policy_result
@@ -361,6 +408,23 @@ impl<'a> LayoutBuilder<'a> {
         for child_id in node.children.iter().copied() {
             if let Some(record) = records.remove(&child_id) {
                 if let Some(measured) = record.measured.borrow_mut().take() {
+                    let mut measured = measured;
+                    if wrap_width {
+                        let child_props = measured.data.modifier.layout_properties();
+                        if let DimensionConstraint::Fraction(fraction) = child_props.width() {
+                            if fraction > 0.0 {
+                                measured.size.width = measured.size.width.min(content_width);
+                            }
+                        }
+                    }
+                    if wrap_height {
+                        let child_props = measured.data.modifier.layout_properties();
+                        if let DimensionConstraint::Fraction(fraction) = child_props.height() {
+                            if fraction > 0.0 {
+                                measured.size.height = measured.size.height.min(content_height);
+                            }
+                        }
+                    }
                     let base_position = placement_map
                         .remove(&child_id)
                         .or_else(|| record.last_position.borrow().clone())
@@ -795,6 +859,16 @@ fn subtract_padding(constraints: Constraints, padding: EdgeInsets) -> Constraint
         min_height,
         max_height,
     })
+}
+
+fn is_wrap_content_dimension(
+    explicit: DimensionConstraint,
+    min_override: Option<f32>,
+    max_override: Option<f32>,
+) -> bool {
+    matches!(explicit, DimensionConstraint::Unspecified)
+        && min_override.is_none()
+        && max_override.is_none()
 }
 
 /// Applies explicit size, min/max bounds, and fraction modifiers to the

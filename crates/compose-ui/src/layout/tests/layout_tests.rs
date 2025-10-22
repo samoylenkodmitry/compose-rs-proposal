@@ -173,3 +173,81 @@ fn layout_node_uses_measure_policy() -> Result<(), NodeError> {
     assert_eq!(measured.children[1].offset, Point { x: 0.0, y: 20.0 });
     Ok(())
 }
+
+#[test]
+fn fill_fraction_child_does_not_expand_wrapping_parent() -> Result<(), NodeError> {
+    use super::policies::FlexMeasurePolicy;
+    use crate::layout::core::{HorizontalAlignment, LinearArrangement, VerticalAlignment};
+
+    let mut applier = MemoryApplier::new();
+
+    let spacer_a = applier.create(Box::new(SpacerNode {
+        size: Size {
+            width: 100.0,
+            height: 20.0,
+        },
+    }));
+    let spacer_b = applier.create(Box::new(SpacerNode {
+        size: Size {
+            width: 100.0,
+            height: 20.0,
+        },
+    }));
+
+    let mut row = LayoutNode::new(
+        Modifier::fill_max_width(),
+        Rc::new(FlexMeasurePolicy::row(
+            LinearArrangement::Start,
+            VerticalAlignment::Top,
+        )),
+    );
+    row.children.insert(spacer_a);
+    row.children.insert(spacer_b);
+    let row_id = applier.create(Box::new(row));
+
+    let mut inner_column = LayoutNode::new(
+        Modifier::empty(),
+        Rc::new(FlexMeasurePolicy::column(
+            LinearArrangement::Start,
+            HorizontalAlignment::Start,
+        )),
+    );
+    inner_column.children.insert(row_id);
+    let inner_id = applier.create(Box::new(inner_column));
+
+    let mut outer_column = LayoutNode::new(
+        Modifier::empty(),
+        Rc::new(FlexMeasurePolicy::column(
+            LinearArrangement::Start,
+            HorizontalAlignment::Start,
+        )),
+    );
+    outer_column.children.insert(inner_id);
+    let outer_id = applier.create(Box::new(outer_column));
+
+    let mut builder = LayoutBuilder::new(&mut applier);
+    let measured = builder.measure_node(
+        outer_id,
+        Constraints {
+            min_width: 0.0,
+            max_width: 800.0,
+            min_height: 0.0,
+            max_height: 600.0,
+        },
+    )?;
+
+    assert_eq!(measured.size.width, 200.0);
+    assert_eq!(measured.size.height, 20.0);
+    assert_eq!(measured.children.len(), 1);
+
+    let inner = &measured.children[0].node;
+    assert_eq!(inner.size.width, 200.0);
+    assert_eq!(inner.size.height, 20.0);
+    assert_eq!(inner.children.len(), 1);
+
+    let row = &inner.children[0].node;
+    assert_eq!(row.size.width, 200.0);
+    assert_eq!(row.size.height, 20.0);
+
+    Ok(())
+}
