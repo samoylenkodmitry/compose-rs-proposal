@@ -207,7 +207,20 @@ impl<'a> LayoutBuilder<'a> {
             (modifier, props, offset)
         };
         let padding = props.padding();
-        let inner_constraints = normalize_constraints(subtract_padding(constraints, padding));
+        let mut inner_constraints = normalize_constraints(subtract_padding(constraints, padding));
+
+        // Apply explicit width/height constraints to inner_constraints BEFORE measuring children.
+        // This ensures that children respect the parent's explicit size constraints.
+        if let DimensionConstraint::Points(width) = props.width() {
+            let constrained_width = width - padding.horizontal_sum();
+            inner_constraints.max_width = inner_constraints.max_width.min(constrained_width);
+            inner_constraints.min_width = inner_constraints.min_width.min(constrained_width);
+        }
+        if let DimensionConstraint::Points(height) = props.height() {
+            let constrained_height = height - padding.vertical_sum();
+            inner_constraints.max_height = inner_constraints.max_height.min(constrained_height);
+            inner_constraints.min_height = inner_constraints.min_height.min(constrained_height);
+        }
 
         self.slots.reset();
         let mut outer = Composer::new(
@@ -284,7 +297,23 @@ impl<'a> LayoutBuilder<'a> {
         let props = modifier.layout_properties();
         let padding = props.padding();
         let offset = modifier.total_offset();
-        let inner_constraints = normalize_constraints(subtract_padding(constraints, padding));
+        let mut inner_constraints = normalize_constraints(subtract_padding(constraints, padding));
+
+        // Apply explicit width/height constraints to inner_constraints BEFORE measuring children.
+        // This ensures that when a parent has an explicit size (e.g., Modifier::width(360.0)),
+        // its children receive constraints that respect that size.
+        // Without this, a child with fill_max_width() would incorrectly use the grandparent's constraints.
+        if let DimensionConstraint::Points(width) = props.width() {
+            let constrained_width = width - padding.horizontal_sum();
+            inner_constraints.max_width = inner_constraints.max_width.min(constrained_width);
+            inner_constraints.min_width = inner_constraints.min_width.min(constrained_width);
+        }
+        if let DimensionConstraint::Points(height) = props.height() {
+            let constrained_height = height - padding.vertical_sum();
+            inner_constraints.max_height = inner_constraints.max_height.min(constrained_height);
+            inner_constraints.min_height = inner_constraints.min_height.min(constrained_height);
+        }
+
         let error = Rc::new(RefCell::new(None));
         let mut records: HashMap<NodeId, ChildRecord> = HashMap::new();
         let mut measurables: Vec<Box<dyn Measurable>> = Vec::new();
@@ -307,6 +336,35 @@ impl<'a> LayoutBuilder<'a> {
                 Rc::clone(&error),
                 self.runtime_handle.clone(),
             )));
+        }
+
+        // For wrap-content behavior: when width/height is Unspecified, use intrinsic measurements
+        // to determine the parent's natural size BEFORE measuring children.
+        // This prevents children with fill_max_width() from taking the entire available space
+        // when the parent should wrap to content.
+        if props.width() == DimensionConstraint::Unspecified {
+            // Query the policy's intrinsic width based on current constraints
+            let intrinsic_width = node.measure_policy.min_intrinsic_width(
+                &measurables,
+                inner_constraints.max_height,
+            );
+            // Constrain max_width to the intrinsic size, but respect min_width from constraints
+            let constrained_width = intrinsic_width.max(inner_constraints.min_width);
+            if constrained_width.is_finite() && constrained_width < inner_constraints.max_width {
+                inner_constraints.max_width = constrained_width;
+            }
+        }
+        if props.height() == DimensionConstraint::Unspecified {
+            // Query the policy's intrinsic height based on current constraints
+            let intrinsic_height = node.measure_policy.min_intrinsic_height(
+                &measurables,
+                inner_constraints.max_width,
+            );
+            // Constrain max_height to the intrinsic size, but respect min_height from constraints
+            let constrained_height = intrinsic_height.max(inner_constraints.min_height);
+            if constrained_height.is_finite() && constrained_height < inner_constraints.max_height {
+                inner_constraints.max_height = constrained_height;
+            }
         }
 
         let policy_result = node.measure_policy.measure(&measurables, inner_constraints);

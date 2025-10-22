@@ -941,3 +941,344 @@ fn box_with_constraints_reacts_to_constraint_changes() {
 
     assert_eq!(invocations.get(), 2);
 }
+
+#[test]
+fn test_fill_max_width_respects_parent_bounds() {
+    let mut composition = Composition::new(MemoryApplier::new());
+    let key = location_key(file!(), line!(), column!());
+
+    let column_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+    let row_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+
+    let column_id_render = Rc::clone(&column_id);
+    let row_id_render = Rc::clone(&row_id);
+
+    composition
+        .render(key, move || {
+            let column_capture = Rc::clone(&column_id_render);
+            let row_capture = Rc::clone(&row_id_render);
+
+            // Outer Column with padding(20.0) and fill_max_width to ensure it has a defined width
+            *column_capture.borrow_mut() = Some(Column(
+                Modifier::fill_max_width().then(Modifier::padding(20.0)),
+                ColumnSpec::default(),
+                move || {
+                    let row_inner = Rc::clone(&row_capture);
+                    // Row with fill_max_width() and padding(8.0)
+                    *row_inner.borrow_mut() = Some(Row(
+                        Modifier::fill_max_width().then(Modifier::padding(8.0)),
+                        RowSpec::default(),
+                        move || {
+                            Text("Button 1", Modifier::padding(4.0));
+                            Text("Button 2", Modifier::padding(4.0));
+                        },
+                    ));
+                },
+            ));
+        })
+        .expect("initial render");
+
+    let root = composition.root().expect("root node");
+    let layout_tree = composition
+        .applier_mut()
+        .compute_layout(
+            root,
+            Size {
+                width: 800.0,
+                height: 600.0,
+            },
+        )
+        .expect("compute layout");
+
+    let root_layout = layout_tree.root();
+
+    fn find_layout<'a>(node: &'a LayoutBox, target: NodeId) -> Option<&'a LayoutBox> {
+        if node.node_id == target {
+            return Some(node);
+        }
+        node.children
+            .iter()
+            .find_map(|child| find_layout(child, target))
+    }
+
+    let column_node_id = column_id.borrow().as_ref().copied().expect("column node id");
+    let row_node_id = row_id.borrow().as_ref().copied().expect("row node id");
+
+    let column_layout = find_layout(&root_layout, column_node_id).expect("column layout");
+    let row_layout = find_layout(&root_layout, row_node_id).expect("row layout");
+
+    // Debug output
+    println!("\n=== Layout Debug ===");
+    println!("Root: x={}, y={}, width={}, height={}",
+        root_layout.rect.x, root_layout.rect.y, root_layout.rect.width, root_layout.rect.height);
+    println!("Column: x={}, y={}, width={}, height={}",
+        column_layout.rect.x, column_layout.rect.y, column_layout.rect.width, column_layout.rect.height);
+    println!("Row: x={}, y={}, width={}, height={}",
+        row_layout.rect.x, row_layout.rect.y, row_layout.rect.width, row_layout.rect.height);
+    println!("Column inner width (after padding): {}", column_layout.rect.width - 40.0);
+    println!("Row right edge: {}", row_layout.rect.x + row_layout.rect.width);
+    println!("Column right inner edge: {}", column_layout.rect.x + column_layout.rect.width - 20.0);
+
+    // Expected:
+    // Window: 800px
+    // Column: 800px (fills window)
+    // Column has padding 40px (20 on each side)
+    // Column inner content area: 760px
+    // Row with fill_max_width() should fill the Column's inner width: 760px
+
+    const EPSILON: f32 = 0.001;
+
+    // Row should be 760px wide (Column's inner width)
+    assert!(
+        (row_layout.rect.width - 760.0).abs() < EPSILON,
+        "Row should be 760px wide (Column inner width): actual={}",
+        row_layout.rect.width
+    );
+
+    // Row's right edge should not exceed Column's right inner edge
+    let row_right = row_layout.rect.x + row_layout.rect.width;
+    let column_right_inner = column_layout.rect.x + column_layout.rect.width - 20.0;
+
+    assert!(
+        row_right <= column_right_inner + EPSILON,
+        "Row overflows Column: Row right edge={} > Column inner right={}",
+        row_right,
+        column_right_inner
+    );
+}
+
+#[test]
+fn test_fill_max_width_with_background_and_double_padding() {
+    // This test reproduces the exact structure from counter_app line 784:
+    // Row with fill_max_width() + padding + background + padding again
+    let mut composition = Composition::new(MemoryApplier::new());
+    let key = location_key(file!(), line!(), column!());
+
+    let outer_column_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+    let inner_column_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+    let row_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+
+    let outer_column_render = Rc::clone(&outer_column_id);
+    let inner_column_render = Rc::clone(&inner_column_id);
+    let row_render = Rc::clone(&row_id);
+
+    composition
+        .render(key, move || {
+            let outer_capture = Rc::clone(&outer_column_render);
+            let inner_capture = Rc::clone(&inner_column_render);
+            let row_capture = Rc::clone(&row_render);
+
+            // Simulating counter_app structure:
+            // Outer Column with padding(32.0)
+            *outer_capture.borrow_mut() = Some(Column(
+                Modifier::padding(32.0),
+                ColumnSpec::default(),
+                move || {
+                    let inner_cap2 = Rc::clone(&inner_capture);
+                    let row_cap2 = Rc::clone(&row_capture);
+                    // Inner Column with width(360.0)
+                    *inner_cap2.borrow_mut() = Some(Column(
+                        Modifier::width(360.0),
+                        ColumnSpec::default(),
+                        move || {
+                            let row_cap3 = Rc::clone(&row_cap2);
+                            // Row with fill_max_width() + padding + background + padding
+                            *row_cap3.borrow_mut() = Some(Row(
+                                Modifier::fill_max_width()
+                                    .then(Modifier::padding(8.0))
+                                    .then(Modifier::background(crate::Color(0.1, 0.1, 0.15, 0.6)))
+                                    .then(Modifier::padding(8.0)),
+                                RowSpec::default(),
+                                move || {
+                                    Text("OK", Modifier::padding(4.0));
+                                    Text("Cancel", Modifier::padding(4.0));
+                                },
+                            ));
+                        },
+                    ));
+                },
+            ));
+        })
+        .expect("initial render");
+
+    let root = composition.root().expect("root node");
+    let layout_tree = composition
+        .applier_mut()
+        .compute_layout(
+            root,
+            Size {
+                width: 800.0,
+                height: 600.0,
+            },
+        )
+        .expect("compute layout");
+
+    let root_layout = layout_tree.root();
+
+    fn find_layout<'a>(node: &'a LayoutBox, target: NodeId) -> Option<&'a LayoutBox> {
+        if node.node_id == target {
+            return Some(node);
+        }
+        node.children
+            .iter()
+            .find_map(|child| find_layout(child, target))
+    }
+
+    let outer_column_node = outer_column_id.borrow().as_ref().copied().expect("outer column");
+    let inner_column_node = inner_column_id.borrow().as_ref().copied().expect("inner column");
+    let row_node = row_id.borrow().as_ref().copied().expect("row");
+
+    let outer_layout = find_layout(&root_layout, outer_column_node).expect("outer column layout");
+    let inner_layout = find_layout(&root_layout, inner_column_node).expect("inner column layout");
+    let row_layout = find_layout(&root_layout, row_node).expect("row layout");
+
+    println!("\n=== Counter App Structure Test ===");
+    println!("Window: 800px");
+    println!("Outer Column (padding 32): x={}, width={}", outer_layout.rect.x, outer_layout.rect.width);
+    println!("Inner Column (width 360): x={}, width={}", inner_layout.rect.x, inner_layout.rect.width);
+    println!("Row (fill_max_width): x={}, width={}", row_layout.rect.x, row_layout.rect.width);
+    println!("Row right edge: {}", row_layout.rect.x + row_layout.rect.width);
+    println!("Inner Column right edge: {}", inner_layout.rect.x + inner_layout.rect.width);
+
+    const EPSILON: f32 = 0.001;
+
+    // Inner Column should be 360px wide (explicit width)
+    assert!(
+        (inner_layout.rect.width - 360.0).abs() < EPSILON,
+        "Inner Column should be 360px: got {}",
+        inner_layout.rect.width
+    );
+
+    // Row should be 360px wide (fill_max_width inside 360px container)
+    assert!(
+        (row_layout.rect.width - 360.0).abs() < EPSILON,
+        "Row should be 360px (Inner Column width): got {}",
+        row_layout.rect.width
+    );
+
+    // Row should NOT overflow Inner Column
+    let row_right = row_layout.rect.x + row_layout.rect.width;
+    let column_right = inner_layout.rect.x + inner_layout.rect.width;
+    assert!(
+        row_right <= column_right + EPSILON,
+        "Row overflows Inner Column: row_right={} > column_right={}",
+        row_right,
+        column_right
+    );
+}
+
+#[test]
+fn test_fill_max_width_should_not_propagate_to_wrapping_parent() {
+    // Testing the issue where a child with fill_max_width() causes
+    // its parent (which should wrap content) to also fill parent
+    let mut composition = Composition::new(MemoryApplier::new());
+    let key = location_key(file!(), line!(), column!());
+
+    let outer_column_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+    let inner_column_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+    let row_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+
+    let outer_render = Rc::clone(&outer_column_id);
+    let inner_render = Rc::clone(&inner_column_id);
+    let row_render = Rc::clone(&row_id);
+
+    composition
+        .render(key, move || {
+            let outer_cap = Rc::clone(&outer_render);
+            let inner_cap = Rc::clone(&inner_render);
+            let row_cap = Rc::clone(&row_render);
+
+            // Outer Column - no size modifier (should wrap content)
+            *outer_cap.borrow_mut() = Some(Column(
+                Modifier::empty(),
+                ColumnSpec::default(),
+                move || {
+                    let inner_cap2 = Rc::clone(&inner_cap);
+                    let row_cap2 = Rc::clone(&row_cap);
+                    
+                    // Inner Column - no size modifier (should wrap content)
+                    *inner_cap2.borrow_mut() = Some(Column(
+                        Modifier::empty(),
+                        ColumnSpec::default(),
+                        move || {
+                            let row_cap3 = Rc::clone(&row_cap2);
+                            
+                            // Row with fill_max_width() containing fixed-width content
+                            *row_cap3.borrow_mut() = Some(Row(
+                                Modifier::fill_max_width(),
+                                RowSpec::default(),
+                                move || {
+                                    // Fixed width content: 100px + 100px = 200px
+                                    Spacer(Size { width: 100.0, height: 20.0 });
+                                    Spacer(Size { width: 100.0, height: 20.0 });
+                                },
+                            ));
+                        },
+                    ));
+                },
+            ));
+        })
+        .expect("initial render");
+
+    let root = composition.root().expect("root node");
+    let layout_tree = composition
+        .applier_mut()
+        .compute_layout(
+            root,
+            Size {
+                width: 800.0,
+                height: 600.0,
+            },
+        )
+        .expect("compute layout");
+
+    let root_layout = layout_tree.root();
+
+    fn find_layout<'a>(node: &'a LayoutBox, target: NodeId) -> Option<&'a LayoutBox> {
+        if node.node_id == target {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| find_layout(child, target))
+    }
+
+    let outer_node = outer_column_id.borrow().as_ref().copied().expect("outer");
+    let inner_node = inner_column_id.borrow().as_ref().copied().expect("inner");
+    let row_node = row_id.borrow().as_ref().copied().expect("row");
+
+    let outer_layout = find_layout(&root_layout, outer_node).expect("outer layout");
+    let inner_layout = find_layout(&root_layout, inner_node).expect("inner layout");
+    let row_layout = find_layout(&root_layout, row_node).expect("row layout");
+
+    println!("\n=== Fill Propagation Test ===");
+    println!("Window: 800px");
+    println!("Row content: 200px (100 + 100)");
+    println!("Outer Column (should wrap): width={}", outer_layout.rect.width);
+    println!("Inner Column (should wrap): width={}", inner_layout.rect.width);
+    println!("Row (fill_max_width): width={}", row_layout.rect.width);
+
+    // Expected behavior (now FIXED):
+    // - Inner Column wants to wrap content (no size modifier)
+    // - Inner Column queries Row's minimum intrinsic width = 200px
+    // - Inner Column constrains itself to 200px
+    // - Row with fill_max_width() fills that 200px container
+    // - Outer Column wraps around Inner Column -> 200px
+
+    const EPSILON: f32 = 0.001;
+
+    // All elements should be 200px wide (wrapping to content)
+    assert!(
+        (outer_layout.rect.width - 200.0).abs() < EPSILON,
+        "Outer Column should wrap to content (200px), got {}",
+        outer_layout.rect.width
+    );
+    assert!(
+        (inner_layout.rect.width - 200.0).abs() < EPSILON,
+        "Inner Column should wrap to content (200px), got {}",
+        inner_layout.rect.width
+    );
+    assert!(
+        (row_layout.rect.width - 200.0).abs() < EPSILON,
+        "Row should fill its 200px parent, got {}",
+        row_layout.rect.width
+    );
+}
