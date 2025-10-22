@@ -958,9 +958,9 @@ fn test_fill_max_width_respects_parent_bounds() {
             let column_capture = Rc::clone(&column_id_render);
             let row_capture = Rc::clone(&row_id_render);
 
-            // Outer Column with padding(20.0)
+            // Outer Column with padding(20.0) and fill_max_width to ensure it has a defined width
             *column_capture.borrow_mut() = Some(Column(
-                Modifier::padding(20.0),
+                Modifier::fill_max_width().then(Modifier::padding(20.0)),
                 ColumnSpec::default(),
                 move || {
                     let row_inner = Rc::clone(&row_capture);
@@ -1256,24 +1256,29 @@ fn test_fill_max_width_should_not_propagate_to_wrapping_parent() {
     println!("Inner Column (should wrap): width={}", inner_layout.rect.width);
     println!("Row (fill_max_width): width={}", row_layout.rect.width);
 
-    // The issue: both Columns are 800px instead of wrapping to content
-    // Expected behavior:
-    // - Row should see that its parent (Inner Column) wants to wrap
-    // - Inner Column should determine its width from its children's MINIMUM intrinsic width
-    // - Row's minimum intrinsic width is 200px (from its content)
-    // - So Inner Column should be 200px
-    // - And Outer Column should also be 200px
+    // Expected behavior (now FIXED):
+    // - Inner Column wants to wrap content (no size modifier)
+    // - Inner Column queries Row's minimum intrinsic width = 200px
+    // - Inner Column constrains itself to 200px
+    // - Row with fill_max_width() fills that 200px container
+    // - Outer Column wraps around Inner Column -> 200px
 
-    // What's happening now:
-    println!("\nCurrent (incorrect) behavior:");
-    println!("  Row gets max_width=800 from constraints");
-    println!("  Row with fill_max_width takes all 800px");
-    println!("  Inner Column wraps around Row -> 800px");
-    println!("  Outer Column wraps around Inner Column -> 800px");
-    
-    // This test documents the current INCORRECT behavior
-    // When fixed, these assertions should be updated
-    assert_eq!(outer_layout.rect.width, 800.0, "CURRENT BUG: Outer Column fills parent instead of wrapping");
-    assert_eq!(inner_layout.rect.width, 800.0, "CURRENT BUG: Inner Column fills parent instead of wrapping");
-    assert_eq!(row_layout.rect.width, 800.0, "Row correctly fills its parent");
+    const EPSILON: f32 = 0.001;
+
+    // All elements should be 200px wide (wrapping to content)
+    assert!(
+        (outer_layout.rect.width - 200.0).abs() < EPSILON,
+        "Outer Column should wrap to content (200px), got {}",
+        outer_layout.rect.width
+    );
+    assert!(
+        (inner_layout.rect.width - 200.0).abs() < EPSILON,
+        "Inner Column should wrap to content (200px), got {}",
+        inner_layout.rect.width
+    );
+    assert!(
+        (row_layout.rect.width - 200.0).abs() < EPSILON,
+        "Row should fill its 200px parent, got {}",
+        row_layout.rect.width
+    );
 }

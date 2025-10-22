@@ -338,6 +338,35 @@ impl<'a> LayoutBuilder<'a> {
             )));
         }
 
+        // For wrap-content behavior: when width/height is Unspecified, use intrinsic measurements
+        // to determine the parent's natural size BEFORE measuring children.
+        // This prevents children with fill_max_width() from taking the entire available space
+        // when the parent should wrap to content.
+        if props.width() == DimensionConstraint::Unspecified {
+            // Query the policy's intrinsic width based on current constraints
+            let intrinsic_width = node.measure_policy.min_intrinsic_width(
+                &measurables,
+                inner_constraints.max_height,
+            );
+            // Constrain max_width to the intrinsic size, but respect min_width from constraints
+            let constrained_width = intrinsic_width.max(inner_constraints.min_width);
+            if constrained_width.is_finite() && constrained_width < inner_constraints.max_width {
+                inner_constraints.max_width = constrained_width;
+            }
+        }
+        if props.height() == DimensionConstraint::Unspecified {
+            // Query the policy's intrinsic height based on current constraints
+            let intrinsic_height = node.measure_policy.min_intrinsic_height(
+                &measurables,
+                inner_constraints.max_width,
+            );
+            // Constrain max_height to the intrinsic size, but respect min_height from constraints
+            let constrained_height = intrinsic_height.max(inner_constraints.min_height);
+            if constrained_height.is_finite() && constrained_height < inner_constraints.max_height {
+                inner_constraints.max_height = constrained_height;
+            }
+        }
+
         let policy_result = node.measure_policy.measure(&measurables, inner_constraints);
 
         if let Some(err) = error.borrow_mut().take() {
