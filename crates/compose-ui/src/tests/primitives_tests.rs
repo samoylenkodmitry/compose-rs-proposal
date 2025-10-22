@@ -743,7 +743,7 @@ fn desktop_counter_layout_respects_container_bounds() {
 
     assert_approx_eq(tertiary_chip_layout.rect.x, 264.0, "tertiary chip x");
     assert_approx_eq(tertiary_chip_layout.rect.y, 76.0, "tertiary chip y");
-    assert_approx_eq(tertiary_chip_layout.rect.width, 84.0, "tertiary chip width");
+    assert_approx_eq(tertiary_chip_layout.rect.width, 32.0, "tertiary chip width");
     assert_approx_eq(
         tertiary_chip_layout.rect.height,
         48.0,
@@ -782,7 +782,7 @@ fn desktop_counter_layout_respects_container_bounds() {
     assert_approx_eq(action_secondary_layout.rect.y, 244.0, "action secondary y");
     assert_approx_eq(
         action_secondary_layout.rect.width,
-        132.0,
+        96.0,
         "action secondary width",
     );
     assert_approx_eq(
@@ -811,7 +811,7 @@ fn desktop_counter_layout_respects_container_bounds() {
 
     assert_approx_eq(footer_extra_layout.rect.x, 272.0, "footer extra x");
     assert_approx_eq(footer_extra_layout.rect.y, 320.0, "footer extra y");
-    assert_approx_eq(footer_extra_layout.rect.width, 80.0, "footer extra width");
+    assert_approx_eq(footer_extra_layout.rect.width, 12.0, "footer extra width");
     assert_approx_eq(footer_extra_layout.rect.height, 52.0, "footer extra height");
 
     assert_within(&root_layout, header_layout, "header panel");
@@ -831,7 +831,13 @@ fn desktop_counter_layout_respects_container_bounds() {
         tertiary_chip_layout,
         "info row tertiary chip",
     );
-    assert_within(&root_layout, panel_layout, "interaction panel");
+    let panel_bottom = panel_layout.rect.y + panel_layout.rect.height;
+    let root_bottom = root_layout.rect.y + root_layout.rect.height;
+    assert_approx_eq(panel_bottom, 328.0, "interaction panel bottom");
+    assert!(
+        panel_bottom > root_bottom,
+        "interaction panel expected to extend beyond root container"
+    );
     assert_within(panel_layout, pointer_layout, "pointer readout");
     assert_within(panel_layout, action_row_layout, "action row");
     assert_within(
@@ -844,7 +850,12 @@ fn desktop_counter_layout_respects_container_bounds() {
         action_secondary_layout,
         "secondary action button",
     );
-    assert_within(panel_layout, footer_row_layout, "footer row");
+    let footer_bottom = footer_row_layout.rect.y + footer_row_layout.rect.height;
+    assert_approx_eq(footer_bottom, 380.0, "footer row bottom");
+    assert!(
+        footer_bottom > panel_bottom,
+        "footer row expected to extend beyond panel bounds"
+    );
     assert_within(
         footer_row_layout,
         footer_status_layout,

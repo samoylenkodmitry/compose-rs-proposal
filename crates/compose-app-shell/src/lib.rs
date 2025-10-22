@@ -25,6 +25,7 @@ where
     layout_tree: Option<LayoutTree>,
     layout_dirty: bool,
     scene_dirty: bool,
+    viewport_initialized: bool,
 }
 
 impl<R> AppShell<R>
@@ -51,12 +52,19 @@ where
             layout_tree: None,
             layout_dirty: true,
             scene_dirty: true,
+            viewport_initialized: false,
         };
         shell.process_frame();
         shell
     }
 
     pub fn set_viewport(&mut self, width: f32, height: f32) {
+        let same_width = (self.viewport.0 - width).abs() <= f32::EPSILON;
+        let same_height = (self.viewport.1 - height).abs() <= f32::EPSILON;
+        if same_width && same_height && self.viewport_initialized {
+            return;
+        }
+        self.viewport_initialized = true;
         self.viewport = (width, height);
         self.layout_dirty = true;
         self.scene_dirty = true;
@@ -283,6 +291,21 @@ mod tests {
         assert!(
             shell.should_render(),
             "viewport update should trigger redraw"
+        );
+    }
+
+    #[test]
+    fn initial_viewport_call_triggers_even_when_unchanged() {
+        let renderer = DummyRenderer::default();
+        let mut shell = AppShell::new(renderer, default_root_key(), || {});
+        shell.set_viewport(800.0, 600.0);
+        assert!(shell.should_render(), "first viewport set should redraw");
+        shell.update();
+        assert!(!shell.should_render(), "layout should settle after redraw");
+        shell.set_viewport(800.0, 600.0);
+        assert!(
+            !shell.should_render(),
+            "subsequent identical viewport should be ignored"
         );
     }
 }

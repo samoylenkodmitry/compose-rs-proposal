@@ -188,10 +188,11 @@ impl MeasurePolicy for ColumnMeasurePolicy {
                 base_height.max(constraints.min_height)
             };
             let remaining = (target_height - base_height).max(0.0);
+            let distribute_share = has_bounded_height || remaining > 0.0;
 
             for (index, measurable) in measurables.iter().enumerate() {
                 if let Some(weight) = weights[index] {
-                    let placeable = if has_bounded_height {
+                    let placeable = if distribute_share {
                         let mut share = remaining * (weight.weight / total_weight);
                         if !share.is_finite() {
                             share = 0.0;
@@ -366,6 +367,11 @@ impl MeasurePolicy for RowMeasurePolicy {
         }
 
         let has_bounded_width = constraints.max_width.is_finite();
+        let mut remaining_for_fixed = if has_bounded_width {
+            (constraints.max_width - total_spacing).max(0.0)
+        } else {
+            constraints.max_width
+        };
         let mut placeables: Vec<Option<Box<dyn Placeable>>> =
             (0..child_count).map(|_| None).collect();
         let mut child_widths = vec![0.0; child_count];
@@ -384,12 +390,25 @@ impl MeasurePolicy for RowMeasurePolicy {
             if weights[index].is_some() && total_weight > 0.0 {
                 continue;
             }
-            let placeable = measurable.measure(non_weight_constraints);
+            let child_constraints = if has_bounded_width {
+                Constraints {
+                    min_width: 0.0,
+                    max_width: remaining_for_fixed.max(0.0),
+                    min_height: constraints.min_height,
+                    max_height: constraints.max_height,
+                }
+            } else {
+                non_weight_constraints
+            };
+            let placeable = measurable.measure(child_constraints);
             child_widths[index] = placeable.width();
             child_heights[index] = placeable.height();
             max_height = max_height.max(child_heights[index]);
             fixed_width += child_widths[index];
             placeables[index] = Some(placeable);
+            if has_bounded_width {
+                remaining_for_fixed = (remaining_for_fixed - child_widths[index]).max(0.0);
+            }
         }
 
         let mut weighted_width = 0.0_f32;
@@ -401,10 +420,11 @@ impl MeasurePolicy for RowMeasurePolicy {
                 base_width.max(constraints.min_width)
             };
             let remaining = (target_width - base_width).max(0.0);
+            let distribute_share = has_bounded_width || remaining > 0.0;
 
             for (index, measurable) in measurables.iter().enumerate() {
                 if let Some(weight) = weights[index] {
-                    let placeable = if has_bounded_width {
+                    let placeable = if distribute_share {
                         let mut share = remaining * (weight.weight / total_weight);
                         if !share.is_finite() {
                             share = 0.0;
