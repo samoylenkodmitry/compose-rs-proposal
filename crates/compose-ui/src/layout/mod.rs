@@ -11,7 +11,7 @@ use self::core::{
     HorizontalAlignment, LinearArrangement, Measurable, Placeable, VerticalAlignment,
 };
 use crate::modifier::{
-    DimensionConstraint, EdgeInsets, Modifier, Point, Rect as GeometryRect, Size,
+    DimensionConstraint, EdgeInsets, LayoutProperties, Modifier, Point, Rect as GeometryRect, Size,
 };
 use crate::primitives::{ButtonNode, LayoutNode, SpacerNode, TextNode};
 use crate::subcompose_layout::SubcomposeLayoutNode;
@@ -207,7 +207,11 @@ impl<'a> LayoutBuilder<'a> {
             (modifier, props, offset)
         };
         let padding = props.padding();
-        let inner_constraints = normalize_constraints(subtract_padding(constraints, padding));
+        let inner_constraints = apply_layout_properties(
+            normalize_constraints(subtract_padding(constraints, padding)),
+            padding,
+            props,
+        );
 
         self.slots.reset();
         let mut outer = Composer::new(
@@ -284,7 +288,11 @@ impl<'a> LayoutBuilder<'a> {
         let props = modifier.layout_properties();
         let padding = props.padding();
         let offset = modifier.total_offset();
-        let inner_constraints = normalize_constraints(subtract_padding(constraints, padding));
+        let inner_constraints = apply_layout_properties(
+            normalize_constraints(subtract_padding(constraints, padding)),
+            padding,
+            props,
+        );
         let error = Rc::new(RefCell::new(None));
         let mut records: HashMap<NodeId, ChildRecord> = HashMap::new();
         let mut measurables: Vec<Box<dyn Measurable>> = Vec::new();
@@ -787,6 +795,96 @@ fn subtract_padding(constraints: Constraints, padding: EdgeInsets) -> Constraint
         min_height,
         max_height,
     })
+}
+
+/// Applies explicit size, min/max bounds, and fraction modifiers to the
+/// constraints used for measuring a layout node's children.
+fn apply_layout_properties(
+    mut constraints: Constraints,
+    padding: EdgeInsets,
+    props: LayoutProperties,
+) -> Constraints {
+    fn adjust_axis(
+        mut min: f32,
+        mut max: f32,
+        padding: f32,
+        explicit: DimensionConstraint,
+        min_override: Option<f32>,
+        max_override: Option<f32>,
+    ) -> (f32, f32) {
+        if let Some(max_value) = max_override {
+            let inner_max = (max_value - padding).max(0.0);
+            if max.is_finite() {
+                max = max.min(inner_max);
+            } else {
+                max = inner_max;
+            }
+        }
+
+        if let Some(min_value) = min_override {
+            let inner_min = (min_value - padding).max(0.0);
+            if max.is_finite() {
+                min = min.max(inner_min.min(max));
+            } else {
+                min = min.max(inner_min);
+            }
+        }
+
+        match explicit {
+            DimensionConstraint::Points(points) => {
+                let mut inner = (points - padding).max(0.0);
+                if max.is_finite() {
+                    inner = inner.min(max);
+                }
+                min = min.max(inner);
+                max = inner;
+            }
+            DimensionConstraint::Fraction(fraction) => {
+                if max.is_finite() {
+                    let target = (max * fraction.clamp(0.0, 1.0)).max(0.0);
+                    min = min.max(target);
+                    max = target;
+                }
+            }
+            DimensionConstraint::Intrinsic(_) | DimensionConstraint::Unspecified => {}
+        }
+
+        if max.is_finite() && max < min {
+            min = max;
+        }
+
+        (
+            min.max(0.0),
+            if max.is_finite() { max.max(0.0) } else { max },
+        )
+    }
+
+    let horizontal_padding = padding.horizontal_sum();
+    let vertical_padding = padding.vertical_sum();
+
+    let (min_width, max_width) = adjust_axis(
+        constraints.min_width,
+        constraints.max_width,
+        horizontal_padding,
+        props.width(),
+        props.min_width(),
+        props.max_width(),
+    );
+    constraints.min_width = min_width;
+    constraints.max_width = max_width;
+
+    let (min_height, max_height) = adjust_axis(
+        constraints.min_height,
+        constraints.max_height,
+        vertical_padding,
+        props.height(),
+        props.min_height(),
+        props.max_height(),
+    );
+    constraints.min_height = min_height;
+    constraints.max_height = max_height;
+
+    normalize_constraints(constraints)
 }
 
 /// Resolves intrinsic dimensions from a list of measurables.

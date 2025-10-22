@@ -435,7 +435,9 @@ impl MeasurePolicy for FlexMeasurePolicy {
         let mut placements = Vec::with_capacity(placeables.len());
         for (placeable, main_pos) in placeables.into_iter().zip(main_positions.into_iter()) {
             let child_cross = self.get_cross_axis_size(placeable.width(), placeable.height());
-            let cross_pos = self.cross_axis_alignment.align(container_cross, child_cross);
+            let cross_pos = self
+                .cross_axis_alignment
+                .align(container_cross, child_cross);
 
             let (x, y) = match self.axis {
                 Axis::Horizontal => (main_pos, cross_pos),
