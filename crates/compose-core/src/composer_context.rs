@@ -6,9 +6,18 @@ pub trait ComposerAccess {
     fn with(&mut self, f: &mut dyn FnMut(&mut Composer<'_>));
 }
 
+scoped_thread_local!(static mut COMPOSER: for<'a> &'a mut (dyn ComposerAccess + 'a));
+
 impl<'a> ComposerAccess for Composer<'a> {
     fn with(&mut self, f: &mut dyn FnMut(&mut Composer<'_>)) {
-        f(self)
+        let ptr: *mut Composer<'_> = self;
+        COMPOSER.set(self as &mut dyn ComposerAccess, || {
+            // SAFETY: `self` is exclusively borrowed for the duration of the call,
+            // and the TLS guard ensures the pointer remains valid while the
+            // closure executes.
+            let composer = unsafe { &mut *ptr };
+            f(composer);
+        });
     }
 }
 
@@ -20,13 +29,11 @@ impl<'short, 'scope: 'short> ReborrowMut<'short> for (dyn ComposerAccess + 'scop
     }
 }
 
-scoped_thread_local!(static mut COMPOSER: for<'a> &'a mut (dyn ComposerAccess + 'a));
-
 pub fn enter<'a, R>(composer: &'a mut Composer<'a>, f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
     let mut f = Some(f);
     let mut result: Option<R> = None;
     COMPOSER.set(composer as &mut dyn ComposerAccess, || {
-        COMPOSER.with(|access| {
+        COMPOSER.with(|ref mut access| {
             access.with(&mut |composer| {
                 let f = f.take().expect("composer callback already taken");
                 result = Some(f(composer));
@@ -39,7 +46,7 @@ pub fn enter<'a, R>(composer: &'a mut Composer<'a>, f: impl FnOnce(&mut Composer
 pub fn with_composer<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
     let mut f = Some(f);
     let mut result: Option<R> = None;
-    COMPOSER.with(|access| {
+    COMPOSER.with(|ref mut access| {
         access.with(&mut |composer| {
             let f = f.take().expect("composer callback already taken");
             result = Some(f(composer));
@@ -54,7 +61,7 @@ pub fn try_with_composer<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> Option<R>
     }
     let mut f = Some(f);
     let mut result: Option<R> = None;
-    COMPOSER.with(|access| {
+    COMPOSER.with(|ref mut access| {
         access.with(&mut |composer| {
             let f = f.take().expect("composer callback already taken");
             result = Some(f(composer));
