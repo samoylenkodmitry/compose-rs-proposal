@@ -43,8 +43,8 @@ use std::hash::{Hash, Hasher};
 use std::rc::{Rc, Weak}; // FUTURE(no_std): replace Rc/Weak with arena-managed handles.
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::thread_local;
 
+use crate::runtime::{pop_active_runtime, push_active_runtime};
 use crate::state::{NeverEqual, SnapshotMutableState, UpdateScope};
 
 pub type Key = u64;
@@ -1339,11 +1339,11 @@ impl<'a> Composer<'a> {
 
     pub fn install<R>(&'a mut self, f: impl FnOnce(&mut Composer<'a>) -> R) -> R {
         let _composer_guard = composer_context::enter(self);
-        runtime::push_active_runtime(&self.runtime);
+        push_active_runtime(&self.runtime);
         struct Guard;
         impl Drop for Guard {
             fn drop(&mut self) {
-                runtime::pop_active_runtime();
+                pop_active_runtime();
             }
         }
         let guard = Guard;
