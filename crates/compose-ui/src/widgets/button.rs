@@ -10,7 +10,7 @@ use indexmap::IndexSet;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-#[composable]
+#[composable(no_skip)]
 pub fn Button<F, G>(modifier: Modifier, on_click: F, content: G) -> NodeId
 where
     F: FnMut() + 'static,
@@ -30,6 +30,7 @@ where
     }) {
         debug_assert!(false, "failed to update Button node: {err}");
     }
+    let mut content = content;
     compose_core::push_parent(id);
     content();
     compose_core::pop_parent();

@@ -1,53 +1,64 @@
-use std::cell::RefCell;
-use std::thread_local;
+use scoped_tls_hkt::{scoped_thread_local, ReborrowMut};
 
 use crate::Composer;
 
-thread_local! {
-    static COMPOSER_STACK: RefCell<Vec<*mut ()>> = RefCell::new(Vec::new());
+pub trait ComposerAccess {
+    fn with(&mut self, f: &mut dyn FnMut(&mut Composer<'_>));
 }
 
-#[must_use = "ComposerScopeGuard pops the composer stack on drop"]
-pub struct ComposerScopeGuard;
-
-impl Drop for ComposerScopeGuard {
-    fn drop(&mut self) {
-        COMPOSER_STACK.with(|stack| {
-            let mut stack = stack.borrow_mut();
-            stack.pop();
-        });
+impl<'a> ComposerAccess for Composer<'a> {
+    fn with(&mut self, f: &mut dyn FnMut(&mut Composer<'_>)) {
+        f(self)
     }
 }
 
-pub fn enter(composer: &mut Composer<'_>) -> ComposerScopeGuard {
-    COMPOSER_STACK.with(|stack| {
-        stack
-            .borrow_mut()
-            .push(composer as *mut Composer<'_> as *mut ());
+impl<'short, 'scope: 'short> ReborrowMut<'short> for (dyn ComposerAccess + 'scope) {
+    type Result = &'short mut (dyn ComposerAccess + 'scope);
+
+    fn reborrow_mut(&'short mut self) -> Self::Result {
+        self
+    }
+}
+
+scoped_thread_local!(static mut COMPOSER: for<'a> &'a mut (dyn ComposerAccess + 'a));
+
+pub fn enter<'a, R>(composer: &'a mut Composer<'a>, f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
+    let mut f = Some(f);
+    let mut result: Option<R> = None;
+    COMPOSER.set(composer as &mut dyn ComposerAccess, || {
+        COMPOSER.with(|access| {
+            access.with(&mut |composer| {
+                let f = f.take().expect("composer callback already taken");
+                result = Some(f(composer));
+            });
+        });
     });
-    ComposerScopeGuard
+    result.expect("composer callback did not run")
 }
 
 pub fn with_composer<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
-    COMPOSER_STACK.with(|stack| {
-        let ptr = *stack
-            .borrow()
-            .last()
-            .expect("with_composer: no active composer");
-        let composer = ptr as *mut Composer<'_>;
-        // SAFETY: the pointer was pushed from an active composer reference, and
-        // the guard ensures it stays valid for the duration of the call.
-        let composer = unsafe { &mut *composer }; // NOLINT: legacy interface
-        f(composer)
-    })
+    let mut f = Some(f);
+    let mut result: Option<R> = None;
+    COMPOSER.with(|access| {
+        access.with(&mut |composer| {
+            let f = f.take().expect("composer callback already taken");
+            result = Some(f(composer));
+        });
+    });
+    result.expect("composer callback did not run")
 }
 
 pub fn try_with_composer<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> Option<R> {
-    COMPOSER_STACK.with(|stack| {
-        let ptr = *stack.borrow().last()?;
-        let composer = ptr as *mut Composer<'_>;
-        // SAFETY: see `with_composer` above.
-        let composer = unsafe { &mut *composer };
-        Some(f(composer))
-    })
+    if !COMPOSER.is_set() {
+        return None;
+    }
+    let mut f = Some(f);
+    let mut result: Option<R> = None;
+    COMPOSER.with(|access| {
+        access.with(&mut |composer| {
+            let f = f.take().expect("composer callback already taken");
+            result = Some(f(composer));
+        });
+    });
+    result
 }

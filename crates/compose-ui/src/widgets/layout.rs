@@ -15,8 +15,8 @@ use compose_ui_layout::{MeasurePolicy, Placement};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-#[composable]
-pub fn Layout<F, P>(modifier: Modifier, measure_policy: P, content: F) -> NodeId
+#[composable(no_skip)]
+pub fn Layout<F, P>(modifier: Modifier, measure_policy: P, mut content: F) -> NodeId
 where
     F: FnMut() + 'static,
     P: MeasurePolicy + Clone + PartialEq + 'static,
@@ -64,12 +64,12 @@ where
     let content_ref: Rc<RefCell<F>> = Rc::new(RefCell::new(content));
     SubcomposeLayout(modifier, move |scope, constraints| {
         let scope_impl = BoxWithConstraintsScopeImpl::new(constraints);
-        let scope_for_content = scope_impl.clone();
+        let scope_for_content = scope_impl;
         let measurables = {
             let content_ref = Rc::clone(&content_ref);
             scope.subcompose(SlotId::new(0), move || {
                 let mut content = content_ref.borrow_mut();
-                content(scope_for_content.clone());
+                content(scope_for_content);
             })
         };
         let width_dp = if scope_impl.max_width().0.is_finite() {

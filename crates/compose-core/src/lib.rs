@@ -36,16 +36,16 @@ pub fn run_in_mutable_snapshot<T>(block: impl FnOnce() -> T) -> Result<T, &'stat
 pub use runtime::{TestRuntime, TestScheduler};
 
 use std::any::Any;
-use std::cell::{Cell, RefCell, UnsafeCell};
+use std::cell::{Cell, RefCell};
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet}; // FUTURE(no_std): replace HashMap/HashSet with arena-backed maps.
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::rc::{Rc, Weak}; // FUTURE(no_std): replace Rc/Weak with arena-managed handles.
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::thread_local;
 
 use crate::state::{NeverEqual, SnapshotMutableState, UpdateScope};
+use scoped_tls_hkt::ReborrowMut;
 
 pub type Key = u64;
 pub type NodeId = usize;
@@ -1337,8 +1337,7 @@ impl<'a> Composer<'a> {
         }
     }
 
-    pub fn install<R>(&'a mut self, f: impl FnOnce(&mut Composer<'a>) -> R) -> R {
-        let _composer_guard = composer_context::enter(self);
+    pub fn install<R>(&'a mut self, f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
         runtime::push_active_runtime(&self.runtime);
         struct Guard;
         impl Drop for Guard {
@@ -1346,10 +1345,12 @@ impl<'a> Composer<'a> {
                 runtime::pop_active_runtime();
             }
         }
-        let guard = Guard;
-        let result = f(self);
-        drop(guard);
-        result
+        let _runtime_guard = Guard;
+        let mut f = Some(f);
+        composer_context::enter(self, |composer| {
+            let f = f.take().expect("composer callback already taken");
+            f(composer)
+        })
     }
 
     pub fn with_group<R>(&mut self, key: Key, f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
@@ -1484,36 +1485,11 @@ impl<'a> Composer<'a> {
         }
 
         self.subcompose_stack.push(SubcomposeFrame::default());
-        struct StackGuard {
-            stack: *mut Vec<SubcomposeFrame>, // FUTURE(no_std): replace Vec with fixed stack buffer.
-            leaked: bool,
-        }
-        impl StackGuard {
-            fn new(stack: *mut Vec<SubcomposeFrame>) -> Self {
-                Self {
-                    stack,
-                    leaked: false,
-                }
-            }
-
-            unsafe fn into_frame(mut self) -> SubcomposeFrame {
-                self.leaked = true;
-                (*self.stack).pop().expect("subcompose stack underflow")
-            }
-        }
-        impl Drop for StackGuard {
-            fn drop(&mut self) {
-                if !self.leaked {
-                    unsafe {
-                        (*self.stack).pop();
-                    }
-                }
-            }
-        }
-
-        let guard = StackGuard::new(&mut self.subcompose_stack as *mut _);
         let result = self.with_group(slot_id.raw(), |composer| content(composer));
-        let frame = unsafe { guard.into_frame() };
+        let frame = self
+            .subcompose_stack
+            .pop()
+            .expect("subcompose stack underflow");
         let nodes = frame.nodes;
         let scopes = frame.scopes;
         state.register_active(slot_id, &nodes, &scopes);
@@ -1799,6 +1775,14 @@ impl<'a> Composer<'a> {
     }
 }
 
+impl<'short, 'scope: 'short> ReborrowMut<'short> for Composer<'scope> {
+    type Result = &'short mut Composer<'scope>;
+
+    fn reborrow_mut(&'short mut self) -> Self::Result {
+        self
+    }
+}
+
 struct MutableStateInner<T: Clone + 'static> {
     state: Arc<SnapshotMutableState<T>>,
     watchers: RefCell<Vec<Weak<RecomposeScopeInner>>>, // FUTURE(no_std): move to stack-allocated subscription list.
@@ -2051,40 +2035,23 @@ impl<T> ParamState<T> {
 /// ParamSlot holds function/closure parameters by ownership (no PartialEq/Clone required).
 /// Used by the #[composable] macro to store Fn-like parameters in the slot table.
 pub struct ParamSlot<T> {
-    val: UnsafeCell<Option<T>>,
+    val: Option<T>,
 }
 
 impl<T> Default for ParamSlot<T> {
     fn default() -> Self {
-        Self {
-            val: UnsafeCell::new(None),
-        }
+        Self { val: None }
     }
 }
 
 impl<T> ParamSlot<T> {
-    pub fn set(&self, v: T) {
-        unsafe {
-            *self.val.get() = Some(v);
-        }
-    }
-
-    pub fn get_mut(&self) -> &'static mut T {
-        unsafe {
-            let ptr = (*self.val.get())
-                .as_mut()
-                .expect("ParamSlot accessed before set") as *mut T;
-            &mut *ptr
-        }
+    pub fn set(&mut self, v: T) {
+        self.val = Some(v);
     }
 
     /// Takes the value out temporarily (for recomposition callback)
-    pub fn take(&self) -> T {
-        unsafe {
-            (*self.val.get())
-                .take()
-                .expect("ParamSlot take() called before set")
-        }
+    pub fn take(&mut self) -> T {
+        self.val.take().expect("ParamSlot take() called before set")
     }
 }
 

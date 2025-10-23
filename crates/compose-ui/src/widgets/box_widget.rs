@@ -41,7 +41,7 @@ impl Default for BoxSpec {
     }
 }
 
-#[composable]
+#[composable(no_skip)]
 pub fn Box<F>(modifier: Modifier, spec: BoxSpec, content: F) -> NodeId
 where
     F: FnMut() + 'static,

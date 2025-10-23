@@ -292,7 +292,6 @@ impl<'a> LayoutBuilder<'a> {
         node: LayoutNode,
         constraints: Constraints,
     ) -> Result<MeasuredNode, NodeError> {
-        let mut node = node;
         let modifier = node.modifier.clone();
         let props = modifier.layout_properties();
         let padding = props.padding();
@@ -344,10 +343,9 @@ impl<'a> LayoutBuilder<'a> {
         // when the parent should wrap to content.
         if props.width() == DimensionConstraint::Unspecified {
             // Query the policy's intrinsic width based on current constraints
-            let intrinsic_width = node.measure_policy.min_intrinsic_width(
-                &measurables,
-                inner_constraints.max_height,
-            );
+            let intrinsic_width = node
+                .measure_policy
+                .min_intrinsic_width(&measurables, inner_constraints.max_height);
             // Constrain max_width to the intrinsic size, but respect min_width from constraints
             let constrained_width = intrinsic_width.max(inner_constraints.min_width);
             if constrained_width.is_finite() && constrained_width < inner_constraints.max_width {
@@ -356,10 +354,9 @@ impl<'a> LayoutBuilder<'a> {
         }
         if props.height() == DimensionConstraint::Unspecified {
             // Query the policy's intrinsic height based on current constraints
-            let intrinsic_height = node.measure_policy.min_intrinsic_height(
-                &measurables,
-                inner_constraints.max_width,
-            );
+            let intrinsic_height = node
+                .measure_policy
+                .min_intrinsic_height(&measurables, inner_constraints.max_width);
             // Constrain max_height to the intrinsic size, but respect min_height from constraints
             let constrained_height = intrinsic_height.max(inner_constraints.min_height);
             if constrained_height.is_finite() && constrained_height < inner_constraints.max_height {
