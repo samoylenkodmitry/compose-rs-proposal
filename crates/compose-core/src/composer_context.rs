@@ -1,61 +1,59 @@
+use std::marker::PhantomData;
+use std::ptr::NonNull;
+
 use scoped_tls_hkt::{scoped_thread_local, ReborrowMut};
 
 use crate::Composer;
 
-/// Trait that provides safe access to a Composer through an indirection layer.
-/// This enables storing in thread-local storage by erasing the self-referential lifetime.
-pub trait ComposerAccess {
-    fn with(&mut self, f: &mut dyn FnMut(&mut Composer<'_>));
+#[derive(Clone, Copy)]
+struct ComposerRef<'scope> {
+    ptr: NonNull<Composer<'static>>,
+    _marker: PhantomData<&'scope ()>,
 }
 
-impl<'a> ComposerAccess for Composer<'a> {
-    fn with(&mut self, f: &mut dyn FnMut(&mut Composer<'_>)) {
-        f(self)
+impl<'scope> ComposerRef<'scope> {
+    fn new(composer: &'scope mut Composer<'scope>) -> Self {
+        Self {
+            ptr: NonNull::from(composer).cast(),
+            _marker: PhantomData,
+        }
+    }
+
+    fn as_mut<'short>(&'short mut self) -> &'short mut Composer<'scope> {
+        // SAFETY: The thread-local storage guarantees unique access while borrowed.
+        unsafe { &mut *self.ptr.as_ptr().cast::<Composer<'scope>>() }
     }
 }
 
-/// ReborrowMut implementation for the ComposerAccess trait object.
-/// This allows safe reborrowing for nested with_composer() calls.
-impl<'short, 'scope: 'short> ReborrowMut<'short> for dyn ComposerAccess + 'scope {
-    type Result = &'short mut (dyn ComposerAccess + 'scope);
+impl<'short, 'scope: 'short> ReborrowMut<'short> for ComposerRef<'scope> {
+    type Result = ComposerRef<'scope>;
 
     fn reborrow_mut(&'short mut self) -> Self::Result {
-        self
+        *self
     }
 }
 
-scoped_thread_local!(static mut COMPOSER: for<'a> &'a mut (dyn ComposerAccess + 'a));
+scoped_thread_local!(static mut COMPOSER: for<'a> ComposerRef<'a>);
 
 /// Enter a composer scope, making the composer available to with_composer.
-///
-/// CRITICAL FIX: We call COMPOSER.with() ONCE inside COMPOSER.set().
-/// This is the single level of nesting. When user code calls with_composer(),
-/// those nested .with() calls are handled safely by ReborrowMut.
 #[inline]
 pub fn enter<'a, R>(composer: &'a mut Composer<'a>, f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
-    let mut f = Some(f);
-    let mut result = None;
-    COMPOSER.set(composer as &mut dyn ComposerAccess, || {
-        COMPOSER.with(|access| {
-            access.with(&mut |c| {
-                result = Some(f.take().expect("enter callback already taken")(c));
-            })
-        })
-    });
-    result.expect("enter callback did not run")
+    let composer_ref = ComposerRef::new(composer);
+    COMPOSER.set(composer_ref, || {
+        let mut current = composer_ref;
+        f(current.as_mut())
+    })
 }
 
 /// Access the current composer from thread-local storage.
 #[inline]
 pub fn with_composer<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
-    let mut f = Some(f);
-    let mut out = None;
-    COMPOSER.with(|access| {
-        access.with(&mut |composer| {
-            out = Some(f.take().expect("with_composer callback already taken")(composer));
-        });
-    });
-    out.expect("with_composer: callback did not run")
+    COMPOSER.with(|composer_ref| {
+        COMPOSER.set(composer_ref, || {
+            let mut current = composer_ref;
+            f(current.as_mut())
+        })
+    })
 }
 
 /// Try to access the current composer, returning None if not in a composer scope.
@@ -64,16 +62,13 @@ pub fn try_with_composer<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> Option<R>
     if !COMPOSER.is_set() {
         return None;
     }
-    let mut f = Some(f);
-    let mut out = None;
-    COMPOSER.with(|access| {
-        access.with(&mut |composer| {
-            out = Some(f.take().expect("try_with_composer callback already taken")(composer));
-        });
-    });
-    out
+    Some(COMPOSER.with(|composer_ref| {
+        COMPOSER.set(composer_ref, || {
+            let mut current = composer_ref;
+            f(current.as_mut())
+        })
+    }))
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -160,7 +155,9 @@ mod tests {
         enter(&mut composer, |_c| {
             with_composer(|_c1| {
                 with_composer(|_c2| {
-                    nested_executed = true;
+                    with_composer(|_c3| {
+                        nested_executed = true;
+                    });
                 });
             });
         });
@@ -168,7 +165,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "is not currently set")]
+    #[should_panic(
+        expected = "cannot access a scoped thread local variable without calling `set` first"
+    )]
     fn with_composer_panics_outside_scope() {
         // This should panic because there's no composer scope set
         with_composer(|_c| {
