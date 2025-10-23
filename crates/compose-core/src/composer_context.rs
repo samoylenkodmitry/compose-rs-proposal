@@ -30,17 +30,11 @@ scoped_thread_local!(static mut COMPOSER: for<'a> &'a mut (dyn ComposerAccess + 
 /// Enter a composer scope, making the composer available to with_composer.
 /// This is completely safe - no unsafe code required!
 pub fn enter<'a, R>(composer: &'a mut Composer<'a>, f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
-    let mut f = Some(f);
-    let mut result: Option<R> = None;
     COMPOSER.set(composer as &mut dyn ComposerAccess, || {
-        COMPOSER.with(|access| {
-            access.with(&mut |composer| {
-                let f = f.take().expect("composer callback already taken");
-                result = Some(f(composer));
-            });
-        });
-    });
-    result.expect("composer callback did not run")
+        // Call f directly using with_composer to access the TLS
+        // This ensures consistent access pattern throughout the composition
+        with_composer(|c| f(c))
+    })
 }
 
 pub fn with_composer<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
