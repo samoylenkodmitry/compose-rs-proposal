@@ -121,6 +121,55 @@ fn with_current_composer_is_available_inside_group() {
 }
 
 #[test]
+fn nested_dsl_sees_same_composer() {
+    let (handle, _rt) = runtime_handle();
+    let mut slots = SlotTable::new();
+    let mut applier = MemoryApplier::new();
+    let mut composer = Composer::new(&mut slots, &mut applier, handle, None);
+
+    let mut seen = Vec::new();
+
+    fn a(seen: &mut Vec<usize>) {
+        compose_core::composer_context::with_composer(|c| seen.push(c as *mut _ as usize));
+        fn b(seen: &mut Vec<usize>) {
+            compose_core::composer_context::with_composer(|c| seen.push(c as *mut _ as usize));
+            fn c(seen: &mut Vec<usize>) {
+                compose_core::composer_context::with_composer(|c| seen.push(c as *mut _ as usize));
+            }
+            c(seen);
+        }
+        b(seen);
+        compose_core::composer_context::with_composer(|c| seen.push(c as *mut _ as usize));
+    }
+
+    composer.install(|_| a(&mut seen));
+
+    assert!(!seen.is_empty());
+    let first = seen[0];
+    assert!(seen.iter().all(|&ptr| ptr == first));
+}
+
+#[test]
+fn nested_with_composer_reborrows() {
+    let (handle, _rt) = runtime_handle();
+    let mut slots = SlotTable::new();
+    let mut applier = MemoryApplier::new();
+    let mut composer = Composer::new(&mut slots, &mut applier, handle, None);
+
+    composer.install(|_| {
+        compose_core::composer_context::with_composer(|outer| {
+            let ptr = outer as *mut _ as usize;
+            compose_core::composer_context::with_composer(|inner| {
+                assert_eq!(ptr, inner as *mut _ as usize);
+            });
+            compose_core::composer_context::with_composer(|again| {
+                assert_eq!(ptr, again as *mut _ as usize);
+            });
+        });
+    });
+}
+
+#[test]
 #[should_panic(expected = "subcompose() may only be called during measure or layout")]
 fn subcompose_panics_outside_measure_or_layout() {
     let (handle, _runtime) = runtime_handle();

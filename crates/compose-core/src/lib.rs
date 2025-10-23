@@ -1346,7 +1346,7 @@ impl<'a> Composer<'a> {
             }
         }
         let _runtime_guard = Guard;
-        composer_context::enter(self, |composer| f(composer))
+        composer_context::enter(self, f)
     }
 
     pub fn with_group<R>(&mut self, key: Key, f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
