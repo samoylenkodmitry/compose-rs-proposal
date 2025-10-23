@@ -105,6 +105,22 @@ fn compose_test_node<N: Node + 'static>(init: impl FnOnce() -> N) -> NodeId {
 }
 
 #[test]
+fn with_current_composer_is_available_inside_group() {
+    let (handle, _runtime) = runtime_handle();
+    let mut slots = SlotTable::new();
+    let mut applier = MemoryApplier::new();
+    let mut composer = Composer::new(&mut slots, &mut applier, handle, None);
+
+    composer.install(|composer| {
+        composer.with_group(0, |_| {
+            compose_core::with_current_composer(|current| {
+                current.emit_node(|| TestDummyNode::default());
+            });
+        });
+    });
+}
+
+#[test]
 #[should_panic(expected = "subcompose() may only be called during measure or layout")]
 fn subcompose_panics_outside_measure_or_layout() {
     let (handle, _runtime) = runtime_handle();
