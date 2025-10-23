@@ -41,7 +41,7 @@ impl Default for ColumnSpec {
     }
 }
 
-#[composable(no_skip)]
+#[composable]
 pub fn Column<F>(modifier: Modifier, spec: ColumnSpec, content: F) -> NodeId
 where
     F: FnMut() + 'static,

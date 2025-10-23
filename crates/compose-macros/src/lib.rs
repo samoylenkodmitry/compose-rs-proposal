@@ -200,7 +200,11 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
         .iter()
         .any(|(_, _, ty)| matches!(**ty, Type::ImplTrait(_)));
 
-    if enable_skip && !has_impl_trait {
+    let has_fn_param = param_info
+        .iter()
+        .any(|(_, _, ty)| is_fn_param(ty, &generics));
+
+    if enable_skip && !has_impl_trait && !has_fn_param {
         let helper_ident = Ident::new(
             &format!("__compose_impl_{}", func.sig.ident),
             Span::call_site(),
@@ -258,7 +262,7 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 });
 
                 rebinds.push(quote! {
-                    let mut #pat = __composer
+                    let mut #binding_ident = __composer
                         .read_slot_value_mut::<compose_core::ParamSlot<#ty>>(#slot_ident)
                         .take();
                 });

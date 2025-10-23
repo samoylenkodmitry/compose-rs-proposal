@@ -41,7 +41,7 @@ impl Default for RowSpec {
     }
 }
 
-#[composable(no_skip)]
+#[composable]
 pub fn Row<F>(modifier: Modifier, spec: RowSpec, content: F) -> NodeId
 where
     F: FnMut() + 'static,

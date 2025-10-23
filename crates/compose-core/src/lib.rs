@@ -1346,11 +1346,7 @@ impl<'a> Composer<'a> {
             }
         }
         let _runtime_guard = Guard;
-        let mut f = Some(f);
-        composer_context::enter(self, |composer| {
-            let f = f.take().expect("composer callback already taken");
-            f(composer)
-        })
+        composer_context::enter(self, |composer| f(composer))
     }
 
     pub fn with_group<R>(&mut self, key: Key, f: impl FnOnce(&mut Composer<'_>) -> R) -> R {

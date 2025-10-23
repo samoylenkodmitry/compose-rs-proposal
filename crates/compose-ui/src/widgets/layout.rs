@@ -15,7 +15,7 @@ use compose_ui_layout::{MeasurePolicy, Placement};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-#[composable(no_skip)]
+#[composable]
 pub fn Layout<F, P>(modifier: Modifier, measure_policy: P, mut content: F) -> NodeId
 where
     F: FnMut() + 'static,
