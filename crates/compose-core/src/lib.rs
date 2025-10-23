@@ -45,6 +45,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use crate::state::{NeverEqual, SnapshotMutableState, UpdateScope};
+use scoped_tls_hkt::ReborrowMut;
 
 pub type Key = u64;
 pub type NodeId = usize;
@@ -1336,7 +1337,7 @@ impl<'a> Composer<'a> {
         }
     }
 
-    pub fn install<R>(&'a mut self, f: impl FnOnce(&mut Composer<'a>) -> R) -> R {
+    pub fn install<R>(&'a mut self, f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
         runtime::push_active_runtime(&self.runtime);
         struct Guard;
         impl Drop for Guard {
@@ -1344,10 +1345,11 @@ impl<'a> Composer<'a> {
                 runtime::pop_active_runtime();
             }
         }
-        let _guard = Guard;
-
-        composer_context::enter(self, || {
-            composer_context::with_composer_lifetime(|composer| f(composer))
+        let _runtime_guard = Guard;
+        let mut f = Some(f);
+        composer_context::enter(self, |composer| {
+            let f = f.take().expect("composer callback already taken");
+            f(composer)
         })
     }
 
@@ -1770,6 +1772,16 @@ impl<'a> Composer<'a> {
     pub fn take_side_effects(&mut self) -> Vec<Box<dyn FnOnce()>> {
         // FUTURE(no_std): drain into bounded callback buffer.
         std::mem::take(&mut self.side_effects)
+    }
+}
+
+/// ReborrowMut implementation for Composer.
+/// This allows safe reborrowing through the scoped-tls-hkt mechanism.
+impl<'short, 'scope: 'short> ReborrowMut<'short> for Composer<'scope> {
+    type Result = &'short mut Composer<'scope>;
+
+    fn reborrow_mut(&'short mut self) -> Self::Result {
+        self
     }
 }
 
