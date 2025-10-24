@@ -20,3 +20,7 @@ default = []
 [dev-dependencies]
 criterion = "0.5"
 compose-testing = { path = "../compose-testing" }
+
+[[bench]]
+name = "pipeline"
+harness = false
