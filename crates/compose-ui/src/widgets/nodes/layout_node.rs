@@ -16,7 +16,7 @@ pub(crate) enum IntrinsicDimension {
 #[derive(Clone)]
 struct MeasurementCacheEntry {
     constraints: Constraints,
-    measured: MeasuredNode,
+    measured: Rc<MeasuredNode>,
 }
 
 #[derive(Clone)]
@@ -55,16 +55,16 @@ impl LayoutNodeCacheHandles {
         }
     }
 
-    pub(crate) fn get_measurement(&self, constraints: Constraints) -> Option<MeasuredNode> {
+    pub(crate) fn get_measurement(&self, constraints: Constraints) -> Option<Rc<MeasuredNode>> {
         let state = self.state.borrow();
         state
             .measurements
             .iter()
             .find(|entry| entry.constraints == constraints)
-            .map(|entry| entry.measured.clone())
+            .map(|entry| Rc::clone(&entry.measured))
     }
 
-    pub(crate) fn store_measurement(&self, constraints: Constraints, measured: MeasuredNode) {
+    pub(crate) fn store_measurement(&self, constraints: Constraints, measured: Rc<MeasuredNode>) {
         let mut state = self.state.borrow_mut();
         if let Some(entry) = state
             .measurements
