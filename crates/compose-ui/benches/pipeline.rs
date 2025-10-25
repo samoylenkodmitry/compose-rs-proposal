@@ -7,7 +7,7 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 
 const SECTION_COUNT: usize = 4;
 const ROWS_PER_SECTION: usize = 32;
-const MEASURE_ROWS_PER_SECTION_SAMPLES: &[usize] = &[8, 16, 24, 32, 40, 48, 56, 64];
+const ROWS_PER_SECTION_SAMPLES: &[usize] = &[8, 16, 24, 32, 40, 48, 56, 64];
 const ROOT_SIZE: Size = Size {
     width: 1080.0,
     height: 1920.0,
@@ -77,20 +77,30 @@ fn ui_object_count(sections: usize, rows_per_section: usize) -> usize {
 }
 
 fn bench_composition(c: &mut Criterion) {
-    let mut fixture = PipelineFixture::new(SECTION_COUNT, ROWS_PER_SECTION, ROOT_SIZE);
-    // Warm up the composition so steady-state recomposition is measured.
-    fixture.compose();
+    let sections = SECTION_COUNT;
+    let mut group = c.benchmark_group("pipeline_composition");
+    for &rows_per_section in ROWS_PER_SECTION_SAMPLES {
+        let total_ui_objects = ui_object_count(sections, rows_per_section);
+        group.bench_with_input(
+            BenchmarkId::new("ui_objects", total_ui_objects),
+            &(sections, rows_per_section),
+            |b, &(sections, rows_per_section)| {
+                let mut fixture = PipelineFixture::new(sections, rows_per_section, ROOT_SIZE);
+                // Warm up the composition so steady-state recomposition is measured.
+                fixture.compose();
 
-    c.bench_function("pipeline_composition", |b| {
-        b.iter(|| {
-            fixture.compose();
-        });
-    });
+                b.iter(|| {
+                    fixture.compose();
+                });
+            },
+        );
+    }
+    group.finish();
 }
 
 fn bench_measure(c: &mut Criterion) {
     let mut group = c.benchmark_group("pipeline_measure");
-    for &rows_per_section in MEASURE_ROWS_PER_SECTION_SAMPLES {
+    for &rows_per_section in ROWS_PER_SECTION_SAMPLES {
         let sections = SECTION_COUNT;
         let total_ui_objects = ui_object_count(sections, rows_per_section);
         group.bench_with_input(
@@ -111,31 +121,51 @@ fn bench_measure(c: &mut Criterion) {
 }
 
 fn bench_layout(c: &mut Criterion) {
-    let mut fixture = PipelineFixture::new(SECTION_COUNT, ROWS_PER_SECTION, ROOT_SIZE);
-    fixture.compose();
-    let measurements = fixture.measure();
+    let sections = SECTION_COUNT;
+    let mut group = c.benchmark_group("pipeline_layout");
+    for &rows_per_section in ROWS_PER_SECTION_SAMPLES {
+        let total_ui_objects = ui_object_count(sections, rows_per_section);
+        group.bench_with_input(
+            BenchmarkId::new("ui_objects", total_ui_objects),
+            &(sections, rows_per_section),
+            |b, &(sections, rows_per_section)| {
+                let mut fixture = PipelineFixture::new(sections, rows_per_section, ROOT_SIZE);
+                fixture.compose();
+                let measurements = fixture.measure();
 
-    c.bench_function("pipeline_layout", |b| {
-        b.iter(|| {
-            let tree = measurements.layout_tree();
-            black_box(tree);
-        });
-    });
+                b.iter(|| {
+                    let tree = measurements.layout_tree();
+                    black_box(tree);
+                });
+            },
+        );
+    }
+    group.finish();
 }
 
 fn bench_render(c: &mut Criterion) {
-    let mut fixture = PipelineFixture::new(SECTION_COUNT, ROWS_PER_SECTION, ROOT_SIZE);
-    fixture.compose();
-    let measurements = fixture.measure();
-    let layout_tree = measurements.layout_tree();
-    let renderer = HeadlessRenderer::new();
+    let sections = SECTION_COUNT;
+    let mut group = c.benchmark_group("pipeline_render");
+    for &rows_per_section in ROWS_PER_SECTION_SAMPLES {
+        let total_ui_objects = ui_object_count(sections, rows_per_section);
+        group.bench_with_input(
+            BenchmarkId::new("ui_objects", total_ui_objects),
+            &(sections, rows_per_section),
+            |b, &(sections, rows_per_section)| {
+                let mut fixture = PipelineFixture::new(sections, rows_per_section, ROOT_SIZE);
+                fixture.compose();
+                let measurements = fixture.measure();
+                let layout_tree = measurements.layout_tree();
+                let renderer = HeadlessRenderer::new();
 
-    c.bench_function("pipeline_render", |b| {
-        b.iter(|| {
-            let scene = renderer.render(&layout_tree);
-            black_box(scene);
-        });
-    });
+                b.iter(|| {
+                    let scene = renderer.render(&layout_tree);
+                    black_box(scene);
+                });
+            },
+        );
+    }
+    group.finish();
 }
 
 fn bench_full_pipeline(c: &mut Criterion) {
