@@ -223,7 +223,7 @@ fn recursive_layout_example() {
                             {
                                 let depth_state = depth_state.clone();
                                 move || {
-                                    let next = (depth_state.get() + 1).min(6);
+                                    let next = (depth_state.get() + 1).min(16);
                                     if next != depth_state.get() {
                                         depth_state.set(next);
                                     }
