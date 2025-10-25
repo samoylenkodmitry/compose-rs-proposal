@@ -28,6 +28,7 @@ struct IntrinsicCacheEntry {
 
 #[derive(Default)]
 struct NodeCacheState {
+    epoch: u64,
     measurements: Vec<MeasurementCacheEntry>,
     intrinsics: Vec<IntrinsicCacheEntry>,
 }
@@ -42,6 +43,16 @@ impl LayoutNodeCacheHandles {
         let mut state = self.state.borrow_mut();
         state.measurements.clear();
         state.intrinsics.clear();
+        state.epoch = 0;
+    }
+
+    pub(crate) fn activate(&self, epoch: u64) {
+        let mut state = self.state.borrow_mut();
+        if state.epoch != epoch {
+            state.measurements.clear();
+            state.intrinsics.clear();
+            state.epoch = epoch;
+        }
     }
 
     pub(crate) fn get_measurement(&self, constraints: Constraints) -> Option<MeasuredNode> {

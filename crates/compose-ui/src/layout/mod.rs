@@ -1,7 +1,14 @@
 pub mod core;
 pub mod policies;
 
-use std::{cell::RefCell, collections::HashMap, fmt, marker::PhantomData, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    fmt,
+    marker::PhantomData,
+    rc::Rc,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use compose_core::{
     Applier, Composer, MemoryApplier, Node, NodeError, NodeId, Phase, RuntimeHandle, SlotTable,
@@ -18,6 +25,8 @@ use crate::widgets::nodes::{
     ButtonNode, IntrinsicDimension, LayoutNode, LayoutNodeCacheHandles, SpacerNode, TextNode,
 };
 use compose_ui_layout::{Constraints, IntrinsicSize};
+
+static NEXT_CACHE_EPOCH: AtomicU64 = AtomicU64::new(1);
 
 /// Result of running layout for a Compose tree.
 #[derive(Debug, Clone)]
@@ -161,15 +170,18 @@ struct LayoutBuilder<'a> {
     applier: *mut MemoryApplier,
     runtime_handle: Option<RuntimeHandle>,
     slots: SlotTable,
+    cache_epoch: u64,
     _marker: PhantomData<&'a mut MemoryApplier>,
 }
 
 impl<'a> LayoutBuilder<'a> {
     fn new(applier: &'a mut MemoryApplier) -> Self {
+        let epoch = NEXT_CACHE_EPOCH.fetch_add(1, Ordering::Relaxed);
         Self {
             applier,
             runtime_handle: applier.runtime_handle(),
             slots: SlotTable::new(),
+            cache_epoch: epoch,
             _marker: PhantomData,
         }
     }
@@ -332,6 +344,7 @@ impl<'a> LayoutBuilder<'a> {
     ) -> Result<MeasuredNode, NodeError> {
         let node = node;
         let cache = node.cache_handles();
+        cache.activate(self.cache_epoch);
         if let Some(cached) = cache.get_measurement(constraints) {
             return Ok(cached);
         }
@@ -371,6 +384,7 @@ impl<'a> LayoutBuilder<'a> {
                 Err(NodeError::TypeMismatch { .. }) => LayoutNodeCacheHandles::default(),
                 Err(err) => return Err(err),
             };
+            cache_handles.activate(self.cache_epoch);
             records.insert(
                 child_id,
                 ChildRecord {
@@ -386,6 +400,7 @@ impl<'a> LayoutBuilder<'a> {
                 Rc::clone(&error),
                 self.runtime_handle.clone(),
                 cache_handles,
+                self.cache_epoch,
             )));
         }
 
@@ -562,6 +577,7 @@ struct LayoutChildMeasurable {
     error: Rc<RefCell<Option<NodeError>>>,
     runtime_handle: Option<RuntimeHandle>,
     cache: LayoutNodeCacheHandles,
+    cache_epoch: u64,
 }
 
 impl LayoutChildMeasurable {
@@ -573,7 +589,9 @@ impl LayoutChildMeasurable {
         error: Rc<RefCell<Option<NodeError>>>,
         runtime_handle: Option<RuntimeHandle>,
         cache: LayoutNodeCacheHandles,
+        cache_epoch: u64,
     ) -> Self {
+        cache.activate(cache_epoch);
         Self {
             applier,
             node_id,
@@ -582,6 +600,7 @@ impl LayoutChildMeasurable {
             error,
             runtime_handle,
             cache,
+            cache_epoch,
         }
     }
 
@@ -593,6 +612,7 @@ impl LayoutChildMeasurable {
     }
 
     fn intrinsic_measure(&self, constraints: Constraints) -> Option<MeasuredNode> {
+        self.cache.activate(self.cache_epoch);
         if let Some(cached) = self.cache.get_measurement(constraints) {
             return Some(cached);
         }
@@ -603,6 +623,7 @@ impl LayoutChildMeasurable {
                 self.runtime_handle.clone(),
                 self.node_id,
                 constraints,
+                self.cache_epoch,
             )
         } {
             Ok(measured) => {
@@ -619,6 +640,7 @@ impl LayoutChildMeasurable {
 
 impl Measurable for LayoutChildMeasurable {
     fn measure(&self, constraints: Constraints) -> Box<dyn Placeable> {
+        self.cache.activate(self.cache_epoch);
         if let Some(cached) = self.cache.get_measurement(constraints) {
             *self.measured.borrow_mut() = Some(cached);
         } else {
@@ -628,6 +650,7 @@ impl Measurable for LayoutChildMeasurable {
                     self.runtime_handle.clone(),
                     self.node_id,
                     constraints,
+                    self.cache_epoch,
                 )
             } {
                 Ok(measured) => {
@@ -648,6 +671,7 @@ impl Measurable for LayoutChildMeasurable {
     }
 
     fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.cache.activate(self.cache_epoch);
         if let Some(value) = self
             .cache
             .get_intrinsic(IntrinsicDimension::MinWidth, height)
@@ -672,6 +696,7 @@ impl Measurable for LayoutChildMeasurable {
     }
 
     fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.cache.activate(self.cache_epoch);
         if let Some(value) = self
             .cache
             .get_intrinsic(IntrinsicDimension::MaxWidth, height)
@@ -696,6 +721,7 @@ impl Measurable for LayoutChildMeasurable {
     }
 
     fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.cache.activate(self.cache_epoch);
         if let Some(value) = self
             .cache
             .get_intrinsic(IntrinsicDimension::MinHeight, width)
@@ -720,6 +746,7 @@ impl Measurable for LayoutChildMeasurable {
     }
 
     fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.cache.activate(self.cache_epoch);
         if let Some(value) = self
             .cache
             .get_intrinsic(IntrinsicDimension::MaxHeight, width)
@@ -813,12 +840,14 @@ unsafe fn measure_node_via_ptr(
     runtime_handle: Option<RuntimeHandle>,
     node_id: NodeId,
     constraints: Constraints,
+    epoch: u64,
 ) -> Result<MeasuredNode, NodeError> {
     let runtime_handle = runtime_handle.or_else(|| (*applier).runtime_handle());
     let mut builder = LayoutBuilder {
         applier,
         runtime_handle,
         slots: SlotTable::new(),
+        cache_epoch: epoch,
         _marker: PhantomData,
     };
     builder.measure_node(node_id, constraints)
