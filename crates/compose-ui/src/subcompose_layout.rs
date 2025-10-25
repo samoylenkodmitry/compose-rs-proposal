@@ -102,6 +102,8 @@ pub struct SubcomposeLayoutNode {
     measure_policy: Rc<MeasurePolicy>,
     children: IndexSet<NodeId>,
     slots: SlotTable,
+    last_constraints: Option<Constraints>,
+    cached_result: Option<MeasureResult>,
 }
 
 impl SubcomposeLayoutNode {
@@ -114,6 +116,8 @@ impl SubcomposeLayoutNode {
             measure_policy,
             children: IndexSet::new(),
             slots: SlotTable::new(),
+            last_constraints: None,
+            cached_result: None,
         };
         node.set_modifier(modifier);
         node
@@ -121,12 +125,14 @@ impl SubcomposeLayoutNode {
 
     pub fn set_measure_policy(&mut self, policy: Rc<MeasurePolicy>) {
         self.measure_policy = policy;
+        self.invalidate_cache();
     }
 
     pub fn set_modifier(&mut self, modifier: Modifier) {
         self.modifier = modifier;
         self.mods
             .update_from_slice(self.modifier.elements(), &mut self.modifier_context);
+        self.invalidate_cache();
     }
 
     pub fn state(&self) -> &SubcomposeState {
@@ -143,6 +149,15 @@ impl SubcomposeLayoutNode {
         node_id: NodeId,
         constraints: Constraints,
     ) -> Result<MeasureResult, NodeError> {
+        if self
+            .last_constraints
+            .map(|stored| stored == constraints)
+            .unwrap_or(false)
+        {
+            if let Some(result) = &self.cached_result {
+                return Ok(result.clone());
+            }
+        }
         let previous = composer.phase();
         if !matches!(previous, Phase::Measure | Phase::Layout) {
             composer.enter_phase(Phase::Measure);
@@ -157,6 +172,8 @@ impl SubcomposeLayoutNode {
         if previous != composer.phase() {
             composer.enter_phase(previous);
         }
+        self.last_constraints = Some(constraints);
+        self.cached_result = Some(result.clone());
         Ok(result)
     }
 
@@ -173,15 +190,22 @@ impl SubcomposeLayoutNode {
     pub fn active_children(&self) -> Vec<NodeId> {
         self.children.iter().copied().collect()
     }
+
+    fn invalidate_cache(&mut self) {
+        self.last_constraints = None;
+        self.cached_result = None;
+    }
 }
 
 impl compose_core::Node for SubcomposeLayoutNode {
     fn insert_child(&mut self, child: NodeId) {
         self.children.insert(child);
+        self.invalidate_cache();
     }
 
     fn remove_child(&mut self, child: NodeId) {
         self.children.shift_remove(&child);
+        self.invalidate_cache();
     }
 
     fn move_child(&mut self, from: usize, to: usize) {
@@ -196,6 +220,7 @@ impl compose_core::Node for SubcomposeLayoutNode {
         for id in ordered {
             self.children.insert(id);
         }
+        self.invalidate_cache();
     }
 
     fn update_children(&mut self, children: &[NodeId]) {
@@ -203,6 +228,7 @@ impl compose_core::Node for SubcomposeLayoutNode {
         for &child in children {
             self.children.insert(child);
         }
+        self.invalidate_cache();
     }
 
     fn children(&self) -> Vec<NodeId> {

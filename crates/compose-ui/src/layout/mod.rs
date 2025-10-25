@@ -328,7 +328,7 @@ impl<'a> LayoutBuilder<'a> {
         node: LayoutNode,
         constraints: Constraints,
     ) -> Result<MeasuredNode, NodeError> {
-        let mut node = node;
+        let node = node;
         let modifier = node.modifier.clone();
         let props = modifier.layout_properties();
         let padding = props.padding();
@@ -535,6 +535,20 @@ struct ChildRecord {
     last_position: Rc<RefCell<Option<Point>>>,
 }
 
+#[derive(Clone, Copy, Hash, Eq, PartialEq)]
+enum IntrinsicMetric {
+    MinWidth,
+    MaxWidth,
+    MinHeight,
+    MaxHeight,
+}
+
+#[derive(Hash, Eq, PartialEq)]
+struct IntrinsicCacheKey {
+    metric: IntrinsicMetric,
+    cross_axis: u32,
+}
+
 struct LayoutChildMeasurable {
     applier: *mut MemoryApplier,
     node_id: NodeId,
@@ -542,6 +556,8 @@ struct LayoutChildMeasurable {
     last_position: Rc<RefCell<Option<Point>>>,
     error: Rc<RefCell<Option<NodeError>>>,
     runtime_handle: Option<RuntimeHandle>,
+    last_constraints: Rc<RefCell<Option<Constraints>>>,
+    intrinsic_cache: Rc<RefCell<HashMap<IntrinsicCacheKey, f32>>>,
 }
 
 impl LayoutChildMeasurable {
@@ -560,6 +576,8 @@ impl LayoutChildMeasurable {
             last_position,
             error,
             runtime_handle,
+            last_constraints: Rc::new(RefCell::new(None)),
+            intrinsic_cache: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
@@ -570,7 +588,7 @@ impl LayoutChildMeasurable {
         }
     }
 
-    fn intrinsic_measure(&self, constraints: Constraints) -> Option<MeasuredNode> {
+    fn measure_inner(&self, constraints: Constraints) -> Option<MeasuredNode> {
         match unsafe {
             measure_node_via_ptr(
                 self.applier,
@@ -586,24 +604,65 @@ impl LayoutChildMeasurable {
             }
         }
     }
+
+    fn intrinsic_key(&self, metric: IntrinsicMetric, cross_axis: f32) -> IntrinsicCacheKey {
+        IntrinsicCacheKey {
+            metric,
+            cross_axis: cross_axis.to_bits(),
+        }
+    }
+
+    fn cached_intrinsic(
+        &self,
+        metric: IntrinsicMetric,
+        cross_axis: f32,
+        constraints: Constraints,
+    ) -> f32 {
+        let key = self.intrinsic_key(metric, cross_axis);
+        if let Some(value) = self.intrinsic_cache.borrow().get(&key) {
+            return *value;
+        }
+        let value = self
+            .measure_inner(constraints)
+            .map(|node| match metric {
+                IntrinsicMetric::MinWidth | IntrinsicMetric::MaxWidth => node.size.width,
+                IntrinsicMetric::MinHeight | IntrinsicMetric::MaxHeight => node.size.height,
+            })
+            .unwrap_or(0.0);
+        self.intrinsic_cache.borrow_mut().insert(key, value);
+        value
+    }
 }
 
 impl Measurable for LayoutChildMeasurable {
     fn measure(&self, constraints: Constraints) -> Box<dyn Placeable> {
-        match unsafe {
-            measure_node_via_ptr(
-                self.applier,
-                self.runtime_handle.clone(),
-                self.node_id,
-                constraints,
-            )
-        } {
-            Ok(measured) => {
-                *self.measured.borrow_mut() = Some(measured);
+        let normalized = normalize_constraints(constraints);
+        let mut cached_constraints = self.last_constraints.borrow_mut();
+        let mut needs_measure = self.measured.borrow().is_none();
+        match *cached_constraints {
+            Some(stored) if stored == normalized => {
+                // Already have a measurement for these constraints.
             }
-            Err(err) => {
-                self.record_error(err);
-                self.measured.borrow_mut().take();
+            _ => needs_measure = true,
+        }
+        if needs_measure {
+            match unsafe {
+                measure_node_via_ptr(
+                    self.applier,
+                    self.runtime_handle.clone(),
+                    self.node_id,
+                    normalized,
+                )
+            } {
+                Ok(measured) => {
+                    *self.measured.borrow_mut() = Some(measured);
+                    *cached_constraints = Some(normalized);
+                }
+                Err(err) => {
+                    self.record_error(err);
+                    self.measured.borrow_mut().take();
+                    *cached_constraints = None;
+                }
             }
         }
         Box::new(LayoutChildPlaceable::new(
@@ -614,47 +673,55 @@ impl Measurable for LayoutChildMeasurable {
     }
 
     fn min_intrinsic_width(&self, height: f32) -> f32 {
-        self.intrinsic_measure(Constraints {
-            min_width: 0.0,
-            max_width: f32::INFINITY,
-            min_height: height,
-            max_height: height,
-        })
-        .map(|node| node.size.width)
-        .unwrap_or(0.0)
+        self.cached_intrinsic(
+            IntrinsicMetric::MinWidth,
+            height,
+            normalize_constraints(Constraints {
+                min_width: 0.0,
+                max_width: f32::INFINITY,
+                min_height: height,
+                max_height: height,
+            }),
+        )
     }
 
     fn max_intrinsic_width(&self, height: f32) -> f32 {
-        self.intrinsic_measure(Constraints {
-            min_width: 0.0,
-            max_width: f32::INFINITY,
-            min_height: 0.0,
-            max_height: height,
-        })
-        .map(|node| node.size.width)
-        .unwrap_or(0.0)
+        self.cached_intrinsic(
+            IntrinsicMetric::MaxWidth,
+            height,
+            normalize_constraints(Constraints {
+                min_width: 0.0,
+                max_width: f32::INFINITY,
+                min_height: 0.0,
+                max_height: height,
+            }),
+        )
     }
 
     fn min_intrinsic_height(&self, width: f32) -> f32 {
-        self.intrinsic_measure(Constraints {
-            min_width: width,
-            max_width: width,
-            min_height: 0.0,
-            max_height: f32::INFINITY,
-        })
-        .map(|node| node.size.height)
-        .unwrap_or(0.0)
+        self.cached_intrinsic(
+            IntrinsicMetric::MinHeight,
+            width,
+            normalize_constraints(Constraints {
+                min_width: width,
+                max_width: width,
+                min_height: 0.0,
+                max_height: f32::INFINITY,
+            }),
+        )
     }
 
     fn max_intrinsic_height(&self, width: f32) -> f32 {
-        self.intrinsic_measure(Constraints {
-            min_width: 0.0,
-            max_width: width,
-            min_height: 0.0,
-            max_height: f32::INFINITY,
-        })
-        .map(|node| node.size.height)
-        .unwrap_or(0.0)
+        self.cached_intrinsic(
+            IntrinsicMetric::MaxHeight,
+            width,
+            normalize_constraints(Constraints {
+                min_width: 0.0,
+                max_width: width,
+                min_height: 0.0,
+                max_height: f32::INFINITY,
+            }),
+        )
     }
 
     fn flex_parent_data(&self) -> Option<compose_ui_layout::FlexParentData> {
