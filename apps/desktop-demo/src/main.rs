@@ -39,6 +39,7 @@ enum DemoTab {
     Counter,
     CompositionLocal,
     Async,
+    Layout,
 }
 
 impl DemoTab {
@@ -47,6 +48,7 @@ impl DemoTab {
             DemoTab::Counter => "Counter App",
             DemoTab::CompositionLocal => "CompositionLocal Test",
             DemoTab::Async => "Async Runtime",
+            DemoTab::Layout => "Recursive Layout",
         }
     }
 }
@@ -158,6 +160,7 @@ fn combined_app() {
             render_tab_button(DemoTab::Counter);
             render_tab_button(DemoTab::CompositionLocal);
             render_tab_button(DemoTab::Async);
+            render_tab_button(DemoTab::Layout);
         });
 
         Spacer(Size {
@@ -170,8 +173,186 @@ fn combined_app() {
             DemoTab::Counter => counter_app(),
             DemoTab::CompositionLocal => composition_local_example(),
             DemoTab::Async => async_runtime_example(),
+            DemoTab::Layout => recursive_layout_example(),
         });
     });
+}
+
+#[composable]
+fn recursive_layout_example() {
+    let depth_state = compose_core::useState(|| 3usize);
+
+    Column(
+        Modifier::padding(32.0)
+            .then(Modifier::background(Color(0.08, 0.10, 0.18, 1.0)))
+            .then(Modifier::rounded_corners(24.0))
+            .then(Modifier::padding(20.0)),
+        ColumnSpec::default(),
+        move || {
+            Text(
+                "Recursive Layout Playground",
+                Modifier::padding(12.0)
+                    .then(Modifier::background(Color(1.0, 1.0, 1.0, 0.08)))
+                    .then(Modifier::rounded_corners(16.0)),
+            );
+
+            Spacer(Size {
+                width: 0.0,
+                height: 16.0,
+            });
+
+            Row(
+                Modifier::fill_max_width().then(Modifier::padding(8.0)),
+                RowSpec::new()
+                    .horizontal_arrangement(LinearArrangement::SpacedBy(12.0))
+                    .vertical_alignment(VerticalAlignment::CenterVertically),
+                {
+                    let depth_state = depth_state.clone();
+                    move || {
+                        let depth = depth_state.get();
+                        Button(
+                            Modifier::rounded_corners(16.0)
+                                .then(Modifier::draw_behind(|scope| {
+                                    scope.draw_round_rect(
+                                        Brush::solid(Color(0.35, 0.45, 0.85, 1.0)),
+                                        CornerRadii::uniform(16.0),
+                                    );
+                                }))
+                                .then(Modifier::padding(10.0)),
+                            {
+                                let depth_state = depth_state.clone();
+                                move || {
+                                    let next = (depth_state.get() + 1).min(6);
+                                    if next != depth_state.get() {
+                                        depth_state.set(next);
+                                    }
+                                }
+                            },
+                            || {
+                                Text("Increase depth", Modifier::padding(6.0));
+                            },
+                        );
+
+                        Button(
+                            Modifier::rounded_corners(16.0)
+                                .then(Modifier::draw_behind(|scope| {
+                                    scope.draw_round_rect(
+                                        Brush::solid(Color(0.65, 0.35, 0.35, 1.0)),
+                                        CornerRadii::uniform(16.0),
+                                    );
+                                }))
+                                .then(Modifier::padding(10.0)),
+                            {
+                                let depth_state = depth_state.clone();
+                                move || {
+                                    let next = depth_state.get().saturating_sub(1).max(1);
+                                    if next != depth_state.get() {
+                                        depth_state.set(next);
+                                    }
+                                }
+                            },
+                            || {
+                                Text("Decrease depth", Modifier::padding(6.0));
+                            },
+                        );
+
+                        Text(
+                            format!("Current depth: {}", depth.max(1)),
+                            Modifier::padding(8.0)
+                                .then(Modifier::background(Color(0.12, 0.16, 0.28, 0.8)))
+                                .then(Modifier::rounded_corners(12.0)),
+                        );
+                    }
+                },
+            );
+
+            Spacer(Size {
+                width: 0.0,
+                height: 16.0,
+            });
+
+            let depth = depth_state.get().max(1);
+            Column(
+                Modifier::fill_max_width()
+                    .then(Modifier::padding(8.0))
+                    .then(Modifier::background(Color(0.06, 0.08, 0.16, 0.9)))
+                    .then(Modifier::rounded_corners(20.0))
+                    .then(Modifier::padding(12.0)),
+                ColumnSpec::default(),
+                move || {
+                    recursive_layout_node(depth, true, 0);
+                },
+            );
+        },
+    );
+}
+
+#[composable]
+fn recursive_layout_node(depth: usize, horizontal: bool, index: usize) {
+    let palette = [
+        Color(0.25, 0.32, 0.58, 0.75),
+        Color(0.30, 0.20, 0.45, 0.75),
+        Color(0.20, 0.40, 0.32, 0.75),
+        Color(0.45, 0.28, 0.24, 0.75),
+    ];
+    let accent = palette[index % palette.len()];
+
+    Column(
+        Modifier::rounded_corners(18.0)
+            .then(Modifier::draw_behind({
+                move |scope| {
+                    scope.draw_round_rect(
+                        Brush::solid(accent),
+                        CornerRadii::uniform(18.0),
+                    );
+                }
+            }))
+            .then(Modifier::padding(12.0)),
+        ColumnSpec::new().vertical_arrangement(LinearArrangement::SpacedBy(8.0)),
+        move || {
+            Text(
+                format!("Depth {}", depth),
+                Modifier::padding(6.0)
+                    .then(Modifier::background(Color(0.0, 0.0, 0.0, 0.25)))
+                    .then(Modifier::rounded_corners(10.0)),
+            );
+
+            if depth <= 1 {
+                Text(
+                    format!("Leaf node #{index}"),
+                    Modifier::padding(6.0)
+                        .then(Modifier::background(Color(1.0, 1.0, 1.0, 0.12)))
+                        .then(Modifier::rounded_corners(10.0)),
+                );
+            } else if horizontal {
+                Row(
+                    Modifier::fill_max_width(),
+                    RowSpec::new().horizontal_arrangement(LinearArrangement::SpacedBy(8.0)),
+                    move || {
+                        for child_idx in 0..2 {
+                            let key = (depth, index, child_idx);
+                            compose_core::with_key(&key, || {
+                                recursive_layout_node(depth - 1, false, index * 2 + child_idx + 1);
+                            });
+                        }
+                    },
+                );
+            } else {
+                Column(
+                    Modifier::fill_max_width(),
+                    ColumnSpec::new().vertical_arrangement(LinearArrangement::SpacedBy(8.0)),
+                    move || {
+                        for child_idx in 0..2 {
+                            let key = (depth, index, child_idx);
+                            compose_core::with_key(&key, || {
+                                recursive_layout_node(depth - 1, true, index * 2 + child_idx + 1);
+                            });
+                        }
+                    },
+                );
+            }
+        },
+    );
 }
 
 #[composable]
