@@ -331,7 +331,7 @@ impl MeasurePolicy for FlexMeasurePolicy {
         // Children get loose constraints on both axes (min = 0)
         let child_constraints = self.make_constraints(0.0, max_main, 0.0, max_cross);
 
-        let mut placeables: Vec<Option<Box<dyn compose_ui_layout::Placeable>>> =
+        let mut placeables: Vec<Option<compose_ui_layout::Placeable>> =
             (0..measurables.len()).map(|_| None).collect();
         let mut fixed_main_size = 0.0_f32;
         let mut max_cross_size = 0.0_f32;
@@ -435,7 +435,9 @@ impl MeasurePolicy for FlexMeasurePolicy {
         let mut placements = Vec::with_capacity(placeables.len());
         for (placeable, main_pos) in placeables.into_iter().zip(main_positions.into_iter()) {
             let child_cross = self.get_cross_axis_size(placeable.width(), placeable.height());
-            let cross_pos = self.cross_axis_alignment.align(container_cross, child_cross);
+            let cross_pos = self
+                .cross_axis_alignment
+                .align(container_cross, child_cross);
 
             let (x, y) = match self.axis {
                 Axis::Horizontal => (main_pos, cross_pos),

@@ -29,7 +29,7 @@ impl FlexParentData {
 /// Object capable of measuring a layout child and exposing intrinsic sizes.
 pub trait Measurable {
     /// Measures the child with the provided constraints, returning a [`Placeable`].
-    fn measure(&self, constraints: Constraints) -> Box<dyn Placeable>;
+    fn measure(&self, constraints: Constraints) -> Placeable;
 
     /// Returns the minimum width achievable for the given height.
     fn min_intrinsic_width(&self, height: f32) -> f32;
@@ -51,18 +51,46 @@ pub trait Measurable {
 }
 
 /// Result of running a measurement pass for a single child.
-pub trait Placeable {
+pub struct Placeable {
+    size: Size,
+    node_id: NodeId,
+    place_fn: Box<dyn Fn(f32, f32)>,
+}
+
+impl Placeable {
+    /// Creates a new [`Placeable`] with the given metadata and placement callback.
+    pub fn new(node_id: NodeId, size: Size, place_fn: impl Fn(f32, f32) + 'static) -> Self {
+        Self {
+            size,
+            node_id,
+            place_fn: Box::new(place_fn),
+        }
+    }
+
     /// Places the child at the provided coordinates relative to its parent.
-    fn place(&self, x: f32, y: f32);
+    pub fn place(&self, x: f32, y: f32) {
+        (self.place_fn)(x, y);
+    }
 
     /// Returns the measured width of the child.
-    fn width(&self) -> f32;
+    pub fn width(&self) -> f32 {
+        self.size.width
+    }
 
     /// Returns the measured height of the child.
-    fn height(&self) -> f32;
+    pub fn height(&self) -> f32 {
+        self.size.height
+    }
 
     /// Returns the identifier for the underlying layout node.
-    fn node_id(&self) -> NodeId;
+    pub fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    /// Returns the measured size of the child.
+    pub fn size(&self) -> Size {
+        self.size
+    }
 }
 
 /// Scope for measurement operations.

@@ -1,5 +1,6 @@
 use super::*;
 use crate::layout::core::Placeable;
+use compose_ui_graphics::Size;
 
 struct MockMeasurable {
     width: f32,
@@ -17,32 +18,16 @@ impl MockMeasurable {
     }
 }
 
-struct MockPlaceable {
-    width: f32,
-    height: f32,
-    node_id: usize,
-}
-
-impl Placeable for MockPlaceable {
-    fn place(&self, _x: f32, _y: f32) {}
-    fn width(&self) -> f32 {
-        self.width
-    }
-    fn height(&self) -> f32 {
-        self.height
-    }
-    fn node_id(&self) -> usize {
-        self.node_id
-    }
-}
-
 impl Measurable for MockMeasurable {
-    fn measure(&self, _constraints: Constraints) -> Box<dyn Placeable> {
-        Box::new(MockPlaceable {
-            width: self.width,
-            height: self.height,
-            node_id: self.node_id,
-        })
+    fn measure(&self, _constraints: Constraints) -> Placeable {
+        Placeable::new(
+            self.node_id,
+            Size {
+                width: self.width,
+                height: self.height,
+            },
+            |_x, _y| {},
+        )
     }
 
     fn min_intrinsic_width(&self, _height: f32) -> f32 {

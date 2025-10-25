@@ -328,7 +328,6 @@ impl<'a> LayoutBuilder<'a> {
         node: LayoutNode,
         constraints: Constraints,
     ) -> Result<MeasuredNode, NodeError> {
-        let mut node = node;
         let modifier = node.modifier.clone();
         let props = modifier.layout_properties();
         let padding = props.padding();
@@ -351,24 +350,21 @@ impl<'a> LayoutBuilder<'a> {
         }
 
         let error = Rc::new(RefCell::new(None));
-        let mut records: HashMap<NodeId, ChildRecord> = HashMap::new();
+        let mut child_states: Vec<(NodeId, ChildLayoutState)> = Vec::new();
         let mut measurables: Vec<Box<dyn Measurable>> = Vec::new();
 
         for child_id in node.children.iter().copied() {
-            let measured = Rc::new(RefCell::new(None));
-            let position = Rc::new(RefCell::new(None));
-            records.insert(
-                child_id,
-                ChildRecord {
-                    measured: Rc::clone(&measured),
-                    last_position: Rc::clone(&position),
-                },
-            );
+            let state = self
+                .applier_mut()
+                .with_node(node_id, |layout: &mut LayoutNode| {
+                    layout.ensure_child_state(child_id)
+                })?;
+            let state_clone = state.clone();
+            child_states.push((child_id, state.clone()));
             measurables.push(Box::new(LayoutChildMeasurable::new(
                 self.applier,
                 child_id,
-                measured,
-                position,
+                state_clone,
                 Rc::clone(&error),
                 self.runtime_handle.clone(),
             )));
@@ -442,22 +438,20 @@ impl<'a> LayoutBuilder<'a> {
             .collect();
 
         let mut children = Vec::new();
-        for child_id in node.children.iter().copied() {
-            if let Some(record) = records.remove(&child_id) {
-                if let Some(measured) = record.measured.borrow_mut().take() {
-                    let base_position = placement_map
-                        .remove(&child_id)
-                        .or_else(|| record.last_position.borrow().clone())
-                        .unwrap_or(Point { x: 0.0, y: 0.0 });
-                    let position = Point {
-                        x: padding.left + base_position.x,
-                        y: padding.top + base_position.y,
-                    };
-                    children.push(MeasuredChild {
-                        node: measured,
-                        offset: position,
-                    });
-                }
+        for (child_id, state) in child_states {
+            if let Some(measured) = state.take_measured() {
+                let base_position = placement_map
+                    .remove(&child_id)
+                    .or_else(|| state.last_position())
+                    .unwrap_or(Point { x: 0.0, y: 0.0 });
+                let position = Point {
+                    x: padding.left + base_position.x,
+                    y: padding.top + base_position.y,
+                };
+                children.push(MeasuredChild {
+                    node: measured,
+                    offset: position,
+                });
             }
         }
 
@@ -498,7 +492,7 @@ impl<'a> LayoutBuilder<'a> {
 }
 
 #[derive(Debug, Clone)]
-struct MeasuredNode {
+pub(crate) struct MeasuredNode {
     node_id: NodeId,
     size: Size,
     offset: Point,
@@ -525,21 +519,48 @@ impl MeasuredNode {
 }
 
 #[derive(Debug, Clone)]
-struct MeasuredChild {
+pub(crate) struct MeasuredChild {
     node: MeasuredNode,
     offset: Point,
 }
 
-struct ChildRecord {
-    measured: Rc<RefCell<Option<MeasuredNode>>>,
-    last_position: Rc<RefCell<Option<Point>>>,
+#[derive(Clone)]
+pub(crate) struct ChildLayoutState {
+    pub(crate) measured: Rc<RefCell<Option<MeasuredNode>>>,
+    pub(crate) last_position: Rc<RefCell<Option<Point>>>,
+}
+
+impl ChildLayoutState {
+    pub(crate) fn new() -> Self {
+        Self {
+            measured: Rc::new(RefCell::new(None)),
+            last_position: Rc::new(RefCell::new(None)),
+        }
+    }
+
+    pub(crate) fn take_measured(&self) -> Option<MeasuredNode> {
+        self.measured.borrow_mut().take()
+    }
+
+    pub(crate) fn last_position(&self) -> Option<Point> {
+        *self.last_position.borrow()
+    }
+
+    pub(crate) fn set_last_position(&self, point: Point) {
+        *self.last_position.borrow_mut() = Some(point);
+    }
+}
+
+impl Default for ChildLayoutState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 struct LayoutChildMeasurable {
     applier: *mut MemoryApplier,
     node_id: NodeId,
-    measured: Rc<RefCell<Option<MeasuredNode>>>,
-    last_position: Rc<RefCell<Option<Point>>>,
+    state: ChildLayoutState,
     error: Rc<RefCell<Option<NodeError>>>,
     runtime_handle: Option<RuntimeHandle>,
 }
@@ -548,16 +569,14 @@ impl LayoutChildMeasurable {
     fn new(
         applier: *mut MemoryApplier,
         node_id: NodeId,
-        measured: Rc<RefCell<Option<MeasuredNode>>>,
-        last_position: Rc<RefCell<Option<Point>>>,
+        state: ChildLayoutState,
         error: Rc<RefCell<Option<NodeError>>>,
         runtime_handle: Option<RuntimeHandle>,
     ) -> Self {
         Self {
             applier,
             node_id,
-            measured,
-            last_position,
+            state,
             error,
             runtime_handle,
         }
@@ -589,7 +608,7 @@ impl LayoutChildMeasurable {
 }
 
 impl Measurable for LayoutChildMeasurable {
-    fn measure(&self, constraints: Constraints) -> Box<dyn Placeable> {
+    fn measure(&self, constraints: Constraints) -> Placeable {
         match unsafe {
             measure_node_via_ptr(
                 self.applier,
@@ -599,18 +618,25 @@ impl Measurable for LayoutChildMeasurable {
             )
         } {
             Ok(measured) => {
-                *self.measured.borrow_mut() = Some(measured);
+                *self.state.measured.borrow_mut() = Some(measured);
             }
             Err(err) => {
                 self.record_error(err);
-                self.measured.borrow_mut().take();
+                self.state.measured.borrow_mut().take();
             }
         }
-        Box::new(LayoutChildPlaceable::new(
-            self.node_id,
-            Rc::clone(&self.measured),
-            Rc::clone(&self.last_position),
-        ))
+        let size = self
+            .state
+            .measured
+            .borrow()
+            .as_ref()
+            .map(|node| node.size)
+            .unwrap_or_default();
+
+        let state = self.state.clone();
+        Placeable::new(self.node_id, size, move |x, y| {
+            state.set_last_position(Point { x, y });
+        })
     }
 
     fn min_intrinsic_width(&self, height: f32) -> f32 {
@@ -673,52 +699,6 @@ impl Measurable for LayoutChildMeasurable {
                 .ok()
                 .flatten()
         }
-    }
-}
-
-struct LayoutChildPlaceable {
-    node_id: NodeId,
-    measured: Rc<RefCell<Option<MeasuredNode>>>,
-    last_position: Rc<RefCell<Option<Point>>>,
-}
-
-impl LayoutChildPlaceable {
-    fn new(
-        node_id: NodeId,
-        measured: Rc<RefCell<Option<MeasuredNode>>>,
-        last_position: Rc<RefCell<Option<Point>>>,
-    ) -> Self {
-        Self {
-            node_id,
-            measured,
-            last_position,
-        }
-    }
-}
-
-impl Placeable for LayoutChildPlaceable {
-    fn place(&self, x: f32, y: f32) {
-        *self.last_position.borrow_mut() = Some(Point { x, y });
-    }
-
-    fn width(&self) -> f32 {
-        self.measured
-            .borrow()
-            .as_ref()
-            .map(|node| node.size.width)
-            .unwrap_or(0.0)
-    }
-
-    fn height(&self) -> f32 {
-        self.measured
-            .borrow()
-            .as_ref()
-            .map(|node| node.size.height)
-            .unwrap_or(0.0)
-    }
-
-    fn node_id(&self) -> NodeId {
-        self.node_id
     }
 }
 
