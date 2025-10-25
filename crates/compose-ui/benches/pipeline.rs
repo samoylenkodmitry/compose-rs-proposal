@@ -6,10 +6,11 @@ use compose_ui::{
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
 const SECTION_COUNT: usize = 4;
-const ROWS_PER_SECTION: usize = 32;
-const ROWS_PER_SECTION_SAMPLES: &[usize] = &[8, 16, 24, 32, 40, 48, 56, 64];
+const ROWS_PER_SECTION: usize = 64;
+const ROWS_PER_SECTION_SAMPLES: &[usize] = &[ROWS_PER_SECTION];
 const RECURSIVE_ROWS_PER_LEVEL: usize = 8;
-const RECURSIVE_DEPTH_SAMPLES: &[usize] = &[1, 2, 3, 4, 5, 6, 7, 8];
+const RECURSIVE_DEPTH: usize = 8;
+const RECURSIVE_DEPTH_SAMPLES: &[usize] = &[RECURSIVE_DEPTH];
 const ROOT_SIZE: Size = Size {
     width: 1080.0,
     height: 1920.0,
