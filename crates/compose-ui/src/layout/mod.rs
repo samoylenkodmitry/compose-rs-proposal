@@ -106,17 +106,53 @@ pub trait LayoutEngine {
 
 impl LayoutEngine for MemoryApplier {
     fn compute_layout(&mut self, root: NodeId, max_size: Size) -> Result<LayoutTree, NodeError> {
-        let constraints = Constraints {
-            min_width: 0.0,
-            max_width: max_size.width,
-            min_height: 0.0,
-            max_height: max_size.height,
-        };
-        let mut builder = LayoutBuilder::new(self);
-        let measured = builder.measure_node(root, normalize_constraints(constraints))?;
-        let root_box = place_node(&measured, Point { x: 0.0, y: 0.0 });
-        Ok(LayoutTree::new(root_box))
+        let measurements = measure_layout(self, root, max_size)?;
+        Ok(measurements.into_layout_tree())
     }
+}
+
+/// Result of running the measure pass for a Compose layout tree.
+#[derive(Debug, Clone)]
+pub struct LayoutMeasurements {
+    root: MeasuredNode,
+}
+
+impl LayoutMeasurements {
+    fn new(root: MeasuredNode) -> Self {
+        Self { root }
+    }
+
+    /// Returns the measured size of the root node.
+    pub fn root_size(&self) -> Size {
+        self.root.size
+    }
+
+    /// Materialises a [`LayoutTree`] from the stored measurement data.
+    pub fn layout_tree(&self) -> LayoutTree {
+        LayoutTree::new(place_node(&self.root, Point { x: 0.0, y: 0.0 }))
+    }
+
+    /// Consumes the measurements and produces a [`LayoutTree`].
+    pub fn into_layout_tree(self) -> LayoutTree {
+        LayoutTree::new(place_node(&self.root, Point { x: 0.0, y: 0.0 }))
+    }
+}
+
+/// Runs the measure phase for the subtree rooted at `root`.
+pub fn measure_layout(
+    applier: &mut MemoryApplier,
+    root: NodeId,
+    max_size: Size,
+) -> Result<LayoutMeasurements, NodeError> {
+    let constraints = Constraints {
+        min_width: 0.0,
+        max_width: max_size.width,
+        min_height: 0.0,
+        max_height: max_size.height,
+    };
+    let mut builder = LayoutBuilder::new(applier);
+    let measured = builder.measure_node(root, normalize_constraints(constraints))?;
+    Ok(LayoutMeasurements::new(measured))
 }
 
 struct LayoutBuilder<'a> {
@@ -344,10 +380,9 @@ impl<'a> LayoutBuilder<'a> {
         // when the parent should wrap to content.
         if props.width() == DimensionConstraint::Unspecified {
             // Query the policy's intrinsic width based on current constraints
-            let intrinsic_width = node.measure_policy.min_intrinsic_width(
-                &measurables,
-                inner_constraints.max_height,
-            );
+            let intrinsic_width = node
+                .measure_policy
+                .min_intrinsic_width(&measurables, inner_constraints.max_height);
             // Constrain max_width to the intrinsic size, but respect min_width from constraints
             let constrained_width = intrinsic_width.max(inner_constraints.min_width);
             if constrained_width.is_finite() && constrained_width < inner_constraints.max_width {
@@ -356,10 +391,9 @@ impl<'a> LayoutBuilder<'a> {
         }
         if props.height() == DimensionConstraint::Unspecified {
             // Query the policy's intrinsic height based on current constraints
-            let intrinsic_height = node.measure_policy.min_intrinsic_height(
-                &measurables,
-                inner_constraints.max_width,
-            );
+            let intrinsic_height = node
+                .measure_policy
+                .min_intrinsic_height(&measurables, inner_constraints.max_width);
             // Constrain max_height to the intrinsic size, but respect min_height from constraints
             let constrained_height = intrinsic_height.max(inner_constraints.min_height);
             if constrained_height.is_finite() && constrained_height < inner_constraints.max_height {
