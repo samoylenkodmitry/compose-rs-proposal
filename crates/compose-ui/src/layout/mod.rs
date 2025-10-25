@@ -354,13 +354,17 @@ impl<'a> LayoutBuilder<'a> {
         let mut measurables: Vec<Box<dyn Measurable>> = Vec::new();
 
         for child_id in node.children.iter().copied() {
-            let state = self
+            let state = match self
                 .applier_mut()
                 .with_node(node_id, |layout: &mut LayoutNode| {
                     layout.ensure_child_state(child_id)
-                })?;
+                }) {
+                Ok(state) => state,
+                Err(NodeError::TypeMismatch { .. }) => ChildLayoutState::new(),
+                Err(err) => return Err(err),
+            };
             let state_clone = state.clone();
-            child_states.push((child_id, state.clone()));
+            child_states.push((child_id, state));
             measurables.push(Box::new(LayoutChildMeasurable::new(
                 self.applier,
                 child_id,
