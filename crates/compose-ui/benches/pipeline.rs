@@ -8,6 +8,8 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 const SECTION_COUNT: usize = 4;
 const ROWS_PER_SECTION: usize = 32;
 const ROWS_PER_SECTION_SAMPLES: &[usize] = &[8, 16, 24, 32, 40, 48, 56, 64];
+const RECURSIVE_ROWS_PER_LEVEL: usize = 8;
+const RECURSIVE_DEPTH_SAMPLES: &[usize] = &[1, 2, 3, 4, 5, 6, 7, 8];
 const ROOT_SIZE: Size = Size {
     width: 1080.0,
     height: 1920.0,
@@ -34,6 +36,38 @@ fn pipeline_content(sections: usize, rows_per_section: usize) {
                     },
                 );
             }
+        },
+    );
+}
+
+#[composable]
+fn recursive_pipeline_content(depth: usize, rows_per_level: usize) {
+    Column(
+        Modifier::fill_max_size(),
+        ColumnSpec::default(),
+        move || {
+            recursive_section(depth, rows_per_level, 0);
+        },
+    );
+}
+
+#[composable]
+fn recursive_section(depth: usize, rows_per_level: usize, level: usize) {
+    if depth == 0 {
+        return;
+    }
+    Column(
+        Modifier::fill_max_width(),
+        ColumnSpec::default(),
+        move || {
+            Text(format!("Level {level}"), Modifier::empty());
+            for row in 0..rows_per_level {
+                Row(Modifier::fill_max_width(), RowSpec::default(), move || {
+                    Text(format!("Node {level}-{row} title"), Modifier::weight(1.0));
+                    Text(format!("Detail {level}-{row}"), Modifier::empty());
+                });
+            }
+            recursive_section(depth - 1, rows_per_level, level + 1);
         },
     );
 }
@@ -72,8 +106,48 @@ impl PipelineFixture {
     }
 }
 
+struct RecursiveFixture {
+    composition: Composition<MemoryApplier>,
+    key: Key,
+    depth: usize,
+    rows_per_level: usize,
+    root_size: Size,
+}
+
+impl RecursiveFixture {
+    fn new(depth: usize, rows_per_level: usize, root_size: Size) -> Self {
+        let key = location_key(file!(), line!(), column!());
+        Self {
+            composition: Composition::new(MemoryApplier::new()),
+            key,
+            depth,
+            rows_per_level,
+            root_size,
+        }
+    }
+
+    fn compose(&mut self) {
+        let depth = self.depth;
+        let rows_per_level = self.rows_per_level;
+        self.composition
+            .render(self.key, || {
+                recursive_pipeline_content(depth, rows_per_level)
+            })
+            .expect("composition");
+    }
+
+    fn measure(&mut self) -> LayoutMeasurements {
+        let root = self.composition.root().expect("composition root");
+        measure_layout(self.composition.applier_mut(), root, self.root_size).expect("measure")
+    }
+}
+
 fn ui_object_count(sections: usize, rows_per_section: usize) -> usize {
     1 + sections * (2 + rows_per_section * 3)
+}
+
+fn recursive_ui_object_count(depth: usize, rows_per_level: usize) -> usize {
+    1 + depth * (2 + rows_per_level * 3)
 }
 
 fn bench_composition(c: &mut Criterion) {
@@ -183,12 +257,99 @@ fn bench_full_pipeline(c: &mut Criterion) {
     });
 }
 
+fn bench_recursive_composition(c: &mut Criterion) {
+    let mut group = c.benchmark_group("recursive_composition");
+    for &depth in RECURSIVE_DEPTH_SAMPLES {
+        let total_ui_objects = recursive_ui_object_count(depth, RECURSIVE_ROWS_PER_LEVEL);
+        group.bench_with_input(
+            BenchmarkId::new("ui_objects", total_ui_objects),
+            &depth,
+            |b, &depth| {
+                let mut fixture = RecursiveFixture::new(depth, RECURSIVE_ROWS_PER_LEVEL, ROOT_SIZE);
+                fixture.compose();
+                b.iter(|| {
+                    fixture.compose();
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
+fn bench_recursive_measure(c: &mut Criterion) {
+    let mut group = c.benchmark_group("recursive_measure");
+    for &depth in RECURSIVE_DEPTH_SAMPLES {
+        let total_ui_objects = recursive_ui_object_count(depth, RECURSIVE_ROWS_PER_LEVEL);
+        group.bench_with_input(
+            BenchmarkId::new("ui_objects", total_ui_objects),
+            &depth,
+            |b, &depth| {
+                let mut fixture = RecursiveFixture::new(depth, RECURSIVE_ROWS_PER_LEVEL, ROOT_SIZE);
+                fixture.compose();
+                b.iter(|| {
+                    let measurements = fixture.measure();
+                    black_box(measurements);
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
+fn bench_recursive_layout(c: &mut Criterion) {
+    let mut group = c.benchmark_group("recursive_layout");
+    for &depth in RECURSIVE_DEPTH_SAMPLES {
+        let total_ui_objects = recursive_ui_object_count(depth, RECURSIVE_ROWS_PER_LEVEL);
+        group.bench_with_input(
+            BenchmarkId::new("ui_objects", total_ui_objects),
+            &depth,
+            |b, &depth| {
+                let mut fixture = RecursiveFixture::new(depth, RECURSIVE_ROWS_PER_LEVEL, ROOT_SIZE);
+                fixture.compose();
+                let measurements = fixture.measure();
+                b.iter(|| {
+                    let tree = measurements.layout_tree();
+                    black_box(tree);
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
+fn bench_recursive_render(c: &mut Criterion) {
+    let mut group = c.benchmark_group("recursive_render");
+    for &depth in RECURSIVE_DEPTH_SAMPLES {
+        let total_ui_objects = recursive_ui_object_count(depth, RECURSIVE_ROWS_PER_LEVEL);
+        group.bench_with_input(
+            BenchmarkId::new("ui_objects", total_ui_objects),
+            &depth,
+            |b, &depth| {
+                let mut fixture = RecursiveFixture::new(depth, RECURSIVE_ROWS_PER_LEVEL, ROOT_SIZE);
+                fixture.compose();
+                let measurements = fixture.measure();
+                let layout_tree = measurements.layout_tree();
+                let renderer = HeadlessRenderer::new();
+                b.iter(|| {
+                    let scene = renderer.render(&layout_tree);
+                    black_box(scene);
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 criterion_group!(
     pipeline,
     bench_composition,
     bench_measure,
     bench_layout,
     bench_render,
-    bench_full_pipeline
+    bench_full_pipeline,
+    bench_recursive_composition,
+    bench_recursive_measure,
+    bench_recursive_layout,
+    bench_recursive_render
 );
 criterion_main!(pipeline);
