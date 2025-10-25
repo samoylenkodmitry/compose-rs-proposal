@@ -66,7 +66,7 @@ pub fn Column(modifier: Modifier, content: impl FnOnce()) -> NodeId {
 
 * ✅ Implement intrinsic methods for primitives (Column/Row/Box).
 * ✅ Add `IntrinsicSize` support: `Modifier.width_intrinsic(IntrinsicSize::Min/Max)` and `Modifier.height_intrinsic(IntrinsicSize::Min/Max)`.
-* ✅ Add intrinsic resolver pass in layout engine via `resolve_dimension_with_intrinsics`.
+* ✅ Add intrinsic resolver pass in layout engine that unifies intrinsic sizing with standard measurement constraints.
 * ✅ Implement `compute_*_intrinsic_width/height` for Column/Row/Box.
 
 ### Implementation Notes

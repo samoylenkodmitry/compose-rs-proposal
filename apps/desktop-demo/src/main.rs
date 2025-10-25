@@ -122,46 +122,47 @@ fn combined_app() {
             Modifier::fill_max_width().then(Modifier::padding(8.0)),
             RowSpec::new().horizontal_arrangement(LinearArrangement::SpacedBy(8.0)),
             move || {
-            let tab_state = tab_state_for_row.clone();
-            let render_tab_button = move |tab: DemoTab| {
-                let tab_state = tab_state.clone();
-                let is_active = tab_state.get() == tab;
-                Button(
-                    Modifier::rounded_corners(12.0)
-                        .then(Modifier::draw_behind(move |scope| {
-                            scope.draw_round_rect(
-                                Brush::solid(if is_active {
-                                    Color(0.2, 0.45, 0.9, 1.0)
-                                } else {
-                                    Color(0.3, 0.3, 0.3, 0.5)
-                                }),
-                                CornerRadii::uniform(12.0),
-                            );
-                        }))
-                        .then(Modifier::padding(10.0)),
-                    {
-                        let tab_state = tab_state.clone();
-                        move || {
-                            if tab_state.get() != tab {
-                                println!("{} button clicked", tab.label());
-                                tab_state.set(tab);
+                let tab_state = tab_state_for_row.clone();
+                let render_tab_button = move |tab: DemoTab| {
+                    let tab_state = tab_state.clone();
+                    let is_active = tab_state.get() == tab;
+                    Button(
+                        Modifier::rounded_corners(12.0)
+                            .then(Modifier::draw_behind(move |scope| {
+                                scope.draw_round_rect(
+                                    Brush::solid(if is_active {
+                                        Color(0.2, 0.45, 0.9, 1.0)
+                                    } else {
+                                        Color(0.3, 0.3, 0.3, 0.5)
+                                    }),
+                                    CornerRadii::uniform(12.0),
+                                );
+                            }))
+                            .then(Modifier::padding(10.0)),
+                        {
+                            let tab_state = tab_state.clone();
+                            move || {
+                                if tab_state.get() != tab {
+                                    println!("{} button clicked", tab.label());
+                                    tab_state.set(tab);
+                                }
                             }
-                        }
-                    },
-                    {
-                        let label = tab.label();
-                        move || {
-                            Text(label, Modifier::padding(4.0));
-                        }
-                    },
-                );
-            };
+                        },
+                        {
+                            let label = tab.label();
+                            move || {
+                                Text(label, Modifier::padding(4.0));
+                            }
+                        },
+                    );
+                };
 
-            render_tab_button(DemoTab::Counter);
-            render_tab_button(DemoTab::CompositionLocal);
-            render_tab_button(DemoTab::Async);
+                render_tab_button(DemoTab::Counter);
+                render_tab_button(DemoTab::CompositionLocal);
+                render_tab_button(DemoTab::Async);
             render_tab_button(DemoTab::Layout);
-        });
+        },
+        );
 
         Spacer(Size {
             width: 0.0,
@@ -222,7 +223,7 @@ fn recursive_layout_example() {
                             {
                                 let depth_state = depth_state.clone();
                                 move || {
-                                    let next = (depth_state.get() + 1).min(6);
+                                    let next = (depth_state.get() + 1).min(16);
                                     if next != depth_state.get() {
                                         depth_state.set(next);
                                     }
@@ -902,48 +903,48 @@ fn counter_app() {
                 let fetch_request_state = fetch_request.clone();
                 Column(
                     Modifier::rounded_corners(20.0)
-                    .then(Modifier::draw_with_cache(|cache| {
-                        cache.on_draw_behind(|scope| {
-                            scope.draw_round_rect(
-                                Brush::solid(Color(0.16, 0.18, 0.26, 0.95)),
-                                CornerRadii::uniform(20.0),
-                            );
-                        });
-                    }))
-                    .then(Modifier::draw_with_content({
-                        let position = pointer_position.get();
-                        let pressed = pointer_down.get();
-                        move |scope| {
-                            let intensity = if pressed { 0.45 } else { 0.25 };
-                            scope.draw_round_rect(
-                                Brush::radial_gradient(
-                                    vec![
-                                        Color(0.4, 0.6, 1.0, intensity),
-                                        Color(0.2, 0.3, 0.6, 0.0),
-                                    ],
-                                    position,
-                                    120.0,
-                                ),
-                                CornerRadii::uniform(20.0),
-                            );
-                        }
-                    }))
-                    .then(Modifier::pointer_input({
-                        let pointer_position = pointer_position.clone();
-                        let pointer_down = pointer_down.clone();
-                        move |event: PointerEvent| match event.kind {
-                            PointerEventKind::Down => pointer_down.set(true),
-                            PointerEventKind::Up => pointer_down.set(false),
-                            PointerEventKind::Move => {
-                                pointer_position.set(Point {
-                                    x: event.position.x,
-                                    y: event.position.y,
-                                });
+                        .then(Modifier::draw_with_cache(|cache| {
+                            cache.on_draw_behind(|scope| {
+                                scope.draw_round_rect(
+                                    Brush::solid(Color(0.16, 0.18, 0.26, 0.95)),
+                                    CornerRadii::uniform(20.0),
+                                );
+                            });
+                        }))
+                        .then(Modifier::draw_with_content({
+                            let position = pointer_position.get();
+                            let pressed = pointer_down.get();
+                            move |scope| {
+                                let intensity = if pressed { 0.45 } else { 0.25 };
+                                scope.draw_round_rect(
+                                    Brush::radial_gradient(
+                                        vec![
+                                            Color(0.4, 0.6, 1.0, intensity),
+                                            Color(0.2, 0.3, 0.6, 0.0),
+                                        ],
+                                        position,
+                                        120.0,
+                                    ),
+                                    CornerRadii::uniform(20.0),
+                                );
                             }
-                            PointerEventKind::Cancel => pointer_down.set(false),
-                        }
-                    }))
-                    .then(Modifier::padding(16.0)),
+                        }))
+                        .then(Modifier::pointer_input({
+                            let pointer_position = pointer_position.clone();
+                            let pointer_down = pointer_down.clone();
+                            move |event: PointerEvent| match event.kind {
+                                PointerEventKind::Down => pointer_down.set(true),
+                                PointerEventKind::Up => pointer_down.set(false),
+                                PointerEventKind::Move => {
+                                    pointer_position.set(Point {
+                                        x: event.position.x,
+                                        y: event.position.y,
+                                    });
+                                }
+                                PointerEventKind::Cancel => pointer_down.set(false),
+                            }
+                        }))
+                        .then(Modifier::padding(16.0)),
                     ColumnSpec::default(),
                     move || {
                         let async_message_state = async_message_state.clone();
@@ -1033,7 +1034,8 @@ fn counter_app() {
                         let counter_dec = counter.clone();
                         Row(
                             Modifier::fill_max_width().then(Modifier::padding(8.0)),
-                            RowSpec::new().horizontal_arrangement(LinearArrangement::SpacedBy(12.0)),
+                            RowSpec::new()
+                                .horizontal_arrangement(LinearArrangement::SpacedBy(12.0)),
                             move || {
                                 Button(
                                     Modifier::rounded_corners(16.0)
@@ -1058,23 +1060,24 @@ fn counter_app() {
                                     },
                                 );
                                 Button(
-                                Modifier::rounded_corners(16.0)
-                                    .then(Modifier::draw_behind(|scope| {
-                                        scope.draw_round_rect(
-                                            Brush::solid(Color(0.4, 0.18, 0.3, 1.0)),
-                                            CornerRadii::uniform(16.0),
-                                        );
-                                    }))
-                                    .then(Modifier::padding(12.0)),
-                                {
-                                    let counter = counter_dec.clone();
-                                    move || counter.set(counter.get() - 1)
-                                },
-                                || {
-                                    Text("Decrement", Modifier::padding(6.0));
-                                },
-                            );
-                        });
+                                    Modifier::rounded_corners(16.0)
+                                        .then(Modifier::draw_behind(|scope| {
+                                            scope.draw_round_rect(
+                                                Brush::solid(Color(0.4, 0.18, 0.3, 1.0)),
+                                                CornerRadii::uniform(16.0),
+                                            );
+                                        }))
+                                        .then(Modifier::padding(12.0)),
+                                    {
+                                        let counter = counter_dec.clone();
+                                        move || counter.set(counter.get() - 1)
+                                    },
+                                    || {
+                                        Text("Decrement", Modifier::padding(6.0));
+                                    },
+                                );
+                            },
+                        );
 
                         Spacer(Size {
                             width: 0.0,
