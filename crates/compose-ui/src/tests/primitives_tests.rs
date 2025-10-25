@@ -1001,7 +1001,11 @@ fn test_fill_max_width_respects_parent_bounds() {
             .find_map(|child| find_layout(child, target))
     }
 
-    let column_node_id = column_id.borrow().as_ref().copied().expect("column node id");
+    let column_node_id = column_id
+        .borrow()
+        .as_ref()
+        .copied()
+        .expect("column node id");
     let row_node_id = row_id.borrow().as_ref().copied().expect("row node id");
 
     let column_layout = find_layout(&root_layout, column_node_id).expect("column layout");
@@ -1009,15 +1013,33 @@ fn test_fill_max_width_respects_parent_bounds() {
 
     // Debug output
     println!("\n=== Layout Debug ===");
-    println!("Root: x={}, y={}, width={}, height={}",
-        root_layout.rect.x, root_layout.rect.y, root_layout.rect.width, root_layout.rect.height);
-    println!("Column: x={}, y={}, width={}, height={}",
-        column_layout.rect.x, column_layout.rect.y, column_layout.rect.width, column_layout.rect.height);
-    println!("Row: x={}, y={}, width={}, height={}",
-        row_layout.rect.x, row_layout.rect.y, row_layout.rect.width, row_layout.rect.height);
-    println!("Column inner width (after padding): {}", column_layout.rect.width - 40.0);
-    println!("Row right edge: {}", row_layout.rect.x + row_layout.rect.width);
-    println!("Column right inner edge: {}", column_layout.rect.x + column_layout.rect.width - 20.0);
+    println!(
+        "Root: x={}, y={}, width={}, height={}",
+        root_layout.rect.x, root_layout.rect.y, root_layout.rect.width, root_layout.rect.height
+    );
+    println!(
+        "Column: x={}, y={}, width={}, height={}",
+        column_layout.rect.x,
+        column_layout.rect.y,
+        column_layout.rect.width,
+        column_layout.rect.height
+    );
+    println!(
+        "Row: x={}, y={}, width={}, height={}",
+        row_layout.rect.x, row_layout.rect.y, row_layout.rect.width, row_layout.rect.height
+    );
+    println!(
+        "Column inner width (after padding): {}",
+        column_layout.rect.width - 40.0
+    );
+    println!(
+        "Row right edge: {}",
+        row_layout.rect.x + row_layout.rect.width
+    );
+    println!(
+        "Column right inner edge: {}",
+        column_layout.rect.x + column_layout.rect.width - 20.0
+    );
 
     // Expected:
     // Window: 800px
@@ -1124,8 +1146,16 @@ fn test_fill_max_width_with_background_and_double_padding() {
             .find_map(|child| find_layout(child, target))
     }
 
-    let outer_column_node = outer_column_id.borrow().as_ref().copied().expect("outer column");
-    let inner_column_node = inner_column_id.borrow().as_ref().copied().expect("inner column");
+    let outer_column_node = outer_column_id
+        .borrow()
+        .as_ref()
+        .copied()
+        .expect("outer column");
+    let inner_column_node = inner_column_id
+        .borrow()
+        .as_ref()
+        .copied()
+        .expect("inner column");
     let row_node = row_id.borrow().as_ref().copied().expect("row");
 
     let outer_layout = find_layout(&root_layout, outer_column_node).expect("outer column layout");
@@ -1134,11 +1164,26 @@ fn test_fill_max_width_with_background_and_double_padding() {
 
     println!("\n=== Counter App Structure Test ===");
     println!("Window: 800px");
-    println!("Outer Column (padding 32): x={}, width={}", outer_layout.rect.x, outer_layout.rect.width);
-    println!("Inner Column (width 360): x={}, width={}", inner_layout.rect.x, inner_layout.rect.width);
-    println!("Row (fill_max_width): x={}, width={}", row_layout.rect.x, row_layout.rect.width);
-    println!("Row right edge: {}", row_layout.rect.x + row_layout.rect.width);
-    println!("Inner Column right edge: {}", inner_layout.rect.x + inner_layout.rect.width);
+    println!(
+        "Outer Column (padding 32): x={}, width={}",
+        outer_layout.rect.x, outer_layout.rect.width
+    );
+    println!(
+        "Inner Column (width 360): x={}, width={}",
+        inner_layout.rect.x, inner_layout.rect.width
+    );
+    println!(
+        "Row (fill_max_width): x={}, width={}",
+        row_layout.rect.x, row_layout.rect.width
+    );
+    println!(
+        "Row right edge: {}",
+        row_layout.rect.x + row_layout.rect.width
+    );
+    println!(
+        "Inner Column right edge: {}",
+        inner_layout.rect.x + inner_layout.rect.width
+    );
 
     const EPSILON: f32 = 0.001;
 
@@ -1195,22 +1240,28 @@ fn test_fill_max_width_should_not_propagate_to_wrapping_parent() {
                 move || {
                     let inner_cap2 = Rc::clone(&inner_cap);
                     let row_cap2 = Rc::clone(&row_cap);
-                    
+
                     // Inner Column - no size modifier (should wrap content)
                     *inner_cap2.borrow_mut() = Some(Column(
                         Modifier::empty(),
                         ColumnSpec::default(),
                         move || {
                             let row_cap3 = Rc::clone(&row_cap2);
-                            
+
                             // Row with fill_max_width() containing fixed-width content
                             *row_cap3.borrow_mut() = Some(Row(
                                 Modifier::fill_max_width(),
                                 RowSpec::default(),
                                 move || {
                                     // Fixed width content: 100px + 100px = 200px
-                                    Spacer(Size { width: 100.0, height: 20.0 });
-                                    Spacer(Size { width: 100.0, height: 20.0 });
+                                    Spacer(Size {
+                                        width: 100.0,
+                                        height: 20.0,
+                                    });
+                                    Spacer(Size {
+                                        width: 100.0,
+                                        height: 20.0,
+                                    });
                                 },
                             ));
                         },
@@ -1238,7 +1289,9 @@ fn test_fill_max_width_should_not_propagate_to_wrapping_parent() {
         if node.node_id == target {
             return Some(node);
         }
-        node.children.iter().find_map(|child| find_layout(child, target))
+        node.children
+            .iter()
+            .find_map(|child| find_layout(child, target))
     }
 
     let outer_node = outer_column_id.borrow().as_ref().copied().expect("outer");
@@ -1252,8 +1305,14 @@ fn test_fill_max_width_should_not_propagate_to_wrapping_parent() {
     println!("\n=== Fill Propagation Test ===");
     println!("Window: 800px");
     println!("Row content: 200px (100 + 100)");
-    println!("Outer Column (should wrap): width={}", outer_layout.rect.width);
-    println!("Inner Column (should wrap): width={}", inner_layout.rect.width);
+    println!(
+        "Outer Column (should wrap): width={}",
+        outer_layout.rect.width
+    );
+    println!(
+        "Inner Column (should wrap): width={}",
+        inner_layout.rect.width
+    );
     println!("Row (fill_max_width): width={}", row_layout.rect.width);
 
     // Expected behavior (now FIXED):
