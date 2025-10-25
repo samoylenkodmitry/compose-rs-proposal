@@ -21,17 +21,20 @@ To model the Compose semantics we introduce `compose_ui::layout::core`:
 
 ```rust
 pub trait Measurable {
-    fn measure(&self, constraints: Constraints) -> Box<dyn Placeable>;
+    fn measure(&self, constraints: Constraints) -> Placeable;
     fn min_intrinsic_width(&self, height: f32) -> f32;
     fn max_intrinsic_width(&self, height: f32) -> f32;
     fn min_intrinsic_height(&self, width: f32) -> f32;
     fn max_intrinsic_height(&self, width: f32) -> f32;
 }
 
-pub trait Placeable {
+pub struct Placeable { /* internal fields elided */ }
+
+impl Placeable {
     fn place(&self, x: f32, y: f32);
     fn width(&self) -> f32;
     fn height(&self) -> f32;
+    fn node_id(&self) -> NodeId;
 }
 
 pub trait MeasurePolicy {

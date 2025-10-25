@@ -1,33 +1,11 @@
 use super::*;
-use compose_core::NodeId;
 use compose_foundation::{
     modifier_element, BasicModifierNodeContext, ModifierNodeChain, PointerButton, PointerButtons,
     PointerPhase,
 };
+use compose_ui_graphics::Size;
 use compose_ui_layout::Placeable;
 use std::cell::Cell;
-
-struct TestPlaceable {
-    width: f32,
-    height: f32,
-    node_id: NodeId,
-}
-
-impl Placeable for TestPlaceable {
-    fn place(&self, _x: f32, _y: f32) {}
-
-    fn width(&self) -> f32 {
-        self.width
-    }
-
-    fn height(&self) -> f32 {
-        self.height
-    }
-
-    fn node_id(&self) -> NodeId {
-        self.node_id
-    }
-}
 
 struct TestMeasurable {
     intrinsic_width: f32,
@@ -35,12 +13,15 @@ struct TestMeasurable {
 }
 
 impl Measurable for TestMeasurable {
-    fn measure(&self, constraints: Constraints) -> Box<dyn Placeable> {
-        Box::new(TestPlaceable {
-            width: constraints.max_width.min(self.intrinsic_width),
-            height: constraints.max_height.min(self.intrinsic_height),
-            node_id: 0,
-        })
+    fn measure(&self, constraints: Constraints) -> Placeable {
+        Placeable::new(
+            0,
+            Size {
+                width: constraints.max_width.min(self.intrinsic_width),
+                height: constraints.max_height.min(self.intrinsic_height),
+            },
+            |_x, _y| {},
+        )
     }
 
     fn min_intrinsic_width(&self, _height: f32) -> f32 {
