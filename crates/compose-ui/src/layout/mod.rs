@@ -13,8 +13,10 @@ use self::core::{
 use crate::modifier::{
     DimensionConstraint, EdgeInsets, Modifier, Point, Rect as GeometryRect, Size,
 };
-use crate::primitives::{ButtonNode, LayoutNode, SpacerNode, TextNode};
 use crate::subcompose_layout::SubcomposeLayoutNode;
+use crate::widgets::nodes::{
+    ButtonNode, IntrinsicDimension, LayoutNode, LayoutNodeCacheHandles, SpacerNode, TextNode,
+};
 use compose_ui_layout::{Constraints, IntrinsicSize};
 
 /// Result of running layout for a Compose tree.
@@ -328,7 +330,11 @@ impl<'a> LayoutBuilder<'a> {
         node: LayoutNode,
         constraints: Constraints,
     ) -> Result<MeasuredNode, NodeError> {
-        let mut node = node;
+        let node = node;
+        let cache = node.cache_handles();
+        if let Some(cached) = cache.get_measurement(constraints) {
+            return Ok(cached);
+        }
         let modifier = node.modifier.clone();
         let props = modifier.layout_properties();
         let padding = props.padding();
@@ -354,9 +360,17 @@ impl<'a> LayoutBuilder<'a> {
         let mut records: HashMap<NodeId, ChildRecord> = HashMap::new();
         let mut measurables: Vec<Box<dyn Measurable>> = Vec::new();
 
-        for child_id in node.children.iter().copied() {
+        for &child_id in node.children.iter() {
             let measured = Rc::new(RefCell::new(None));
             let position = Rc::new(RefCell::new(None));
+            let cache_handles = match unsafe {
+                (&mut *self.applier)
+                    .with_node::<LayoutNode, _>(child_id, |layout_node| layout_node.cache_handles())
+            } {
+                Ok(handles) => handles,
+                Err(NodeError::TypeMismatch { .. }) => LayoutNodeCacheHandles::default(),
+                Err(err) => return Err(err),
+            };
             records.insert(
                 child_id,
                 ChildRecord {
@@ -371,6 +385,7 @@ impl<'a> LayoutBuilder<'a> {
                 position,
                 Rc::clone(&error),
                 self.runtime_handle.clone(),
+                cache_handles,
             )));
         }
 
@@ -442,12 +457,12 @@ impl<'a> LayoutBuilder<'a> {
             .collect();
 
         let mut children = Vec::new();
-        for child_id in node.children.iter().copied() {
+        for &child_id in node.children.iter() {
             if let Some(record) = records.remove(&child_id) {
                 if let Some(measured) = record.measured.borrow_mut().take() {
                     let base_position = placement_map
                         .remove(&child_id)
-                        .or_else(|| record.last_position.borrow().clone())
+                        .or_else(|| record.last_position.borrow().as_ref().copied())
                         .unwrap_or(Point { x: 0.0, y: 0.0 });
                     let position = Point {
                         x: padding.left + base_position.x,
@@ -461,13 +476,17 @@ impl<'a> LayoutBuilder<'a> {
             }
         }
 
-        Ok(MeasuredNode::new(
+        let measured = MeasuredNode::new(
             node_id,
             Size { width, height },
             offset,
             LayoutNodeData::new(modifier, LayoutNodeKind::Layout),
             children,
-        ))
+        );
+
+        cache.store_measurement(constraints, measured.clone());
+
+        Ok(measured)
     }
 
     fn measure_button(
@@ -498,7 +517,7 @@ impl<'a> LayoutBuilder<'a> {
 }
 
 #[derive(Debug, Clone)]
-struct MeasuredNode {
+pub(crate) struct MeasuredNode {
     node_id: NodeId,
     size: Size,
     offset: Point,
@@ -542,6 +561,7 @@ struct LayoutChildMeasurable {
     last_position: Rc<RefCell<Option<Point>>>,
     error: Rc<RefCell<Option<NodeError>>>,
     runtime_handle: Option<RuntimeHandle>,
+    cache: LayoutNodeCacheHandles,
 }
 
 impl LayoutChildMeasurable {
@@ -552,6 +572,7 @@ impl LayoutChildMeasurable {
         last_position: Rc<RefCell<Option<Point>>>,
         error: Rc<RefCell<Option<NodeError>>>,
         runtime_handle: Option<RuntimeHandle>,
+        cache: LayoutNodeCacheHandles,
     ) -> Self {
         Self {
             applier,
@@ -560,6 +581,7 @@ impl LayoutChildMeasurable {
             last_position,
             error,
             runtime_handle,
+            cache,
         }
     }
 
@@ -571,6 +593,10 @@ impl LayoutChildMeasurable {
     }
 
     fn intrinsic_measure(&self, constraints: Constraints) -> Option<MeasuredNode> {
+        if let Some(cached) = self.cache.get_measurement(constraints) {
+            return Some(cached);
+        }
+
         match unsafe {
             measure_node_via_ptr(
                 self.applier,
@@ -579,7 +605,10 @@ impl LayoutChildMeasurable {
                 constraints,
             )
         } {
-            Ok(measured) => Some(measured),
+            Ok(measured) => {
+                self.cache.store_measurement(constraints, measured.clone());
+                Some(measured)
+            }
             Err(err) => {
                 self.record_error(err);
                 None
@@ -590,20 +619,25 @@ impl LayoutChildMeasurable {
 
 impl Measurable for LayoutChildMeasurable {
     fn measure(&self, constraints: Constraints) -> Box<dyn Placeable> {
-        match unsafe {
-            measure_node_via_ptr(
-                self.applier,
-                self.runtime_handle.clone(),
-                self.node_id,
-                constraints,
-            )
-        } {
-            Ok(measured) => {
-                *self.measured.borrow_mut() = Some(measured);
-            }
-            Err(err) => {
-                self.record_error(err);
-                self.measured.borrow_mut().take();
+        if let Some(cached) = self.cache.get_measurement(constraints) {
+            *self.measured.borrow_mut() = Some(cached);
+        } else {
+            match unsafe {
+                measure_node_via_ptr(
+                    self.applier,
+                    self.runtime_handle.clone(),
+                    self.node_id,
+                    constraints,
+                )
+            } {
+                Ok(measured) => {
+                    self.cache.store_measurement(constraints, measured.clone());
+                    *self.measured.borrow_mut() = Some(measured);
+                }
+                Err(err) => {
+                    self.record_error(err);
+                    self.measured.borrow_mut().take();
+                }
             }
         }
         Box::new(LayoutChildPlaceable::new(
@@ -614,47 +648,99 @@ impl Measurable for LayoutChildMeasurable {
     }
 
     fn min_intrinsic_width(&self, height: f32) -> f32 {
-        self.intrinsic_measure(Constraints {
+        if let Some(value) = self
+            .cache
+            .get_intrinsic(IntrinsicDimension::MinWidth, height)
+        {
+            return value;
+        }
+
+        match self.intrinsic_measure(Constraints {
             min_width: 0.0,
             max_width: f32::INFINITY,
             min_height: height,
             max_height: height,
-        })
-        .map(|node| node.size.width)
-        .unwrap_or(0.0)
+        }) {
+            Some(node) => {
+                let value = node.size.width;
+                self.cache
+                    .store_intrinsic(IntrinsicDimension::MinWidth, height, value);
+                value
+            }
+            None => 0.0,
+        }
     }
 
     fn max_intrinsic_width(&self, height: f32) -> f32 {
-        self.intrinsic_measure(Constraints {
+        if let Some(value) = self
+            .cache
+            .get_intrinsic(IntrinsicDimension::MaxWidth, height)
+        {
+            return value;
+        }
+
+        match self.intrinsic_measure(Constraints {
             min_width: 0.0,
             max_width: f32::INFINITY,
             min_height: 0.0,
             max_height: height,
-        })
-        .map(|node| node.size.width)
-        .unwrap_or(0.0)
+        }) {
+            Some(node) => {
+                let value = node.size.width;
+                self.cache
+                    .store_intrinsic(IntrinsicDimension::MaxWidth, height, value);
+                value
+            }
+            None => 0.0,
+        }
     }
 
     fn min_intrinsic_height(&self, width: f32) -> f32 {
-        self.intrinsic_measure(Constraints {
+        if let Some(value) = self
+            .cache
+            .get_intrinsic(IntrinsicDimension::MinHeight, width)
+        {
+            return value;
+        }
+
+        match self.intrinsic_measure(Constraints {
             min_width: width,
             max_width: width,
             min_height: 0.0,
             max_height: f32::INFINITY,
-        })
-        .map(|node| node.size.height)
-        .unwrap_or(0.0)
+        }) {
+            Some(node) => {
+                let value = node.size.height;
+                self.cache
+                    .store_intrinsic(IntrinsicDimension::MinHeight, width, value);
+                value
+            }
+            None => 0.0,
+        }
     }
 
     fn max_intrinsic_height(&self, width: f32) -> f32 {
-        self.intrinsic_measure(Constraints {
+        if let Some(value) = self
+            .cache
+            .get_intrinsic(IntrinsicDimension::MaxHeight, width)
+        {
+            return value;
+        }
+
+        match self.intrinsic_measure(Constraints {
             min_width: 0.0,
             max_width: width,
             min_height: 0.0,
             max_height: f32::INFINITY,
-        })
-        .map(|node| node.size.height)
-        .unwrap_or(0.0)
+        }) {
+            Some(node) => {
+                let value = node.size.height;
+                self.cache
+                    .store_intrinsic(IntrinsicDimension::MaxHeight, width, value);
+                value
+            }
+            None => 0.0,
+        }
     }
 
     fn flex_parent_data(&self) -> Option<compose_ui_layout::FlexParentData> {

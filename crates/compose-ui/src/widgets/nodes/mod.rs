@@ -7,6 +7,7 @@ mod text_node;
 
 pub use button_node::ButtonNode;
 pub use layout_node::LayoutNode;
+pub(crate) use layout_node::{IntrinsicDimension, LayoutNodeCacheHandles};
 pub use spacer_node::SpacerNode;
 pub use text_node::TextNode;
 
