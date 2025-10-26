@@ -1,15 +1,104 @@
+use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::panic::Location;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread_local;
 
 // === Core key/node identifiers ===
 
 type Key = u64;
 type NodeId = usize;
+
+struct Owned<T> {
+    inner: Rc<RefCell<T>>,
+}
+
+impl<T> Clone for Owned<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Rc::clone(&self.inner),
+        }
+    }
+}
+
+impl<T> Owned<T> {
+    fn new(value: T) -> Self {
+        Self {
+            inner: Rc::new(RefCell::new(value)),
+        }
+    }
+
+    fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
+        let borrow = self.inner.borrow();
+        f(&*borrow)
+    }
+
+    fn replace(&self, new_value: T) {
+        *self.inner.borrow_mut() = new_value;
+    }
+}
+
+// === Snapshot runtime derived from the main compose-core crate ===
+
+type SnapshotId = usize;
+
+thread_local! {
+    static SNAPSHOT_STACK: RefCell<Vec<SnapshotId>> = RefCell::new(vec![0]);
+}
+
+static NEXT_SNAPSHOT_ID: AtomicUsize = AtomicUsize::new(1);
+
+fn current_snapshot_id() -> SnapshotId {
+    SNAPSHOT_STACK.with(|stack| *stack.borrow().last().unwrap())
+}
+
+fn allocate_snapshot_id() -> SnapshotId {
+    NEXT_SNAPSHOT_ID.fetch_add(1, Ordering::SeqCst)
+}
+
+#[derive(Clone)]
+struct StateRecord<T: Clone> {
+    _id: SnapshotId,
+    value: T,
+}
+
+impl<T: Clone> StateRecord<T> {
+    fn new(id: SnapshotId, value: T) -> Self {
+        Self { _id: id, value }
+    }
+}
+
+struct SnapshotMutableState<T: Clone> {
+    records: RefCell<Vec<StateRecord<T>>>,
+}
+
+impl<T: Clone> SnapshotMutableState<T> {
+    fn new(initial: T) -> Self {
+        Self {
+            records: RefCell::new(vec![StateRecord::new(current_snapshot_id(), initial)]),
+        }
+    }
+
+    fn get(&self) -> T {
+        self.records
+            .borrow()
+            .last()
+            .map(|record| record.value.clone())
+            .expect("state has no records")
+    }
+
+    fn set(&self, new_value: T) -> SnapshotId {
+        let id = allocate_snapshot_id();
+        self.records
+            .borrow_mut()
+            .push(StateRecord::new(id, new_value));
+        id
+    }
+}
 
 // === Slot table extracted from compose-core and trimmed to the essentials ===
 
@@ -19,7 +108,7 @@ struct SlotTable {
     cursor: usize,
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 enum Slot {
     #[default]
     Empty,
@@ -27,6 +116,7 @@ enum Slot {
         key: Key,
     },
     Node(NodeId),
+    Value(Box<dyn Any>),
 }
 
 impl SlotTable {
@@ -71,6 +161,26 @@ impl SlotTable {
         }
     }
 
+    fn remember<T: 'static>(&mut self, init: impl FnOnce() -> T) -> Owned<T> {
+        let cursor = self.cursor;
+        if let Some(Slot::Value(value)) = self.slots.get(cursor) {
+            if let Some(existing) = value.downcast_ref::<Owned<T>>() {
+                self.cursor += 1;
+                return existing.clone();
+            }
+        }
+
+        let owned = Owned::new(init());
+        let boxed: Box<dyn Any> = Box::new(owned.clone());
+        if cursor == self.slots.len() {
+            self.slots.push(Slot::Value(boxed));
+        } else {
+            self.slots[cursor] = Slot::Value(boxed);
+        }
+        self.cursor = cursor + 1;
+        owned
+    }
+
     fn reset(&mut self) {
         self.cursor = 0;
     }
@@ -102,10 +212,6 @@ impl Runtime {
         }
     }
 
-    fn set_needs_frame(&self, needs: bool) {
-        self.inner.needs_frame.set(needs);
-    }
-
     fn take_frame_request(&self) -> bool {
         self.inner.needs_frame.replace(false)
     }
@@ -119,6 +225,10 @@ struct RuntimeHandle {
 impl RuntimeHandle {
     fn stamp(&self) -> usize {
         Rc::strong_count(&self.inner)
+    }
+
+    fn request_frame(&self) {
+        self.inner.needs_frame.set(true);
     }
 }
 
@@ -218,6 +328,7 @@ impl MemoryApplier {
             },
             color: computation.color,
             children: computation.children,
+            click_handler: computation.click_handler,
         })
     }
 
@@ -244,8 +355,95 @@ impl MemoryApplier {
 type Command = Box<dyn FnOnce(&mut MemoryApplier)>;
 type CommandQueue = VecDeque<Command>;
 
+struct ComposerCore {
+    slots: RefCell<SlotTable>,
+    applier: RefCell<MemoryApplier>,
+    commands: RefCell<CommandQueue>,
+    runtime: Runtime,
+}
+
+impl ComposerCore {
+    fn new(slots: SlotTable, applier: MemoryApplier, runtime: Runtime) -> Self {
+        Self {
+            slots: RefCell::new(slots),
+            applier: RefCell::new(applier),
+            commands: RefCell::new(VecDeque::new()),
+            runtime,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct Composer {
+    core: Rc<ComposerCore>,
+}
+
+impl Composer {
+    fn with_group<R>(&self, key: Key, f: impl FnOnce(&Composer) -> R) -> R {
+        {
+            let mut slots = self.core.slots.borrow_mut();
+            slots.start(key);
+        }
+
+        let result = f(self);
+
+        {
+            let mut slots = self.core.slots.borrow_mut();
+            slots.end();
+        }
+
+        result
+    }
+
+    fn emit_node<N: Node + 'static>(&self, init: impl FnOnce() -> N) -> NodeId {
+        if let Some(id) = {
+            let mut slots = self.core.slots.borrow_mut();
+            slots.read_node()
+        } {
+            if let Some(node) = self.core.applier.borrow_mut().get_mut(id) {
+                node.update();
+            }
+            return id;
+        }
+
+        let id = {
+            let mut applier = self.core.applier.borrow_mut();
+            applier.create(Box::new(init()))
+        };
+
+        {
+            let mut slots = self.core.slots.borrow_mut();
+            slots.record_node(id);
+        }
+
+        self.core
+            .commands
+            .borrow_mut()
+            .push_back(Box::new(move |applier: &mut MemoryApplier| {
+                if let Some(node) = applier.get_mut(id) {
+                    node.mount();
+                }
+            }));
+
+        id
+    }
+
+    fn remember<T: 'static>(&self, init: impl FnOnce() -> T) -> Owned<T> {
+        let mut slots = self.core.slots.borrow_mut();
+        slots.remember(init)
+    }
+
+    fn runtime_handle(&self) -> RuntimeHandle {
+        self.core.runtime.handle()
+    }
+
+    fn mutable_state_of<T: Clone + 'static>(&self, initial: T) -> MutableState<T> {
+        MutableState::new(initial, self.runtime_handle())
+    }
+}
+
 thread_local! {
-    static COMPOSER_STACK: RefCell<Vec<*mut ()>> = const { RefCell::new(Vec::new()) };
+    static COMPOSER_STACK: RefCell<Vec<Rc<ComposerCore>>> = const { RefCell::new(Vec::new()) };
 }
 
 struct ComposerScopeGuard;
@@ -258,86 +456,27 @@ impl Drop for ComposerScopeGuard {
     }
 }
 
-fn enter_composer_scope(composer: &mut Composer<'_>) -> ComposerScopeGuard {
-    COMPOSER_STACK.with(|stack| {
-        stack
-            .borrow_mut()
-            .push(composer as *mut Composer<'_> as *mut ());
-    });
+fn enter_composer_scope(core: Rc<ComposerCore>) -> ComposerScopeGuard {
+    COMPOSER_STACK.with(|stack| stack.borrow_mut().push(core));
     ComposerScopeGuard
 }
 
-fn with_current_composer<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
+fn with_current_composer<R>(f: impl FnOnce(&Composer) -> R) -> R {
     COMPOSER_STACK.with(|stack| {
-        let ptr = *stack
+        let core = stack
             .borrow()
             .last()
-            .expect("with_current_composer: no active composer");
-        let composer = ptr as *mut Composer<'_>;
-        // SAFETY: the pointer was pushed from a live mutable reference and remains valid
-        // until the corresponding guard is dropped.
-        let composer = unsafe { &mut *composer };
-        f(composer)
+            .expect("with_current_composer: no active composer")
+            .clone();
+        let composer = Composer { core };
+        f(&composer)
     })
-}
-
-struct Composer<'a> {
-    slots: &'a mut SlotTable,
-    applier: &'a mut MemoryApplier,
-    commands: CommandQueue,
-}
-
-impl<'a> Composer<'a> {
-    fn new(slots: &'a mut SlotTable, applier: &'a mut MemoryApplier) -> Self {
-        Self {
-            slots,
-            applier,
-            commands: VecDeque::new(),
-        }
-    }
-
-    fn install<R>(&mut self, f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
-        let guard = enter_composer_scope(self);
-        let result = f(self);
-        drop(guard);
-        result
-    }
-
-    fn with_group<R>(&mut self, key: Key, f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
-        self.slots.start(key);
-        let result = f(self);
-        self.slots.end();
-        result
-    }
-
-    fn emit_node<N: Node + 'static>(&mut self, init: impl FnOnce() -> N) -> NodeId {
-        if let Some(id) = self.slots.read_node() {
-            if let Some(node) = self.applier.get_mut(id) {
-                node.update();
-            }
-            return id;
-        }
-        let id = self.applier.create(Box::new(init()));
-        self.slots.record_node(id);
-        self.commands
-            .push_back(Box::new(move |applier: &mut MemoryApplier| {
-                if let Some(node) = applier.get_mut(id) {
-                    node.mount();
-                }
-            }));
-        id
-    }
-
-    fn take_commands(&mut self) -> CommandQueue {
-        std::mem::take(&mut self.commands)
-    }
 }
 
 // === Composition wrapper mimicking compose-core::Composition ===
 
 struct Composition {
-    slots: SlotTable,
-    applier: MemoryApplier,
+    core: Rc<ComposerCore>,
     runtime: Runtime,
     root: Option<NodeId>,
     needs_frame: bool,
@@ -346,8 +485,11 @@ struct Composition {
 impl Composition {
     fn with_runtime(applier: MemoryApplier, runtime: Runtime) -> Self {
         Self {
-            slots: SlotTable::new(),
-            applier,
+            core: Rc::new(ComposerCore::new(
+                SlotTable::new(),
+                applier,
+                runtime.clone(),
+            )),
             runtime,
             root: None,
             needs_frame: false,
@@ -357,17 +499,25 @@ impl Composition {
     fn render(
         &mut self,
         root_key: Key,
-        mut content: impl FnMut() -> NodeId,
+        content: &mut dyn FnMut() -> NodeId,
     ) -> Result<(), &'static str> {
-        self.slots.reset();
-        let mut composer = Composer::new(&mut self.slots, &mut self.applier);
-        let root = composer.install(|composer| composer.with_group(root_key, |_| content()));
-        let mut commands = composer.take_commands();
-        while let Some(command) = commands.pop_front() {
-            command(&mut self.applier);
+        self.core.slots.borrow_mut().reset();
+
+        let guard = enter_composer_scope(self.core.clone());
+        let root = with_current_composer(|composer| composer.with_group(root_key, |_| content()));
+        drop(guard);
+
+        loop {
+            let command = { self.core.commands.borrow_mut().pop_front() };
+            match command {
+                Some(command) => {
+                    let mut applier = self.core.applier.borrow_mut();
+                    command(&mut applier);
+                }
+                None => break,
+            }
         }
         self.root = Some(root);
-        self.runtime.set_needs_frame(true);
         self.needs_frame = true;
         Ok(())
     }
@@ -384,14 +534,6 @@ impl Composition {
         self.runtime.handle()
     }
 
-    fn applier_mut(&mut self) -> &mut MemoryApplier {
-        &mut self.applier
-    }
-
-    fn applier(&self) -> &MemoryApplier {
-        &self.applier
-    }
-
     fn root(&self) -> Option<NodeId> {
         self.root
     }
@@ -399,9 +541,78 @@ impl Composition {
     fn mark_rendered(&mut self) {
         self.needs_frame = false;
     }
+
+    fn node_count(&self) -> usize {
+        self.core.applier.borrow().len()
+    }
+
+    fn compute_layout(&self, viewport: Size) -> Option<LayoutTree> {
+        let root = self.root()?;
+        let handle = self.runtime_handle();
+        let mut applier = self.core.applier.borrow_mut();
+        applier.set_runtime_handle(handle);
+        let tree = applier.compute_layout(root, viewport);
+        applier.clear_runtime_handle();
+        tree
+    }
 }
 
 // === Minimal layout and render structures ===
+
+#[derive(Clone)]
+struct MutableState<T: Clone> {
+    state: Rc<SnapshotMutableState<T>>,
+    runtime: RuntimeHandle,
+}
+
+impl<T: Clone> MutableState<T> {
+    fn new(initial: T, runtime: RuntimeHandle) -> Self {
+        Self {
+            state: Rc::new(SnapshotMutableState::new(initial)),
+            runtime,
+        }
+    }
+
+    fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
+        let value = self.state.get();
+        f(&value)
+    }
+
+    fn update<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        let mut value = self.state.get();
+        let result = f(&mut value);
+        self.state.set(value);
+        self.runtime.request_frame();
+        result
+    }
+
+    fn set(&self, value: T) {
+        self.state.set(value);
+        self.runtime.request_frame();
+    }
+
+    fn value(&self) -> T {
+        self.state.get()
+    }
+
+    fn get(&self) -> T {
+        self.value()
+    }
+}
+
+fn remember<T: 'static>(init: impl FnOnce() -> T) -> Owned<T> {
+    with_current_composer(|composer| composer.remember(init))
+}
+
+#[allow(non_snake_case)]
+fn mutableStateOf<T: Clone + 'static>(initial: T) -> MutableState<T> {
+    with_current_composer(|composer| composer.mutable_state_of(initial))
+}
+
+#[allow(non_snake_case)]
+fn useState<T: Clone + 'static>(init: impl FnOnce() -> T) -> MutableState<T> {
+    remember(|| mutableStateOf(init())).with(|state| state.clone())
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Color(pub f32, pub f32, pub f32, pub f32);
@@ -409,6 +620,9 @@ struct Color(pub f32, pub f32, pub f32, pub f32);
 impl Color {
     const RED: Color = Color(1.0, 0.0, 0.0, 1.0);
     const BLUE: Color = Color(0.0, 0.0, 1.0, 1.0);
+    const GREEN: Color = Color(0.0, 1.0, 0.0, 1.0);
+    const ORANGE: Color = Color(1.0, 0.5, 0.0, 1.0);
+    const PURPLE: Color = Color(0.5, 0.0, 0.5, 1.0);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -423,10 +637,17 @@ impl Size {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+struct Point {
+    x: f32,
+    y: f32,
+}
+
+#[derive(Clone, Default)]
 struct Modifier {
     size: Option<Size>,
     background: Option<Color>,
+    click_handler: Option<Rc<dyn Fn(Point)>>,
 }
 
 impl Modifier {
@@ -444,6 +665,14 @@ impl Modifier {
         }
     }
 
+    fn clickable(handler: impl Fn(Point) + 'static) -> Self {
+        let handler = Rc::new(handler);
+        Modifier {
+            click_handler: Some(handler),
+            ..Modifier::default()
+        }
+    }
+
     fn then(mut self, other: Modifier) -> Modifier {
         if other.size.is_some() {
             self.size = other.size;
@@ -451,16 +680,19 @@ impl Modifier {
         if other.background.is_some() {
             self.background = other.background;
         }
+        if other.click_handler.is_some() {
+            self.click_handler = other.click_handler;
+        }
         self
     }
 }
 
 struct BoxNode {
-    modifier: Modifier,
+    modifier: Owned<Modifier>,
 }
 
 impl BoxNode {
-    fn new(modifier: Modifier) -> Self {
+    fn new(modifier: Owned<Modifier>) -> Self {
         Self { modifier }
     }
 }
@@ -471,14 +703,62 @@ impl Node for BoxNode {
         _applier: &MemoryApplier,
         constraints: LayoutConstraints,
     ) -> LayoutComputation {
-        let size = self
-            .modifier
-            .size
+        let (size_override, background, click_handler) = self.modifier.with(|modifier| {
+            (
+                modifier.size,
+                modifier.background,
+                modifier.click_handler.clone(),
+            )
+        });
+        let size = size_override
             .unwrap_or_else(|| Size::new(constraints.max_width, constraints.max_height));
         LayoutComputation {
             size,
-            color: self.modifier.background,
+            color: background,
             children: Vec::new(),
+            click_handler,
+        }
+    }
+}
+
+struct ButtonNode {
+    modifier: Owned<Modifier>,
+    on_click: Rc<RefCell<Box<dyn FnMut()>>>,
+}
+
+impl ButtonNode {
+    fn new(modifier: Owned<Modifier>, on_click: Rc<RefCell<Box<dyn FnMut()>>>) -> Self {
+        Self { modifier, on_click }
+    }
+}
+
+impl Node for ButtonNode {
+    fn layout(
+        &self,
+        _applier: &MemoryApplier,
+        constraints: LayoutConstraints,
+    ) -> LayoutComputation {
+        let (size_override, background, modifier_handler) = self.modifier.with(|modifier| {
+            (
+                modifier.size,
+                modifier.background,
+                modifier.click_handler.clone(),
+            )
+        });
+        let size = size_override
+            .unwrap_or_else(|| Size::new(constraints.max_width, constraints.max_height));
+        let button_handler = self.on_click.clone();
+        let click_handler = Some(Rc::new(move |point: Point| {
+            if let Some(handler) = modifier_handler.as_ref() {
+                handler(point);
+            }
+            (button_handler.borrow_mut())();
+        }) as Rc<dyn Fn(Point)>);
+        LayoutComputation {
+            size,
+            color: background,
+            children: Vec::new(),
+            click_handler,
         }
     }
 }
@@ -511,6 +791,7 @@ impl Node for RowNode {
             size: Size::new(cursor_x, max_height),
             color: None,
             children,
+            click_handler: None,
         }
     }
 }
@@ -525,6 +806,7 @@ struct LayoutComputation {
     size: Size,
     color: Option<Color>,
     children: Vec<LayoutNodeSnapshot>,
+    click_handler: Option<Rc<dyn Fn(Point)>>,
 }
 
 #[derive(Clone, Copy)]
@@ -550,6 +832,7 @@ struct LayoutNodeSnapshot {
     rect: Rect,
     color: Option<Color>,
     children: Vec<LayoutNodeSnapshot>,
+    click_handler: Option<Rc<dyn Fn(Point)>>,
 }
 
 struct LayoutTree {
@@ -564,7 +847,15 @@ impl LayoutTree {
                 .color
                 .map(|c| format!("rgba({:.1}, {:.1}, {:.1}, {:.1})", c.0, c.1, c.2, c.3))
                 .unwrap_or_else(|| "none".to_string());
-            lines.push(format!("{}{} color: {}", indent, node.rect, color));
+            let clickable = if node.click_handler.is_some() {
+                " clickable"
+            } else {
+                ""
+            };
+            lines.push(format!(
+                "{}{} color: {}{}",
+                indent, node.rect, color, clickable
+            ));
             for child in &node.children {
                 describe_node(child, depth + 1, lines);
             }
@@ -579,6 +870,51 @@ impl LayoutTree {
 thread_local! {
     static ROW_CHILD_STACK: RefCell<Vec<Vec<NodeId>>> = const { RefCell::new(Vec::new()) };
 }
+
+mod button {
+    #![allow(non_snake_case)]
+
+    use super::*;
+
+    pub fn Button<F, G>(modifier: Modifier, on_click: F, mut content: G) -> NodeId
+    where
+        F: FnMut() + 'static,
+        G: FnMut() + 'static,
+    {
+        let location = Location::caller();
+        let key = location_key(location.file(), location.line(), location.column());
+        with_current_composer(|composer| {
+            composer.with_group(key, |composer| {
+                let modifier_slot = remember(|| modifier.clone());
+                modifier_slot.replace(modifier);
+                let modifier_state = modifier_slot.clone();
+
+                let on_click_slot =
+                    remember(|| Rc::new(RefCell::new(Box::new(|| {}) as Box<dyn FnMut()>)));
+                on_click_slot.with(|cell| {
+                    let mut handler = cell.borrow_mut();
+                    *handler = Box::new(on_click);
+                });
+                let on_click_handle = on_click_slot.with(|cell| cell.clone());
+
+                let id = composer.emit_node(move || {
+                    ButtonNode::new(modifier_state.clone(), on_click_handle.clone())
+                });
+
+                ROW_CHILD_STACK.with(|stack| {
+                    if let Some(current) = stack.borrow_mut().last_mut() {
+                        current.push(id);
+                    }
+                });
+
+                content();
+                id
+            })
+        })
+    }
+}
+
+use button::Button;
 
 #[track_caller]
 #[allow(non_snake_case)]
@@ -603,7 +939,10 @@ fn Box(modifier: Modifier) -> NodeId {
     let key = location_key(location.file(), location.line(), location.column());
     with_current_composer(|composer| {
         composer.with_group(key, |composer| {
-            let id = composer.emit_node(move || BoxNode::new(modifier));
+            let remembered = remember(|| modifier.clone());
+            remembered.replace(modifier);
+            let modifier_state = remembered.clone();
+            let id = composer.emit_node(move || BoxNode::new(modifier_state));
             ROW_CHILD_STACK.with(|stack| {
                 if let Some(current) = stack.borrow_mut().last_mut() {
                     current.push(id);
@@ -656,7 +995,8 @@ trait Renderer {
 #[derive(Clone)]
 struct RectHitTarget {
     rect: Rect,
-    color: Color,
+    color: Option<Color>,
+    click_handler: Option<Rc<dyn Fn(Point)>>,
 }
 
 impl HitTestTarget for RectHitTarget {
@@ -666,10 +1006,24 @@ impl HitTestTarget for RectHitTarget {
             PointerEventKind::Down => "down",
             PointerEventKind::Up => "up",
         };
-        println!(
-            "pointer {} at ({:.1}, {:.1}) inside {} with color rgba({:.1}, {:.1}, {:.1}, {:.1})",
-            event, x, y, self.rect, self.color.0, self.color.1, self.color.2, self.color.3
-        );
+        match self.color {
+            Some(color) => println!(
+                "pointer {} at ({:.1}, {:.1}) inside {} with color rgba({:.1}, {:.1}, {:.1}, {:.1})",
+                event, x, y, self.rect, color.0, color.1, color.2, color.3
+            ),
+            None => println!(
+                "pointer {} at ({:.1}, {:.1}) inside {} (no color)",
+                event, x, y, self.rect
+            ),
+        }
+        if matches!(kind, PointerEventKind::Up) {
+            if let Some(handler) = &self.click_handler {
+                handler(Point {
+                    x: x - self.rect.x,
+                    y: y - self.rect.y,
+                });
+            }
+        }
     }
 }
 
@@ -682,8 +1036,17 @@ impl ConsoleScene {
         Self { rects: Vec::new() }
     }
 
-    fn push_rect(&mut self, rect: Rect, color: Color) {
-        self.rects.push(RectHitTarget { rect, color });
+    fn push_rect(
+        &mut self,
+        rect: Rect,
+        color: Option<Color>,
+        click_handler: Option<Rc<dyn Fn(Point)>>,
+    ) {
+        self.rects.push(RectHitTarget {
+            rect,
+            color,
+            click_handler,
+        });
     }
 
     fn rects(&self) -> &[RectHitTarget] {
@@ -715,11 +1078,21 @@ impl SceneDebug for ConsoleScene {
     fn describe(&self) -> Vec<String> {
         self.rects()
             .iter()
-            .map(|rect| {
-                format!(
-                    "{} rgba({:.1}, {:.1}, {:.1}, {:.1})",
-                    rect.rect, rect.color.0, rect.color.1, rect.color.2, rect.color.3
-                )
+            .map(|rect| match rect.color {
+                Some(color) => format!(
+                    "{} rgba({:.1}, {:.1}, {:.1}, {:.1}) clickable={}",
+                    rect.rect,
+                    color.0,
+                    color.1,
+                    color.2,
+                    color.3,
+                    rect.click_handler.is_some()
+                ),
+                None => format!(
+                    "{} <no color> clickable={}",
+                    rect.rect,
+                    rect.click_handler.is_some()
+                ),
             })
             .collect()
     }
@@ -761,8 +1134,8 @@ impl Renderer for ConsoleRenderer {
                 width: node.rect.width,
                 height: node.rect.height,
             };
-            if let Some(color) = node.color {
-                scene.push_rect(rect, color);
+            if node.color.is_some() || node.click_handler.is_some() {
+                scene.push_rect(rect, node.color, node.click_handler.clone());
             }
             for child in &node.children {
                 visit(child, (rect.x, rect.y), scene);
@@ -791,6 +1164,9 @@ where
     layout_tree: Option<LayoutTree>,
     layout_dirty: bool,
     scene_dirty: bool,
+    root_key: Key,
+    content: Box<dyn FnMut() -> NodeId>,
+    pending_runtime_frame: bool,
 }
 
 impl<R> AppShell<R>
@@ -801,11 +1177,7 @@ where
     fn new(mut renderer: R, root_key: Key, content: impl FnMut() -> NodeId + 'static) -> Self {
         let runtime = StdRuntime::new();
         let composition_runtime = runtime.runtime();
-        let mut composition = Composition::with_runtime(MemoryApplier::new(), composition_runtime);
-        let mut build = content;
-        if let Err(err) = composition.render(root_key, &mut build) {
-            eprintln!("initial render failed: {err}");
-        }
+        let composition = Composition::with_runtime(MemoryApplier::new(), composition_runtime);
         renderer.scene_mut().clear();
         let mut shell = Self {
             runtime,
@@ -817,9 +1189,25 @@ where
             layout_tree: None,
             layout_dirty: true,
             scene_dirty: true,
+            root_key,
+            content: Box::new(content),
+            pending_runtime_frame: false,
         };
+        shell.recompose();
         shell.process_frame();
         shell
+    }
+
+    fn recompose(&mut self) {
+        if let Err(err) = self
+            .composition
+            .render(self.root_key, self.content.as_mut())
+        {
+            eprintln!("recomposition failed: {err}");
+        }
+        self.pending_runtime_frame = false;
+        self.layout_dirty = true;
+        self.scene_dirty = true;
     }
 
     fn set_viewport(&mut self, width: f32, height: f32) {
@@ -852,14 +1240,23 @@ where
         self.runtime.clear_frame_waker();
     }
 
-    fn should_render(&self) -> bool {
+    fn should_render(&mut self) -> bool {
+        if !self.pending_runtime_frame {
+            self.pending_runtime_frame = self.runtime.take_frame_request();
+        }
         self.layout_dirty
             || self.scene_dirty
-            || self.runtime.take_frame_request()
+            || self.pending_runtime_frame
             || self.composition.should_render()
     }
 
     fn update(&mut self) {
+        if !self.pending_runtime_frame {
+            self.pending_runtime_frame = self.runtime.take_frame_request();
+        }
+        if self.pending_runtime_frame {
+            self.recompose();
+        }
         self.runtime.drain_frame_callbacks(0);
         let _ = self.composition.process_invalid_scopes();
         self.process_frame();
@@ -909,21 +1306,12 @@ where
             return;
         }
         self.layout_dirty = false;
-        if let Some(root) = self.composition.root() {
-            let handle = self.composition.runtime_handle();
-            let applier = self.composition.applier_mut();
-            applier.set_runtime_handle(handle);
-            let viewport_size = Size {
-                width: self.viewport.0,
-                height: self.viewport.1,
-            };
-            self.layout_tree = applier.compute_layout(root, viewport_size);
-            applier.clear_runtime_handle();
-            self.scene_dirty = true;
-        } else {
-            self.layout_tree = None;
-            self.scene_dirty = true;
-        }
+        let viewport_size = Size {
+            width: self.viewport.0,
+            height: self.viewport.1,
+        };
+        self.layout_tree = self.composition.compute_layout(viewport_size);
+        self.scene_dirty = true;
     }
 
     fn run_render_phase(&mut self) {
@@ -961,48 +1349,105 @@ fn location_key(file: &str, line: u32, column: u32) -> Key {
     hasher.finish()
 }
 
-// === Application content building a single red box ===
+// === Application content showcasing stateful recomposition ===
 
 fn app() -> NodeId {
     with_current_composer(|composer| {
         composer.with_group(location_key(file!(), line!(), column!()), |_| {
+            let counter = useState(|| 0);
+            let current = counter.get();
+            let is_even = current % 2 == 0;
+            println!(
+                "composing app for counter = {} ({})",
+                current,
+                if is_even { "even" } else { "odd" }
+            );
+
+            let primary_color = if is_even { Color::RED } else { Color::BLUE };
+            let accent_color = if is_even { Color::GREEN } else { Color::ORANGE };
+            let primary_width = 140.0 + current as f32 * 12.0;
+
             Row(|| {
-                Box(
-                    Modifier::size(Size::new(120.0, 120.0))
-                        .then(Modifier::background(Color::RED)),
+                let click_counter = counter.clone();
+                let log_counter = counter.clone();
+                Button(
+                    Modifier::size(Size::new(primary_width, 120.0))
+                        .then(Modifier::background(primary_color))
+                        .then(Modifier::clickable(move |point| {
+                            let value = log_counter.get();
+                            println!(
+                                "button pointer up at ({:.1}, {:.1}) with counter = {} ({})",
+                                point.x,
+                                point.y,
+                                value,
+                                if value % 2 == 0 { "even" } else { "odd" }
+                            );
+                        })),
+                    move || {
+                        click_counter.update(|value| {
+                            *value += 1;
+                        });
+                        let new_value = click_counter.get();
+                        println!(
+                            "button activated -> counter = {} ({})",
+                            new_value,
+                            if new_value % 2 == 0 { "even" } else { "odd" }
+                        );
+                    },
+                    || {},
                 );
-                Box(
-                    Modifier::size(Size::new(120.0, 120.0))
-                        .then(Modifier::background(Color::BLUE)),
-                );
+
+                if is_even {
+                    Box(Modifier::size(Size::new(100.0, 120.0))
+                        .then(Modifier::background(accent_color)));
+                } else {
+                    Box(Modifier::size(Size::new(100.0, 120.0))
+                        .then(Modifier::background(accent_color)));
+                    Box(Modifier::size(Size::new(60.0, 60.0))
+                        .then(Modifier::background(Color::PURPLE)));
+                }
             })
         })
     })
 }
 
+fn pump_frames(app: &mut AppShell<ConsoleRenderer>, label: &str) {
+    println!("-- {label} --");
+    let mut frame = 0;
+    loop {
+        let should_render = app.should_render();
+        println!("frame {frame}: should_render = {should_render}");
+        if !should_render {
+            break;
+        }
+        app.update();
+        app.log_debug_info();
+        frame += 1;
+    }
+    println!("scene summary: {:?}\n", app.scene().describe());
+}
+
 fn main() {
     let renderer = ConsoleRenderer::new();
     let mut app = AppShell::new(renderer, default_root_key(), app);
-    println!(
-        "initial render: nodes = {}",
-        app.composition.applier().len()
-    );
-    app.log_debug_info();
-
+    println!("initial render: nodes = {}", app.composition.node_count());
     println!("initial buffer: {:?}", app.buffer_size());
     app.set_buffer_size(1024, 768);
     app.set_viewport(640.0, 480.0);
     println!("updated buffer: {:?}", app.buffer_size());
-    app.update();
-    println!("should render? {}", app.should_render());
-    app.set_frame_waker(|| println!("frame requested"));
-    app.clear_frame_waker();
+
+    pump_frames(&mut app, "after setup");
 
     app.set_cursor(60.0, 40.0);
     app.pointer_pressed();
     app.pointer_released();
+    pump_frames(&mut app, "after first click");
 
-    println!("scene summary: {:?}", app.scene().describe());
+    app.set_cursor(60.0, 40.0);
+    app.pointer_pressed();
+    app.pointer_released();
+    pump_frames(&mut app, "after second click");
+
     let renderer = app.renderer();
     let _ = renderer.scene();
 }
