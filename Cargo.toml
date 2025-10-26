@@ -17,5 +17,6 @@ members = [
     "crates/compose-render/pixels",
     "crates/compose-render/wgpu",
     "apps/desktop-demo",
+    "apps/minimal-single-file",
 ]
 resolver = "2"
