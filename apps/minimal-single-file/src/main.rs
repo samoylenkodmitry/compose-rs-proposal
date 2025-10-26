@@ -449,7 +449,7 @@ impl Composition {
     fn render(
         &mut self,
         root_key: Key,
-        mut content: impl FnMut() -> NodeId,
+        content: &mut dyn FnMut() -> NodeId,
     ) -> Result<(), &'static str> {
         self.core.slots.borrow_mut().reset();
 
@@ -568,6 +568,9 @@ struct Color(pub f32, pub f32, pub f32, pub f32);
 impl Color {
     const RED: Color = Color(1.0, 0.0, 0.0, 1.0);
     const BLUE: Color = Color(0.0, 0.0, 1.0, 1.0);
+    const GREEN: Color = Color(0.0, 1.0, 0.0, 1.0);
+    const ORANGE: Color = Color(1.0, 0.5, 0.0, 1.0);
+    const PURPLE: Color = Color(0.5, 0.0, 0.5, 1.0);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -633,11 +636,11 @@ impl Modifier {
 }
 
 struct BoxNode {
-    modifier: Modifier,
+    modifier: Owned<Modifier>,
 }
 
 impl BoxNode {
-    fn new(modifier: Modifier) -> Self {
+    fn new(modifier: Owned<Modifier>) -> Self {
         Self { modifier }
     }
 }
@@ -648,15 +651,20 @@ impl Node for BoxNode {
         _applier: &MemoryApplier,
         constraints: LayoutConstraints,
     ) -> LayoutComputation {
-        let size = self
-            .modifier
-            .size
+        let (size_override, background, click_handler) = self.modifier.with(|modifier| {
+            (
+                modifier.size,
+                modifier.background,
+                modifier.click_handler.clone(),
+            )
+        });
+        let size = size_override
             .unwrap_or_else(|| Size::new(constraints.max_width, constraints.max_height));
         LayoutComputation {
             size,
-            color: self.modifier.background,
+            color: background,
             children: Vec::new(),
-            click_handler: self.modifier.click_handler.clone(),
+            click_handler,
         }
     }
 }
@@ -792,7 +800,10 @@ fn Box(modifier: Modifier) -> NodeId {
     let key = location_key(location.file(), location.line(), location.column());
     with_current_composer(|composer| {
         composer.with_group(key, |composer| {
-            let id = composer.emit_node(move || BoxNode::new(modifier));
+            let remembered = remember(|| modifier.clone());
+            remembered.replace(modifier);
+            let modifier_state = remembered.clone();
+            let id = composer.emit_node(move || BoxNode::new(modifier_state));
             ROW_CHILD_STACK.with(|stack| {
                 if let Some(current) = stack.borrow_mut().last_mut() {
                     current.push(id);
@@ -1014,6 +1025,9 @@ where
     layout_tree: Option<LayoutTree>,
     layout_dirty: bool,
     scene_dirty: bool,
+    root_key: Key,
+    content: Box<dyn FnMut() -> NodeId>,
+    pending_runtime_frame: bool,
 }
 
 impl<R> AppShell<R>
@@ -1024,11 +1038,7 @@ where
     fn new(mut renderer: R, root_key: Key, content: impl FnMut() -> NodeId + 'static) -> Self {
         let runtime = StdRuntime::new();
         let composition_runtime = runtime.runtime();
-        let mut composition = Composition::with_runtime(MemoryApplier::new(), composition_runtime);
-        let mut build = content;
-        if let Err(err) = composition.render(root_key, &mut build) {
-            eprintln!("initial render failed: {err}");
-        }
+        let composition = Composition::with_runtime(MemoryApplier::new(), composition_runtime);
         renderer.scene_mut().clear();
         let mut shell = Self {
             runtime,
@@ -1040,9 +1050,25 @@ where
             layout_tree: None,
             layout_dirty: true,
             scene_dirty: true,
+            root_key,
+            content: Box::new(content),
+            pending_runtime_frame: false,
         };
+        shell.recompose();
         shell.process_frame();
         shell
+    }
+
+    fn recompose(&mut self) {
+        if let Err(err) = self
+            .composition
+            .render(self.root_key, self.content.as_mut())
+        {
+            eprintln!("recomposition failed: {err}");
+        }
+        self.pending_runtime_frame = false;
+        self.layout_dirty = true;
+        self.scene_dirty = true;
     }
 
     fn set_viewport(&mut self, width: f32, height: f32) {
@@ -1075,14 +1101,23 @@ where
         self.runtime.clear_frame_waker();
     }
 
-    fn should_render(&self) -> bool {
+    fn should_render(&mut self) -> bool {
+        if !self.pending_runtime_frame {
+            self.pending_runtime_frame = self.runtime.take_frame_request();
+        }
         self.layout_dirty
             || self.scene_dirty
-            || self.runtime.take_frame_request()
+            || self.pending_runtime_frame
             || self.composition.should_render()
     }
 
     fn update(&mut self) {
+        if !self.pending_runtime_frame {
+            self.pending_runtime_frame = self.runtime.take_frame_request();
+        }
+        if self.pending_runtime_frame {
+            self.recompose();
+        }
         self.runtime.drain_frame_callbacks(0);
         let _ = self.composition.process_invalid_scopes();
         self.process_frame();
@@ -1175,63 +1210,93 @@ fn location_key(file: &str, line: u32, column: u32) -> Key {
     hasher.finish()
 }
 
-// === Application content building a single red box ===
+// === Application content showcasing stateful recomposition ===
 
 fn app() -> NodeId {
     with_current_composer(|composer| {
         composer.with_group(location_key(file!(), line!(), column!()), |_| {
             let counter = useState(|| 0);
-            counter.update(|value| *value += 1);
-            let first_color = counter.with(|value| {
-                if *value % 2 == 0 {
-                    Color::RED
-                } else {
-                    Color::BLUE
-                }
-            });
             let current = counter.get();
-            let width = 120.0 + current as f32;
-            counter.set(current);
+            let is_even = current % 2 == 0;
+            println!(
+                "composing app for counter = {} ({})",
+                current,
+                if is_even { "even" } else { "odd" }
+            );
+
+            let primary_color = if is_even { Color::RED } else { Color::BLUE };
+            let accent_color = if is_even { Color::GREEN } else { Color::ORANGE };
+            let primary_width = 140.0 + current as f32 * 12.0;
+
             Row(|| {
-                Box(
-                    Modifier::size(Size::new(width, 120.0))
-                        .then(Modifier::background(first_color))
-                        .then(Modifier::clickable(move |point| {
-                            println!(
-                                "clicked primary box at ({:.1}, {:.1}); counter = {}",
-                                point.x, point.y, current
-                            );
-                        })),
-                );
-                Box(
-                    Modifier::size(Size::new(120.0, 120.0))
-                        .then(Modifier::background(Color::BLUE)),
-                );
+                let click_counter = counter.clone();
+                Box(Modifier::size(Size::new(primary_width, 120.0))
+                    .then(Modifier::background(primary_color))
+                    .then(Modifier::clickable(move |point| {
+                        let new_value = click_counter.update(|value| {
+                            *value += 1;
+                            *value
+                        });
+                        println!(
+                            "clicked primary box at ({:.1}, {:.1}) -> counter = {} ({})",
+                            point.x,
+                            point.y,
+                            new_value,
+                            if new_value % 2 == 0 { "even" } else { "odd" }
+                        );
+                    })));
+
+                if is_even {
+                    Box(Modifier::size(Size::new(100.0, 120.0))
+                        .then(Modifier::background(accent_color)));
+                } else {
+                    Box(Modifier::size(Size::new(100.0, 120.0))
+                        .then(Modifier::background(accent_color)));
+                    Box(Modifier::size(Size::new(60.0, 60.0))
+                        .then(Modifier::background(Color::PURPLE)));
+                }
             })
         })
     })
+}
+
+fn pump_frames(app: &mut AppShell<ConsoleRenderer>, label: &str) {
+    println!("-- {label} --");
+    let mut frame = 0;
+    loop {
+        let should_render = app.should_render();
+        println!("frame {frame}: should_render = {should_render}");
+        if !should_render {
+            break;
+        }
+        app.update();
+        app.log_debug_info();
+        frame += 1;
+    }
+    println!("scene summary: {:?}\n", app.scene().describe());
 }
 
 fn main() {
     let renderer = ConsoleRenderer::new();
     let mut app = AppShell::new(renderer, default_root_key(), app);
     println!("initial render: nodes = {}", app.composition.node_count());
-    app.log_debug_info();
-
     println!("initial buffer: {:?}", app.buffer_size());
     app.set_buffer_size(1024, 768);
     app.set_viewport(640.0, 480.0);
     println!("updated buffer: {:?}", app.buffer_size());
-    app.update();
-    println!("should render? {}", app.should_render());
-    app.set_frame_waker(|| println!("frame requested"));
-    app.clear_frame_waker();
+
+    pump_frames(&mut app, "after setup");
 
     app.set_cursor(60.0, 40.0);
     app.pointer_pressed();
     app.pointer_released();
+    pump_frames(&mut app, "after first click");
 
-    println!("scene summary: {:?}", app.scene().describe());
+    app.set_cursor(60.0, 40.0);
+    app.pointer_pressed();
+    app.pointer_released();
+    pump_frames(&mut app, "after second click");
+
     let renderer = app.renderer();
     let _ = renderer.scene();
 }
