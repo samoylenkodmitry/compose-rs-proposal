@@ -244,8 +244,80 @@ impl MemoryApplier {
 type Command = Box<dyn FnOnce(&mut MemoryApplier)>;
 type CommandQueue = VecDeque<Command>;
 
+struct ComposerCore {
+    slots: RefCell<SlotTable>,
+    applier: RefCell<MemoryApplier>,
+    commands: RefCell<CommandQueue>,
+}
+
+impl ComposerCore {
+    fn new(slots: SlotTable, applier: MemoryApplier) -> Self {
+        Self {
+            slots: RefCell::new(slots),
+            applier: RefCell::new(applier),
+            commands: RefCell::new(VecDeque::new()),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct Composer {
+    core: Rc<ComposerCore>,
+}
+
+impl Composer {
+    fn with_group<R>(&self, key: Key, f: impl FnOnce(&Composer) -> R) -> R {
+        {
+            let mut slots = self.core.slots.borrow_mut();
+            slots.start(key);
+        }
+
+        let result = f(self);
+
+        {
+            let mut slots = self.core.slots.borrow_mut();
+            slots.end();
+        }
+
+        result
+    }
+
+    fn emit_node<N: Node + 'static>(&self, init: impl FnOnce() -> N) -> NodeId {
+        if let Some(id) = {
+            let mut slots = self.core.slots.borrow_mut();
+            slots.read_node()
+        } {
+            if let Some(node) = self.core.applier.borrow_mut().get_mut(id) {
+                node.update();
+            }
+            return id;
+        }
+
+        let id = {
+            let mut applier = self.core.applier.borrow_mut();
+            applier.create(Box::new(init()))
+        };
+
+        {
+            let mut slots = self.core.slots.borrow_mut();
+            slots.record_node(id);
+        }
+
+        self.core
+            .commands
+            .borrow_mut()
+            .push_back(Box::new(move |applier: &mut MemoryApplier| {
+                if let Some(node) = applier.get_mut(id) {
+                    node.mount();
+                }
+            }));
+
+        id
+    }
+}
+
 thread_local! {
-    static COMPOSER_STACK: RefCell<Vec<*mut ()>> = const { RefCell::new(Vec::new()) };
+    static COMPOSER_STACK: RefCell<Vec<Rc<ComposerCore>>> = const { RefCell::new(Vec::new()) };
 }
 
 struct ComposerScopeGuard;
@@ -258,86 +330,27 @@ impl Drop for ComposerScopeGuard {
     }
 }
 
-fn enter_composer_scope(composer: &mut Composer<'_>) -> ComposerScopeGuard {
-    COMPOSER_STACK.with(|stack| {
-        stack
-            .borrow_mut()
-            .push(composer as *mut Composer<'_> as *mut ());
-    });
+fn enter_composer_scope(core: Rc<ComposerCore>) -> ComposerScopeGuard {
+    COMPOSER_STACK.with(|stack| stack.borrow_mut().push(core));
     ComposerScopeGuard
 }
 
-fn with_current_composer<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
+fn with_current_composer<R>(f: impl FnOnce(&Composer) -> R) -> R {
     COMPOSER_STACK.with(|stack| {
-        let ptr = *stack
+        let core = stack
             .borrow()
             .last()
-            .expect("with_current_composer: no active composer");
-        let composer = ptr as *mut Composer<'_>;
-        // SAFETY: the pointer was pushed from a live mutable reference and remains valid
-        // until the corresponding guard is dropped.
-        let composer = unsafe { &mut *composer };
-        f(composer)
+            .expect("with_current_composer: no active composer")
+            .clone();
+        let composer = Composer { core };
+        f(&composer)
     })
-}
-
-struct Composer<'a> {
-    slots: &'a mut SlotTable,
-    applier: &'a mut MemoryApplier,
-    commands: CommandQueue,
-}
-
-impl<'a> Composer<'a> {
-    fn new(slots: &'a mut SlotTable, applier: &'a mut MemoryApplier) -> Self {
-        Self {
-            slots,
-            applier,
-            commands: VecDeque::new(),
-        }
-    }
-
-    fn install<R>(&mut self, f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
-        let guard = enter_composer_scope(self);
-        let result = f(self);
-        drop(guard);
-        result
-    }
-
-    fn with_group<R>(&mut self, key: Key, f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
-        self.slots.start(key);
-        let result = f(self);
-        self.slots.end();
-        result
-    }
-
-    fn emit_node<N: Node + 'static>(&mut self, init: impl FnOnce() -> N) -> NodeId {
-        if let Some(id) = self.slots.read_node() {
-            if let Some(node) = self.applier.get_mut(id) {
-                node.update();
-            }
-            return id;
-        }
-        let id = self.applier.create(Box::new(init()));
-        self.slots.record_node(id);
-        self.commands
-            .push_back(Box::new(move |applier: &mut MemoryApplier| {
-                if let Some(node) = applier.get_mut(id) {
-                    node.mount();
-                }
-            }));
-        id
-    }
-
-    fn take_commands(&mut self) -> CommandQueue {
-        std::mem::take(&mut self.commands)
-    }
 }
 
 // === Composition wrapper mimicking compose-core::Composition ===
 
 struct Composition {
-    slots: SlotTable,
-    applier: MemoryApplier,
+    core: Rc<ComposerCore>,
     runtime: Runtime,
     root: Option<NodeId>,
     needs_frame: bool,
@@ -346,8 +359,7 @@ struct Composition {
 impl Composition {
     fn with_runtime(applier: MemoryApplier, runtime: Runtime) -> Self {
         Self {
-            slots: SlotTable::new(),
-            applier,
+            core: Rc::new(ComposerCore::new(SlotTable::new(), applier)),
             runtime,
             root: None,
             needs_frame: false,
@@ -359,12 +371,21 @@ impl Composition {
         root_key: Key,
         mut content: impl FnMut() -> NodeId,
     ) -> Result<(), &'static str> {
-        self.slots.reset();
-        let mut composer = Composer::new(&mut self.slots, &mut self.applier);
-        let root = composer.install(|composer| composer.with_group(root_key, |_| content()));
-        let mut commands = composer.take_commands();
-        while let Some(command) = commands.pop_front() {
-            command(&mut self.applier);
+        self.core.slots.borrow_mut().reset();
+
+        let guard = enter_composer_scope(self.core.clone());
+        let root = with_current_composer(|composer| composer.with_group(root_key, |_| content()));
+        drop(guard);
+
+        loop {
+            let command = { self.core.commands.borrow_mut().pop_front() };
+            match command {
+                Some(command) => {
+                    let mut applier = self.core.applier.borrow_mut();
+                    command(&mut applier);
+                }
+                None => break,
+            }
         }
         self.root = Some(root);
         self.runtime.set_needs_frame(true);
@@ -384,20 +405,26 @@ impl Composition {
         self.runtime.handle()
     }
 
-    fn applier_mut(&mut self) -> &mut MemoryApplier {
-        &mut self.applier
-    }
-
-    fn applier(&self) -> &MemoryApplier {
-        &self.applier
-    }
-
     fn root(&self) -> Option<NodeId> {
         self.root
     }
 
     fn mark_rendered(&mut self) {
         self.needs_frame = false;
+    }
+
+    fn node_count(&self) -> usize {
+        self.core.applier.borrow().len()
+    }
+
+    fn compute_layout(&self, viewport: Size) -> Option<LayoutTree> {
+        let root = self.root()?;
+        let handle = self.runtime_handle();
+        let mut applier = self.core.applier.borrow_mut();
+        applier.set_runtime_handle(handle);
+        let tree = applier.compute_layout(root, viewport);
+        applier.clear_runtime_handle();
+        tree
     }
 }
 
@@ -909,21 +936,12 @@ where
             return;
         }
         self.layout_dirty = false;
-        if let Some(root) = self.composition.root() {
-            let handle = self.composition.runtime_handle();
-            let applier = self.composition.applier_mut();
-            applier.set_runtime_handle(handle);
-            let viewport_size = Size {
-                width: self.viewport.0,
-                height: self.viewport.1,
-            };
-            self.layout_tree = applier.compute_layout(root, viewport_size);
-            applier.clear_runtime_handle();
-            self.scene_dirty = true;
-        } else {
-            self.layout_tree = None;
-            self.scene_dirty = true;
-        }
+        let viewport_size = Size {
+            width: self.viewport.0,
+            height: self.viewport.1,
+        };
+        self.layout_tree = self.composition.compute_layout(viewport_size);
+        self.scene_dirty = true;
     }
 
     fn run_render_phase(&mut self) {
@@ -983,10 +1001,7 @@ fn app() -> NodeId {
 fn main() {
     let renderer = ConsoleRenderer::new();
     let mut app = AppShell::new(renderer, default_root_key(), app);
-    println!(
-        "initial render: nodes = {}",
-        app.composition.applier().len()
-    );
+    println!("initial render: nodes = {}", app.composition.node_count());
     app.log_debug_info();
 
     println!("initial buffer: {:?}", app.buffer_size());
