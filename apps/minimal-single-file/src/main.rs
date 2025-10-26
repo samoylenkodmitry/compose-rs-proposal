@@ -5,6 +5,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::panic::Location;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread_local;
 
 // === Core key/node identifiers ===
@@ -36,13 +37,66 @@ impl<T> Owned<T> {
         f(&*borrow)
     }
 
-    fn update<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
-        let mut borrow = self.inner.borrow_mut();
-        f(&mut *borrow)
-    }
-
     fn replace(&self, new_value: T) {
         *self.inner.borrow_mut() = new_value;
+    }
+}
+
+// === Snapshot runtime derived from the main compose-core crate ===
+
+type SnapshotId = usize;
+
+thread_local! {
+    static SNAPSHOT_STACK: RefCell<Vec<SnapshotId>> = RefCell::new(vec![0]);
+}
+
+static NEXT_SNAPSHOT_ID: AtomicUsize = AtomicUsize::new(1);
+
+fn current_snapshot_id() -> SnapshotId {
+    SNAPSHOT_STACK.with(|stack| *stack.borrow().last().unwrap())
+}
+
+fn allocate_snapshot_id() -> SnapshotId {
+    NEXT_SNAPSHOT_ID.fetch_add(1, Ordering::SeqCst)
+}
+
+#[derive(Clone)]
+struct StateRecord<T: Clone> {
+    _id: SnapshotId,
+    value: T,
+}
+
+impl<T: Clone> StateRecord<T> {
+    fn new(id: SnapshotId, value: T) -> Self {
+        Self { _id: id, value }
+    }
+}
+
+struct SnapshotMutableState<T: Clone> {
+    records: RefCell<Vec<StateRecord<T>>>,
+}
+
+impl<T: Clone> SnapshotMutableState<T> {
+    fn new(initial: T) -> Self {
+        Self {
+            records: RefCell::new(vec![StateRecord::new(current_snapshot_id(), initial)]),
+        }
+    }
+
+    fn get(&self) -> T {
+        self.records
+            .borrow()
+            .last()
+            .map(|record| record.value.clone())
+            .expect("state has no records")
+    }
+
+    fn set(&self, new_value: T) -> SnapshotId {
+        let id = allocate_snapshot_id();
+        self.records
+            .borrow_mut()
+            .push(StateRecord::new(id, new_value));
+        id
     }
 }
 
@@ -507,35 +561,38 @@ impl Composition {
 
 #[derive(Clone)]
 struct MutableState<T: Clone> {
-    value: Owned<T>,
+    state: Rc<SnapshotMutableState<T>>,
     runtime: RuntimeHandle,
 }
 
 impl<T: Clone> MutableState<T> {
     fn new(initial: T, runtime: RuntimeHandle) -> Self {
         Self {
-            value: Owned::new(initial),
+            state: Rc::new(SnapshotMutableState::new(initial)),
             runtime,
         }
     }
 
     fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
-        self.value.with(f)
+        let value = self.state.get();
+        f(&value)
     }
 
     fn update<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
-        let result = self.value.update(f);
+        let mut value = self.state.get();
+        let result = f(&mut value);
+        self.state.set(value);
         self.runtime.request_frame();
         result
     }
 
     fn set(&self, value: T) {
-        self.value.replace(value);
+        self.state.set(value);
         self.runtime.request_frame();
     }
 
     fn value(&self) -> T {
-        self.value.with(|value| value.clone())
+        self.state.get()
     }
 
     fn get(&self) -> T {
@@ -664,6 +721,48 @@ impl Node for BoxNode {
     }
 }
 
+struct ButtonNode {
+    modifier: Owned<Modifier>,
+    on_click: Rc<RefCell<Box<dyn FnMut()>>>,
+}
+
+impl ButtonNode {
+    fn new(modifier: Owned<Modifier>, on_click: Rc<RefCell<Box<dyn FnMut()>>>) -> Self {
+        Self { modifier, on_click }
+    }
+}
+
+impl Node for ButtonNode {
+    fn layout(
+        &self,
+        _applier: &MemoryApplier,
+        constraints: LayoutConstraints,
+    ) -> LayoutComputation {
+        let (size_override, background, modifier_handler) = self.modifier.with(|modifier| {
+            (
+                modifier.size,
+                modifier.background,
+                modifier.click_handler.clone(),
+            )
+        });
+        let size = size_override
+            .unwrap_or_else(|| Size::new(constraints.max_width, constraints.max_height));
+        let button_handler = self.on_click.clone();
+        let click_handler = Some(Rc::new(move |point: Point| {
+            if let Some(handler) = modifier_handler.as_ref() {
+                handler(point);
+            }
+            (button_handler.borrow_mut())();
+        }) as Rc<dyn Fn(Point)>);
+        LayoutComputation {
+            size,
+            color: background,
+            children: Vec::new(),
+            click_handler,
+        }
+    }
+}
+
 struct RowNode {
     children: Vec<NodeId>,
 }
@@ -771,6 +870,51 @@ impl LayoutTree {
 thread_local! {
     static ROW_CHILD_STACK: RefCell<Vec<Vec<NodeId>>> = const { RefCell::new(Vec::new()) };
 }
+
+mod button {
+    #![allow(non_snake_case)]
+
+    use super::*;
+
+    pub fn Button<F, G>(modifier: Modifier, on_click: F, mut content: G) -> NodeId
+    where
+        F: FnMut() + 'static,
+        G: FnMut() + 'static,
+    {
+        let location = Location::caller();
+        let key = location_key(location.file(), location.line(), location.column());
+        with_current_composer(|composer| {
+            composer.with_group(key, |composer| {
+                let modifier_slot = remember(|| modifier.clone());
+                modifier_slot.replace(modifier);
+                let modifier_state = modifier_slot.clone();
+
+                let on_click_slot =
+                    remember(|| Rc::new(RefCell::new(Box::new(|| {}) as Box<dyn FnMut()>)));
+                on_click_slot.with(|cell| {
+                    let mut handler = cell.borrow_mut();
+                    *handler = Box::new(on_click);
+                });
+                let on_click_handle = on_click_slot.with(|cell| cell.clone());
+
+                let id = composer.emit_node(move || {
+                    ButtonNode::new(modifier_state.clone(), on_click_handle.clone())
+                });
+
+                ROW_CHILD_STACK.with(|stack| {
+                    if let Some(current) = stack.borrow_mut().last_mut() {
+                        current.push(id);
+                    }
+                });
+
+                content();
+                id
+            })
+        })
+    }
+}
+
+use button::Button;
 
 #[track_caller]
 #[allow(non_snake_case)]
@@ -1225,21 +1369,33 @@ fn app() -> NodeId {
 
             Row(|| {
                 let click_counter = counter.clone();
-                Box(Modifier::size(Size::new(primary_width, 120.0))
-                    .then(Modifier::background(primary_color))
-                    .then(Modifier::clickable(move |point| {
-                        let new_value = click_counter.update(|value| {
+                let log_counter = counter.clone();
+                Button(
+                    Modifier::size(Size::new(primary_width, 120.0))
+                        .then(Modifier::background(primary_color))
+                        .then(Modifier::clickable(move |point| {
+                            let value = log_counter.get();
+                            println!(
+                                "button pointer up at ({:.1}, {:.1}) with counter = {} ({})",
+                                point.x,
+                                point.y,
+                                value,
+                                if value % 2 == 0 { "even" } else { "odd" }
+                            );
+                        })),
+                    move || {
+                        click_counter.update(|value| {
                             *value += 1;
-                            *value
                         });
+                        let new_value = click_counter.get();
                         println!(
-                            "clicked primary box at ({:.1}, {:.1}) -> counter = {} ({})",
-                            point.x,
-                            point.y,
+                            "button activated -> counter = {} ({})",
                             new_value,
                             if new_value % 2 == 0 { "even" } else { "odd" }
                         );
-                    })));
+                    },
+                    || {},
+                );
 
                 if is_even {
                     Box(Modifier::size(Size::new(100.0, 120.0))
