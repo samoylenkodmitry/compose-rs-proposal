@@ -69,7 +69,7 @@ fn RecursiveUi(depth: usize, horizontal: bool, index: usize) {
                         for child_idx in 0..2 {
                             let key = (depth, index, child_idx);
                             compose_core::with_key(&key, || {
-                                recursive_layout_node(depth - 1, false, index * 2 + child_idx + 1);
+                                RecursiveUi(depth - 1, false, index * 2 + child_idx + 1);
                             });
                         }
                     },
@@ -82,7 +82,7 @@ fn RecursiveUi(depth: usize, horizontal: bool, index: usize) {
                         for child_idx in 0..2 {
                             let key = (depth, index, child_idx);
                             compose_core::with_key(&key, || {
-                                recursive_layout_node(depth - 1, true, index * 2 + child_idx + 1);
+                                RecursiveUi(depth - 1, true, index * 2 + child_idx + 1);
                             });
                         }
                     },
@@ -95,8 +95,7 @@ fn RecursiveUi(depth: usize, horizontal: bool, index: usize) {
 
 ## Roadmap
 
-See [`docs/ROADMAP.md`](docs/ROADMAP.md) for detailed progress tracking, implementation status, and upcoming milestones. Also see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the original design goals and architecture.
-
+See [`docs/ROADMAP.md`](docs/ROADMAP.md) for detailed progress tracking, implementation status, and upcoming milestones.
 ## Contributing
 
 This repository is currently a design playground; issues and pull requests are welcome for discussions, experiments, and early prototypes that move the Jetpack Compose–style experience forward in Rust.
