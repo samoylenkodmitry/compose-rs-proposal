@@ -225,15 +225,14 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     // For impl Trait, always mark as changed (can't track)
                     quote! { __changed = true; }
                 } else if is_fn_param(ty, &generics) {
-                    // Fn-like parameters: use ParamSlot (no PartialEq/Clone required)
-                    // Store by move, always mark as changed
+                    // Fn-like parameters: store in a CallbackHolder and always mark as changed
                     quote! {
                         let #slot_ident = __composer
-                            .use_value_slot(|| compose_core::ParamSlot::<#ty>::default());
+                            .use_value_slot(|| compose_core::CallbackHolder::new());
                         {
-                            let slot = __composer
-                                .read_slot_value::<compose_core::ParamSlot<#ty>>(#slot_ident);
-                            slot.set(#ident);
+                            let holder = __composer
+                                .read_slot_value::<compose_core::CallbackHolder>(#slot_ident);
+                            holder.update(#ident);
                         }
                         __changed = true;
                     }
@@ -263,11 +262,11 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     // impl Trait: no rebind needed, already has original name
                     quote! {}
                 } else if is_fn_param(ty, &generics) {
-                    // Fn-like param: rebind as &mut from slot
+                    // Fn-like param: rebind as a forwarder from the CallbackHolder
                     quote! {
                         let #pat = __composer
-                            .read_slot_value::<compose_core::ParamSlot<#ty>>(#slot_ident)
-                            .get_mut();
+                            .read_slot_value::<compose_core::CallbackHolder>(#slot_ident)
+                            .clone_rc();
                     }
                 } else {
                     // Regular rebind
@@ -288,11 +287,11 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     // impl Trait: can't pass through recompose callback
                     None
                 } else if is_fn_param(ty, &generics) {
-                    // Fn-like params: take from ParamSlot (will be set again by param_setup)
+                    // Fn-like params: hand out a forwarder closure from the CallbackHolder
                     Some(quote! {
                         __composer
-                            .read_slot_value::<compose_core::ParamSlot<#ty>>(#slot_ident)
-                            .take()
+                            .read_slot_value::<compose_core::CallbackHolder>(#slot_ident)
+                            .clone_rc()
                     })
                 } else {
                     // Regular params: clone from ParamState
