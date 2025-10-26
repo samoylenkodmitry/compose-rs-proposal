@@ -1,7 +1,10 @@
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::fmt;
+use std::hash::{Hash, Hasher};
+use std::panic::Location;
 use std::rc::Rc;
+use std::thread_local;
 
 // === Core key/node identifiers ===
 
@@ -159,7 +162,7 @@ impl StdRuntime {
 trait Node {
     fn mount(&mut self) {}
     fn update(&mut self) {}
-    fn layout(&self, constraints: LayoutConstraints) -> LayoutResult;
+    fn layout(&self, applier: &MemoryApplier, constraints: LayoutConstraints) -> LayoutComputation;
 }
 
 struct MemoryApplier {
@@ -185,6 +188,10 @@ impl MemoryApplier {
         self.nodes.get_mut(id)?.as_deref_mut()
     }
 
+    fn get(&self, id: NodeId) -> Option<&(dyn Node + 'static)> {
+        self.nodes.get(id)?.as_deref()
+    }
+
     fn set_runtime_handle(&mut self, handle: RuntimeHandle) {
         let stamp = handle.stamp();
         self.runtime = Some(handle);
@@ -195,22 +202,35 @@ impl MemoryApplier {
         self.runtime = None;
     }
 
-    fn compute_layout(&self, root: NodeId, viewport: Size) -> Option<LayoutTree> {
-        let node = self.nodes.get(root)?.as_ref()?;
-        let layout = node.layout(LayoutConstraints {
-            max_width: viewport.width,
-            max_height: viewport.height,
-        });
-        Some(LayoutTree {
-            root: LayoutNodeSnapshot {
-                rect: Rect {
-                    x: 0.0,
-                    y: 0.0,
-                    width: layout.size.width,
-                    height: layout.size.height,
-                },
-                color: layout.color,
+    fn layout_node(
+        &self,
+        node: NodeId,
+        constraints: LayoutConstraints,
+    ) -> Option<LayoutNodeSnapshot> {
+        let node = self.get(node)?;
+        let computation = node.layout(self, constraints);
+        Some(LayoutNodeSnapshot {
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: computation.size.width,
+                height: computation.size.height,
             },
+            color: computation.color,
+            children: computation.children,
+        })
+    }
+
+    fn compute_layout(&self, root: NodeId, viewport: Size) -> Option<LayoutTree> {
+        let root_snapshot = self.layout_node(
+            root,
+            LayoutConstraints {
+                max_width: viewport.width,
+                max_height: viewport.height,
+            },
+        )?;
+        Some(LayoutTree {
+            root: root_snapshot,
         })
     }
 
@@ -223,6 +243,43 @@ impl MemoryApplier {
 
 type Command = Box<dyn FnOnce(&mut MemoryApplier)>;
 type CommandQueue = VecDeque<Command>;
+
+thread_local! {
+    static COMPOSER_STACK: RefCell<Vec<*mut ()>> = const { RefCell::new(Vec::new()) };
+}
+
+struct ComposerScopeGuard;
+
+impl Drop for ComposerScopeGuard {
+    fn drop(&mut self) {
+        COMPOSER_STACK.with(|stack| {
+            stack.borrow_mut().pop();
+        });
+    }
+}
+
+fn enter_composer_scope(composer: &mut Composer<'_>) -> ComposerScopeGuard {
+    COMPOSER_STACK.with(|stack| {
+        stack
+            .borrow_mut()
+            .push(composer as *mut Composer<'_> as *mut ());
+    });
+    ComposerScopeGuard
+}
+
+fn with_current_composer<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
+    COMPOSER_STACK.with(|stack| {
+        let ptr = *stack
+            .borrow()
+            .last()
+            .expect("with_current_composer: no active composer");
+        let composer = ptr as *mut Composer<'_>;
+        // SAFETY: the pointer was pushed from a live mutable reference and remains valid
+        // until the corresponding guard is dropped.
+        let composer = unsafe { &mut *composer };
+        f(composer)
+    })
+}
 
 struct Composer<'a> {
     slots: &'a mut SlotTable,
@@ -241,7 +298,9 @@ impl<'a> Composer<'a> {
 
     fn with_group<R>(&mut self, key: Key, f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
         self.slots.start(key);
+        let guard = enter_composer_scope(self);
         let result = f(self);
+        drop(guard);
         self.slots.end();
         result
     }
@@ -344,6 +403,7 @@ struct Color(pub f32, pub f32, pub f32, pub f32);
 
 impl Color {
     const RED: Color = Color(1.0, 0.0, 0.0, 1.0);
+    const BLUE: Color = Color(0.0, 0.0, 1.0, 1.0);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -401,26 +461,65 @@ impl BoxNode {
 }
 
 impl Node for BoxNode {
-    fn layout(&self, constraints: LayoutConstraints) -> LayoutResult {
+    fn layout(
+        &self,
+        _applier: &MemoryApplier,
+        constraints: LayoutConstraints,
+    ) -> LayoutComputation {
         let size = self
             .modifier
             .size
             .unwrap_or_else(|| Size::new(constraints.max_width, constraints.max_height));
-        LayoutResult {
+        LayoutComputation {
             size,
             color: self.modifier.background,
+            children: Vec::new(),
         }
     }
 }
 
+struct RowNode {
+    children: Vec<NodeId>,
+}
+
+impl RowNode {
+    fn new(children: Vec<NodeId>) -> Self {
+        Self { children }
+    }
+}
+
+impl Node for RowNode {
+    fn layout(&self, applier: &MemoryApplier, constraints: LayoutConstraints) -> LayoutComputation {
+        let mut cursor_x: f32 = 0.0;
+        let mut max_height: f32 = 0.0;
+        let mut children = Vec::new();
+        for child_id in &self.children {
+            if let Some(mut snapshot) = applier.layout_node(*child_id, constraints) {
+                snapshot.rect.x = cursor_x;
+                snapshot.rect.y = 0.0;
+                cursor_x += snapshot.rect.width;
+                max_height = max_height.max(snapshot.rect.height);
+                children.push(snapshot);
+            }
+        }
+        LayoutComputation {
+            size: Size::new(cursor_x, max_height),
+            color: None,
+            children,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 struct LayoutConstraints {
     max_width: f32,
     max_height: f32,
 }
 
-struct LayoutResult {
+struct LayoutComputation {
     size: Size,
     color: Option<Color>,
+    children: Vec<LayoutNodeSnapshot>,
 }
 
 #[derive(Clone, Copy)]
@@ -441,9 +540,11 @@ impl fmt::Display for Rect {
     }
 }
 
+#[derive(Clone)]
 struct LayoutNodeSnapshot {
     rect: Rect,
     color: Option<Color>,
+    children: Vec<LayoutNodeSnapshot>,
 }
 
 struct LayoutTree {
@@ -452,13 +553,60 @@ struct LayoutTree {
 
 impl LayoutTree {
     fn describe(&self) -> String {
-        let color = self
-            .root
-            .color
-            .map(|c| format!("rgba({:.1}, {:.1}, {:.1}, {:.1})", c.0, c.1, c.2, c.3))
-            .unwrap_or_else(|| "none".to_string());
-        format!("root -> {} color: {}", self.root.rect, color)
+        fn describe_node(node: &LayoutNodeSnapshot, depth: usize, lines: &mut Vec<String>) {
+            let indent = "  ".repeat(depth);
+            let color = node
+                .color
+                .map(|c| format!("rgba({:.1}, {:.1}, {:.1}, {:.1})", c.0, c.1, c.2, c.3))
+                .unwrap_or_else(|| "none".to_string());
+            lines.push(format!("{}{} color: {}", indent, node.rect, color));
+            for child in &node.children {
+                describe_node(child, depth + 1, lines);
+            }
+        }
+
+        let mut lines = Vec::new();
+        describe_node(&self.root, 0, &mut lines);
+        lines.join("\n")
     }
+}
+
+thread_local! {
+    static ROW_CHILD_STACK: RefCell<Vec<Vec<NodeId>>> = const { RefCell::new(Vec::new()) };
+}
+
+#[track_caller]
+#[allow(non_snake_case)]
+fn Row(content: impl FnOnce()) -> NodeId {
+    let location = Location::caller();
+    let key = location_key(location.file(), location.line(), location.column());
+    with_current_composer(|composer| {
+        composer.with_group(key, |composer| {
+            ROW_CHILD_STACK.with(|stack| stack.borrow_mut().push(Vec::new()));
+            content();
+            let children =
+                ROW_CHILD_STACK.with(|stack| stack.borrow_mut().pop().unwrap_or_default());
+            composer.emit_node(move || RowNode::new(children))
+        })
+    })
+}
+
+#[track_caller]
+#[allow(non_snake_case)]
+fn Box(modifier: Modifier) -> NodeId {
+    let location = Location::caller();
+    let key = location_key(location.file(), location.line(), location.column());
+    with_current_composer(|composer| {
+        composer.with_group(key, |composer| {
+            let id = composer.emit_node(move || BoxNode::new(modifier));
+            ROW_CHILD_STACK.with(|stack| {
+                if let Some(current) = stack.borrow_mut().last_mut() {
+                    current.push(id);
+                }
+            });
+            id
+        })
+    })
 }
 
 // === Render scene traits extracted from compose-render/common ===
@@ -601,10 +749,23 @@ impl Renderer for ConsoleRenderer {
         layout_tree: &LayoutTree,
         _viewport: Size,
     ) -> Result<(), Self::Error> {
-        self.scene.clear();
-        if let Some(color) = layout_tree.root.color {
-            self.scene.push_rect(layout_tree.root.rect, color);
+        fn visit(node: &LayoutNodeSnapshot, origin: (f32, f32), scene: &mut ConsoleScene) {
+            let rect = Rect {
+                x: origin.0 + node.rect.x,
+                y: origin.1 + node.rect.y,
+                width: node.rect.width,
+                height: node.rect.height,
+            };
+            if let Some(color) = node.color {
+                scene.push_rect(rect, color);
+            }
+            for child in &node.children {
+                visit(child, (rect.x, rect.y), scene);
+            }
         }
+
+        self.scene.clear();
+        visit(&layout_tree.root, (0.0, 0.0), &mut self.scene);
         Ok(())
     }
 }
@@ -787,21 +948,25 @@ where
 }
 
 fn default_root_key() -> Key {
-    use std::hash::{Hash, Hasher};
+    location_key(file!(), line!(), column!())
+}
+
+fn location_key(file: &str, line: u32, column: u32) -> Key {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    file!().hash(&mut hasher);
-    line!().hash(&mut hasher);
-    column!().hash(&mut hasher);
+    file.hash(&mut hasher);
+    line.hash(&mut hasher);
+    column.hash(&mut hasher);
     hasher.finish()
 }
 
 // === Application content building a single red box ===
 
 fn app(composer: &mut Composer<'_>) -> NodeId {
-    composer.with_group(0xDEADBEEF, |composer| {
-        let modifier =
-            Modifier::size(Size::new(180.0, 120.0)).then(Modifier::background(Color::RED));
-        composer.emit_node(|| BoxNode::new(modifier))
+    composer.with_group(location_key(file!(), line!(), column!()), |_composer| {
+        Row(|| {
+            Box(Modifier::size(Size::new(120.0, 120.0)).then(Modifier::background(Color::RED)));
+            Box(Modifier::size(Size::new(120.0, 120.0)).then(Modifier::background(Color::BLUE)));
+        })
     })
 }
 
