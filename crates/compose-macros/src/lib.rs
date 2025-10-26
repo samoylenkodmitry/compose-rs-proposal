@@ -133,37 +133,70 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     let mut func = parse_macro_input!(item as ItemFn);
-    let mut param_info = Vec::new();
+
+    struct ParamInfo {
+        ident: Ident,
+        pat: Box<Pat>,
+        ty: Type,
+        pat_is_mut: bool,
+        is_impl_trait: bool,
+    }
+
+    let mut param_info: Vec<ParamInfo> = Vec::new();
 
     for (index, arg) in func.sig.inputs.iter_mut().enumerate() {
         if let FnArg::Typed(PatType { pat, ty, .. }) = arg {
-            // For impl Trait types, we can't create intermediate bindings
-            // Keep the original pattern and use it directly
+            let pat_is_mut = matches!(
+                pat.as_ref(),
+                Pat::Ident(pat_ident) if pat_ident.mutability.is_some()
+            );
             let is_impl_trait = matches!(**ty, Type::ImplTrait(_));
 
             if is_impl_trait {
-                // Keep original pattern for impl Trait params
                 let original_pat: Box<Pat> = pat.clone();
                 if let Pat::Ident(pat_ident) = &**pat {
-                    param_info.push((pat_ident.ident.clone(), original_pat, (*ty).clone()));
+                    param_info.push(ParamInfo {
+                        ident: pat_ident.ident.clone(),
+                        pat: original_pat,
+                        ty: ty.as_ref().clone(),
+                        pat_is_mut,
+                        is_impl_trait: true,
+                    });
+                } else {
+                    param_info.push(ParamInfo {
+                        ident: Ident::new(&format!("__arg{}", index), Span::call_site()),
+                        pat: original_pat,
+                        ty: ty.as_ref().clone(),
+                        pat_is_mut,
+                        is_impl_trait: true,
+                    });
                 }
             } else {
-                // Rename other params to __argN
                 let ident = Ident::new(&format!("__arg{}", index), Span::call_site());
                 let original_pat: Box<Pat> = pat.clone();
                 *pat = Box::new(syn::parse_quote! { #ident });
-                param_info.push((ident, original_pat, (*ty).clone()));
+                param_info.push(ParamInfo {
+                    ident,
+                    pat: original_pat,
+                    ty: ty.as_ref().clone(),
+                    pat_is_mut,
+                    is_impl_trait: false,
+                });
             }
         }
     }
 
     let original_block = func.block.clone();
+    let helper_block = original_block.clone();
+    let recompose_block = original_block.clone();
     let key_expr = quote! { compose_core::location_key(file!(), line!(), column!()) };
 
     // Rebinds will be generated later in the helper_body context where we have access to slots
     let rebinds_for_no_skip: Vec<_> = param_info
         .iter()
-        .map(|(ident, pat, _)| {
+        .map(|info| {
+            let ident = &info.ident;
+            let pat = &info.pat;
             quote! { let #pat = #ident; }
         })
         .collect();
@@ -181,13 +214,17 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let _helper_inputs: Vec<TokenStream2> = param_info
         .iter()
-        .map(|(ident, _pat, ty)| quote! { #ident: #ty })
+        .map(|info| {
+            let ident = &info.ident;
+            let ty = &info.ty;
+            quote! { #ident: #ty }
+        })
         .collect();
 
     // Check if any params are impl Trait - if so, can't use skip optimization
     let has_impl_trait = param_info
         .iter()
-        .any(|(_, _, ty)| matches!(**ty, Type::ImplTrait(_)));
+        .any(|info| matches!(info.ty, Type::ImplTrait(_)));
 
     if enable_skip && !has_impl_trait {
         let helper_ident = Ident::new(
@@ -200,11 +237,12 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
         // Helper function signature: all params except impl Trait (which can't be named)
         let helper_inputs: Vec<TokenStream2> = param_info
             .iter()
-            .filter_map(|(ident, _pat, ty)| {
-                let is_impl_trait = matches!(**ty, Type::ImplTrait(_));
-                if is_impl_trait {
+            .filter_map(|info| {
+                if info.is_impl_trait {
                     None
                 } else {
+                    let ident = &info.ident;
+                    let ty = &info.ty;
                     Some(quote! { #ident: #ty })
                 }
             })
@@ -218,14 +256,11 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
         let param_setup: Vec<TokenStream2> = param_info
             .iter()
             .zip(param_state_slots.iter())
-            .map(|((ident, _pat, ty), slot_ident)| {
-                // Skip impl Trait types - can't create intermediate bindings for them
-                let is_impl_trait = matches!(**ty, Type::ImplTrait(_));
-                if is_impl_trait {
-                    // For impl Trait, always mark as changed (can't track)
+            .map(|(info, slot_ident)| {
+                if info.is_impl_trait {
                     quote! { __changed = true; }
-                } else if is_fn_param(ty, &generics) {
-                    // Fn-like parameters: store in a CallbackHolder and always mark as changed
+                } else if is_fn_param(&info.ty, &generics) {
+                    let ident = &info.ident;
                     quote! {
                         let #slot_ident = __composer
                             .use_value_slot(|| compose_core::CallbackHolder::new());
@@ -237,7 +272,8 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
                         __changed = true;
                     }
                 } else {
-                    // Regular parameters: use ParamState with PartialEq comparison
+                    let ident = &info.ident;
+                    let ty = &info.ty;
                     quote! {
                         let #slot_ident = __composer
                             .use_value_slot(|| compose_core::ParamState::<#ty>::default());
@@ -252,24 +288,33 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
             })
             .collect();
 
-        // Generate rebinds: regular params get normal rebinds, Fn params get rebound from slots
         let rebinds: Vec<TokenStream2> = param_info
             .iter()
             .zip(param_state_slots.iter())
-            .map(|((ident, pat, ty), slot_ident)| {
-                let is_impl_trait = matches!(**ty, Type::ImplTrait(_));
-                if is_impl_trait {
-                    // impl Trait: no rebind needed, already has original name
+            .map(|(info, slot_ident)| {
+                if info.is_impl_trait {
                     quote! {}
-                } else if is_fn_param(ty, &generics) {
-                    // Fn-like param: rebind as a forwarder from the CallbackHolder
-                    quote! {
-                        let #pat = __composer
-                            .read_slot_value::<compose_core::CallbackHolder>(#slot_ident)
-                            .clone_rc();
+                } else if is_fn_param(&info.ty, &generics) {
+                    let pat = &info.pat;
+                    let can_add_mut = matches!(pat.as_ref(), Pat::Ident(_));
+                    if can_add_mut && !info.pat_is_mut {
+                        quote! {
+                            #[allow(unused_mut)]
+                            let mut #pat = __composer
+                                .read_slot_value::<compose_core::CallbackHolder>(#slot_ident)
+                                .clone_rc();
+                        }
+                    } else {
+                        quote! {
+                            #[allow(unused_mut)]
+                            let #pat = __composer
+                                .read_slot_value::<compose_core::CallbackHolder>(#slot_ident)
+                                .clone_rc();
+                        }
                     }
                 } else {
-                    // Regular rebind
+                    let pat = &info.pat;
+                    let ident = &info.ident;
                     quote! {
                         let #pat = #ident;
                     }
@@ -277,33 +322,67 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
             })
             .collect();
 
-        // Recompose args: for Fn params take from ParamSlot, for regular params clone from ParamState
-        let recompose_args: Vec<TokenStream2> = param_info
+        let rebinds_for_recompose: Vec<TokenStream2> = param_info
             .iter()
             .zip(param_state_slots.iter())
-            .filter_map(|((_, _, ty), slot_ident)| {
-                let is_impl_trait = matches!(**ty, Type::ImplTrait(_));
-                if is_impl_trait {
-                    // impl Trait: can't pass through recompose callback
-                    None
-                } else if is_fn_param(ty, &generics) {
-                    // Fn-like params: hand out a forwarder closure from the CallbackHolder
-                    Some(quote! {
-                        __composer
-                            .read_slot_value::<compose_core::CallbackHolder>(#slot_ident)
-                            .clone_rc()
-                    })
+            .map(|(info, slot_ident)| {
+                if info.is_impl_trait {
+                    quote! {}
+                } else if is_fn_param(&info.ty, &generics) {
+                    let pat = &info.pat;
+                    let can_add_mut = matches!(pat.as_ref(), Pat::Ident(_));
+                    if can_add_mut && !info.pat_is_mut {
+                        quote! {
+                            #[allow(unused_mut)]
+                            let mut #pat = __composer
+                                .read_slot_value::<compose_core::CallbackHolder>(#slot_ident)
+                                .clone_rc();
+                        }
+                    } else {
+                        quote! {
+                            #[allow(unused_mut)]
+                            let #pat = __composer
+                                .read_slot_value::<compose_core::CallbackHolder>(#slot_ident)
+                                .clone_rc();
+                        }
+                    }
                 } else {
-                    // Regular params: clone from ParamState
-                    Some(quote! {
-                        __composer
+                    let pat = &info.pat;
+                    let ty = &info.ty;
+                    quote! {
+                        let #pat = __composer
                             .read_slot_value::<compose_core::ParamState<#ty>>(#slot_ident)
                             .value()
-                            .expect("composable parameter missing for recomposition")
-                    })
+                            .expect("composable parameter missing for recomposition");
+                    }
                 }
             })
             .collect();
+
+        let recompose_fn_ident = Ident::new(
+            &format!("__compose_recompose_{}", func.sig.ident),
+            Span::call_site(),
+        );
+
+        let recompose_call_args: Vec<TokenStream2> = param_state_slots
+            .iter()
+            .map(|slot_ident| quote! { #slot_ident })
+            .chain(std::iter::once(quote! { __result_slot_index }))
+            .collect();
+
+        let recompose_setter = quote! {
+            {
+                let __impl_fn = #recompose_fn_ident;
+                __composer.set_recompose_callback(move |
+                    __composer: &mut compose_core::Composer<'_>|
+                {
+                    __impl_fn(
+                        __composer
+                        #(, #recompose_call_args)*
+                    );
+                });
+            }
+        };
 
         let helper_body = quote! {
             let __current_scope = __composer
@@ -329,25 +408,45 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
             let __value: #return_ty = {
                 #(#rebinds)*
-                #original_block
+                #helper_block
             };
             __composer
                 .read_slot_value_mut::<compose_core::ReturnSlot<#return_ty>>(
                     __result_slot_index,
                 )
                 .store(__value.clone());
-            {
-                let __impl_fn = #helper_ident;
-                __composer.set_recompose_callback(move |
-                    __composer: &mut compose_core::Composer<'_>|
-                {
-                    __impl_fn(
-                        __composer
-                        #(, #recompose_args)*
-                    );
-                });
-            }
+            #recompose_setter
             __value
+        };
+
+        let recompose_fn_inputs: Vec<TokenStream2> = param_state_slots
+            .iter()
+            .map(|slot_ident| quote! { #slot_ident: usize })
+            .chain(std::iter::once(quote! { __result_slot_index: usize }))
+            .collect();
+
+        let recompose_fn_body = quote! {
+            #(#rebinds_for_recompose)*
+            let __value: #return_ty = {
+                #recompose_block
+            };
+            __composer
+                .read_slot_value_mut::<compose_core::ReturnSlot<#return_ty>>(
+                    __result_slot_index,
+                )
+                .store(__value.clone());
+            #recompose_setter
+            __value
+        };
+
+        let recompose_fn = quote! {
+            #[allow(non_snake_case)]
+            fn #recompose_fn_ident #impl_generics (
+                __composer: &mut compose_core::Composer<'_>,
+                #( #recompose_fn_inputs ),*
+            ) -> #return_ty #where_clause {
+                #recompose_fn_body
+            }
         };
 
         let helper_fn = quote! {
@@ -363,11 +462,11 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
         // Wrapper args: pass all params except impl Trait on initial call
         let wrapper_args: Vec<TokenStream2> = param_info
             .iter()
-            .filter_map(|(ident, _pat, ty)| {
-                let is_impl_trait = matches!(**ty, Type::ImplTrait(_));
-                if is_impl_trait {
+            .filter_map(|info| {
+                if info.is_impl_trait {
                     None
                 } else {
+                    let ident = &info.ident;
                     Some(quote! { #ident })
                 }
             })
@@ -382,6 +481,7 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
         });
         func.block = Box::new(syn::parse2(wrapped).expect("failed to build block"));
         TokenStream::from(quote! {
+            #recompose_fn
             #helper_fn
             #func
         })
