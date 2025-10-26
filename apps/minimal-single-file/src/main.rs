@@ -296,11 +296,16 @@ impl<'a> Composer<'a> {
         }
     }
 
-    fn with_group<R>(&mut self, key: Key, f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
-        self.slots.start(key);
+    fn install<R>(&mut self, f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
         let guard = enter_composer_scope(self);
         let result = f(self);
         drop(guard);
+        result
+    }
+
+    fn with_group<R>(&mut self, key: Key, f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
+        self.slots.start(key);
+        let result = f(self);
         self.slots.end();
         result
     }
@@ -352,11 +357,11 @@ impl Composition {
     fn render(
         &mut self,
         root_key: Key,
-        mut content: impl FnMut(&mut Composer<'_>) -> NodeId,
+        mut content: impl FnMut() -> NodeId,
     ) -> Result<(), &'static str> {
         self.slots.reset();
         let mut composer = Composer::new(&mut self.slots, &mut self.applier);
-        let root = composer.with_group(root_key, |composer| content(composer));
+        let root = composer.install(|composer| composer.with_group(root_key, |_| content()));
         let mut commands = composer.take_commands();
         while let Some(command) = commands.pop_front() {
             command(&mut self.applier);
@@ -793,15 +798,12 @@ where
     R: Renderer,
     R::Scene: SceneDebug,
 {
-    fn new(
-        mut renderer: R,
-        root_key: Key,
-        mut content: impl FnMut(&mut Composer<'_>) -> NodeId,
-    ) -> Self {
+    fn new(mut renderer: R, root_key: Key, content: impl FnMut() -> NodeId + 'static) -> Self {
         let runtime = StdRuntime::new();
         let composition_runtime = runtime.runtime();
         let mut composition = Composition::with_runtime(MemoryApplier::new(), composition_runtime);
-        if let Err(err) = composition.render(root_key, |composer| content(composer)) {
+        let mut build = content;
+        if let Err(err) = composition.render(root_key, &mut build) {
             eprintln!("initial render failed: {err}");
         }
         renderer.scene_mut().clear();
@@ -961,11 +963,19 @@ fn location_key(file: &str, line: u32, column: u32) -> Key {
 
 // === Application content building a single red box ===
 
-fn app(composer: &mut Composer<'_>) -> NodeId {
-    composer.with_group(location_key(file!(), line!(), column!()), |_composer| {
-        Row(|| {
-            Box(Modifier::size(Size::new(120.0, 120.0)).then(Modifier::background(Color::RED)));
-            Box(Modifier::size(Size::new(120.0, 120.0)).then(Modifier::background(Color::BLUE)));
+fn app() -> NodeId {
+    with_current_composer(|composer| {
+        composer.with_group(location_key(file!(), line!(), column!()), |_| {
+            Row(|| {
+                Box(
+                    Modifier::size(Size::new(120.0, 120.0))
+                        .then(Modifier::background(Color::RED)),
+                );
+                Box(
+                    Modifier::size(Size::new(120.0, 120.0))
+                        .then(Modifier::background(Color::BLUE)),
+                );
+            })
         })
     })
 }
