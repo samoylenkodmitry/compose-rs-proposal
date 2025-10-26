@@ -158,10 +158,6 @@ impl Runtime {
         }
     }
 
-    fn set_needs_frame(&self, needs: bool) {
-        self.inner.needs_frame.set(needs);
-    }
-
     fn take_frame_request(&self) -> bool {
         self.inner.needs_frame.replace(false)
     }
@@ -468,7 +464,6 @@ impl Composition {
             }
         }
         self.root = Some(root);
-        self.runtime.set_needs_frame(true);
         self.needs_frame = true;
         Ok(())
     }
