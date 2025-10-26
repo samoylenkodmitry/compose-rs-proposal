@@ -302,11 +302,28 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
         let param_state_slots: Vec<Ident> = (0..param_info.len())
             .map(|index| Ident::new(&format!("__param_state_slot{}", index), Span::call_site()))
             .collect();
+        let fn_param_ptrs: Vec<Option<Ident>> = param_info
+            .iter()
+            .enumerate()
+            .map(|(index, (_, _, ty))| {
+                if matches!(**ty, Type::ImplTrait(_)) {
+                    None
+                } else if is_fn_param(ty, &generics) {
+                    Some(Ident::new(
+                        &format!("__fn_param_ptr{}", index),
+                        Span::call_site(),
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         let param_setup: Vec<TokenStream2> = param_info
             .iter()
-            .zip(param_state_slots.iter())
-            .map(|((ident, _pat, ty), slot_ident)| {
+            .enumerate()
+            .map(|(index, (ident, _pat, ty))| {
+                let slot_ident = &param_state_slots[index];
                 // Skip impl Trait types - can't create intermediate bindings for them
                 let is_impl_trait = matches!(**ty, Type::ImplTrait(_));
                 if is_impl_trait {
@@ -315,6 +332,9 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 } else if is_fn_param(ty, &generics) {
                     // Fn-like parameters: use ParamSlot (no PartialEq/Clone required)
                     // Store by move, always mark as changed
+                    let ptr_ident = fn_param_ptrs[index]
+                        .as_ref()
+                        .expect("missing fn param pointer ident");
                     quote! {
                         let #slot_ident = __composer
                             .use_value_slot(|| compose_core::ParamSlot::<#ty>::default());
@@ -324,6 +344,11 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
                                 slot.set(#ident);
                             },
                         );
+                        let #ptr_ident = __composer
+                            .with_slot_value_mut::<compose_core::ParamSlot<#ty>, _>(
+                                #slot_ident,
+                                |slot| slot.get_mut() as *mut #ty,
+                            );
                         __changed = true;
                     }
                 } else {
@@ -345,10 +370,9 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
         // Generate rebinds: regular params get normal rebinds, Fn params get rebound from slots
         let rebinds: Vec<TokenStream2> = param_info
             .iter()
-            .zip(param_state_slots.iter())
-            .map(|((ident, pat, ty), slot_ident)| {
-                let is_impl_trait = matches!(**ty, Type::ImplTrait(_));
-                if is_impl_trait {
+            .enumerate()
+            .map(|(index, (ident, pat, ty))| {
+                if matches!(**ty, Type::ImplTrait(_)) {
                     // impl Trait: no rebind needed, already has original name
                     quote! {}
                 } else if is_fn_param(ty, &generics) {
@@ -366,18 +390,20 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     } else {
                         quote! { #(#arg_names),* }
                     };
+                    let ptr_ident = fn_param_ptrs[index]
+                        .as_ref()
+                        .expect("missing fn param pointer ident");
                     quote! {
                         let #pat = {
-                            let __handle = __composer.clone();
-                            let __slot_index = #slot_ident;
+                            let __fn_ptr = #ptr_ident;
                             move #closure_args {
-                                __handle.with_slot_value_mut::<compose_core::ParamSlot<#ty>, _>(
-                                    __slot_index,
-                                    |slot| {
-                                        let __fn = slot.get_mut();
-                                        (__fn)(#call_args)
-                                    },
-                                )
+                                // SAFETY: `__fn_ptr` points at the callback currently stored in
+                                // this node's parameter slot. The runtime guarantees the slot
+                                // storage remains valid for the lifetime of the node.
+                                unsafe {
+                                    let __fn_ref: &mut #ty = &mut *__fn_ptr;
+                                    (__fn_ref)(#call_args)
+                                }
                             }
                         };
                     }
