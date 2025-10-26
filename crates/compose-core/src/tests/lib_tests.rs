@@ -149,6 +149,24 @@ fn subcompose_reuses_nodes_across_calls() {
 }
 
 #[test]
+fn remember_init_can_call_use_state() {
+    let (handle, _runtime) = runtime_handle();
+    let mut slots = SlotTable::new();
+    let mut applier = MemoryApplier::new();
+    let composer = ComposerHandle::new_from_parts(&mut slots, &mut applier, handle, None);
+
+    composer.install(|composer| {
+        let key = location_key(file!(), line!(), column!());
+        composer.with_group(key, |composer| {
+            let _owned = composer.remember(|| {
+                let _state = composer.use_state(|| 0u32);
+                42u32
+            });
+        });
+    });
+}
+
+#[test]
 fn mutable_state_exposes_pending_value_while_borrowed() {
     let (runtime_handle, _runtime) = runtime_handle();
     let state = MutableState::with_runtime(0, runtime_handle);

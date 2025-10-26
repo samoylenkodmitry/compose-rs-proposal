@@ -1369,14 +1369,6 @@ impl ComposerState {
         self.slots_mut().end();
     }
 
-    fn remember<T: 'static>(&mut self, init: impl FnOnce() -> T) -> Owned<T> {
-        self.slots_mut().remember(init)
-    }
-
-    fn use_value_slot<T: 'static>(&mut self, init: impl FnOnce() -> T) -> usize {
-        self.slots_mut().use_value_slot(init)
-    }
-
     fn skip_current_group(&mut self) {
         let nodes = self.slots().node_ids_in_current_group();
         self.slots_mut().skip_current();
@@ -1416,14 +1408,6 @@ impl ComposerState {
             }
         }
         local.default_value()
-    }
-
-    fn use_state<T: Clone + 'static>(&mut self, init: impl FnOnce() -> T) -> MutableState<T> {
-        let runtime = self.runtime_handle();
-        let state = self
-            .slots_mut()
-            .remember(|| MutableState::with_runtime(init(), runtime.clone()));
-        state.with(|state| state.clone())
     }
 
     fn emit_node<N: Node + 'static>(&mut self, init: impl FnOnce() -> N) -> NodeId {
@@ -1466,22 +1450,6 @@ impl ComposerState {
         } else {
             self.root = Some(id);
         }
-    }
-
-    fn with_node_mut<N: Node + 'static, R>(
-        &mut self,
-        id: NodeId,
-        f: impl FnOnce(&mut N) -> R,
-    ) -> Result<R, NodeError> {
-        let node = self.applier_mut().get_mut(id)?;
-        let typed = node
-            .as_any_mut()
-            .downcast_mut::<N>()
-            .ok_or(NodeError::TypeMismatch {
-                id,
-                expected: std::any::type_name::<N>(),
-            })?;
-        Ok(f(typed))
     }
 
     fn push_parent(&mut self, id: NodeId) {
@@ -1588,6 +1556,14 @@ impl ComposerState {
 }
 
 impl ComposerHandle {
+    fn slots_ptr(&self) -> *mut SlotTable {
+        self.with_state(|state| state.slots)
+    }
+
+    fn applier_ptr(&self) -> *mut (dyn Applier + 'static) {
+        self.with_state(|state| state.applier)
+    }
+
     pub fn new_from_parts(
         slots: &mut SlotTable,
         applier: &mut (dyn Applier + 'static),
@@ -1673,13 +1649,17 @@ impl ComposerHandle {
     }
 
     pub fn remember<T: 'static>(&self, init: impl FnOnce() -> T) -> Owned<T> {
-        self.with_state_mut(|state| state.remember(init))
+        let slots = self.slots_ptr();
+        unsafe { (&mut *slots).remember(init) }
     }
 
     pub fn use_value_slot<T: 'static>(&self, init: impl FnOnce() -> T) -> usize {
-        self.with_state_mut(|state| state.use_value_slot(init))
+        let slots = self.slots_ptr();
+        unsafe { (&mut *slots).use_value_slot(init) }
     }
 
+    /// The provided closure must not perform operations that mutate or reallocate the slot table
+    /// (e.g. `remember`, `use_value_slot`).
     pub fn with_slot_value<T: 'static, R>(&self, index: usize, f: impl FnOnce(&T) -> R) -> R {
         let ptr = {
             let state = self.inner.borrow();
@@ -1689,6 +1669,8 @@ impl ComposerHandle {
         unsafe { f(&*ptr) }
     }
 
+    /// The provided closure must not perform operations that mutate or reallocate the slot table
+    /// (e.g. `remember`, `use_value_slot`).
     pub fn with_slot_value_mut<T: 'static, R>(
         &self,
         index: usize,
@@ -1817,7 +1799,12 @@ impl ComposerHandle {
     }
 
     pub fn use_state<T: Clone + 'static>(&self, init: impl FnOnce() -> T) -> MutableState<T> {
-        self.with_state_mut(|state| state.use_state(init))
+        let runtime = self.with_state(|state| state.runtime_handle());
+        let slots = self.slots_ptr();
+        let state = unsafe {
+            (&mut *slots).remember(|| MutableState::with_runtime(init(), runtime.clone()))
+        };
+        state.with(|state| state.clone())
     }
 
     pub fn emit_node<N: Node + 'static>(&self, init: impl FnOnce() -> N) -> NodeId {
@@ -1829,7 +1816,18 @@ impl ComposerHandle {
         id: NodeId,
         f: impl FnOnce(&mut N) -> R,
     ) -> Result<R, NodeError> {
-        self.with_state_mut(|state| state.with_node_mut(id, f))
+        let applier = self.applier_ptr();
+        unsafe {
+            let node = (&mut *applier).get_mut(id)?;
+            let typed = node
+                .as_any_mut()
+                .downcast_mut::<N>()
+                .ok_or(NodeError::TypeMismatch {
+                    id,
+                    expected: std::any::type_name::<N>(),
+                })?;
+            Ok(f(typed))
+        }
     }
 
     pub fn push_parent(&self, id: NodeId) {
