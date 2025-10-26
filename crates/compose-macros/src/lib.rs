@@ -232,7 +232,8 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
             Span::call_site(),
         );
         let generics = func.sig.generics.clone();
-        let (impl_generics, _ty_generics, where_clause) = generics.split_for_impl();
+        let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+        let ty_generics_turbofish = ty_generics.as_turbofish();
 
         // Helper function signature: all params except impl Trait (which can't be named)
         let helper_inputs: Vec<TokenStream2> = param_info
@@ -372,11 +373,10 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         let recompose_setter = quote! {
             {
-                let __impl_fn = #recompose_fn_ident;
                 __composer.set_recompose_callback(move |
                     __composer: &mut compose_core::Composer<'_>|
                 {
-                    __impl_fn(
+                    #recompose_fn_ident #ty_generics_turbofish (
                         __composer
                         #(, #recompose_call_args)*
                     );
