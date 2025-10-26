@@ -1,9 +1,9 @@
-[compose-rs.webm](https://github.com/user-attachments/assets/4abdddae-3646-4cd4-b79c-e76bae87cae2)
 
+[compose-rs.webm](https://github.com/user-attachments/assets/b96a83f0-4739-4d0d-9dc2-e2194d63df78)
 
-# Compose-RS Proposal
+# Compose-RS 
 
-Compose-RS is an experimental Rust workspace that sketches out a Jetpack Compose–inspired declarative UI framework. The repository accompanies the architectural proposal documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and provides crate scaffolding for the core runtime, procedural macros, UI primitives, and example applications.
+Compose-RS is a Jetpack Compose–inspired declarative UI framework. The repository accompanies the architectural proposal documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and provides crate scaffolding for the core runtime, procedural macros, UI primitives, and example applications.
 
 ## Workspace layout
 
@@ -13,47 +13,93 @@ Compose-RS is an experimental Rust workspace that sketches out a Jetpack Compose
 - **`crates/compose-ui/`** – Declarative UI primitives (Column, Row, Box, Text), layout system with intrinsics, and modifier infrastructure.
 - **`apps/desktop-demo/`** – Working desktop demo with winit + pixels renderer showcasing interactive UI.
 
-## Current Status
-
-### ✅ Phase 1 Complete - Smart Recomposition + Frame Clock
-- Smart recomposition with skip logic for stable inputs
-- Frame clock with `withFrameNanos`/`withFrameMillis` APIs
-- Side effects: `SideEffect`, `DisposableEffect`, `LaunchedEffect` with proper cleanup
-- State management with automatic invalidation
-- Comprehensive test coverage
-
-### ✅ Phase 3 Partial - Intrinsics + Subcompose
-- **Intrinsic measurements** fully implemented for all layout primitives
-- SubcomposeLayout with stable key reuse and slot management
-- LazyColumn/LazyRow not yet implemented
-
-### 🚧 Phase 2 Pending - Modifier.Node Architecture
-- Currently using value-based modifiers
-- Type-safe scope system planned
-
 ## Examples
 
 Run the interactive desktop example:
 ```bash
 cargo run --bin desktop-app
 ```
+```rust
 
-Try the intrinsic measurement demo:
-```bash
-cargo run --example intrinsic_size
+fn main() {
+    compose_app::ComposeApp!(
+        options: ComposeAppOptions::default()
+            .WithTitle("Compose Counter")
+            .WithSize(800, 600),
+        {
+            RecursiveUi(5, true, 0);
+        }
+    );
+}
+
+#[composable]
+fn RecursiveUi(depth: usize, horizontal: bool, index: usize) {
+    let palette = [
+        Color(0.25, 0.32, 0.58, 0.75),
+        Color(0.30, 0.20, 0.45, 0.75),
+        Color(0.20, 0.40, 0.32, 0.75),
+        Color(0.45, 0.28, 0.24, 0.75),
+    ];
+    let accent = palette[index % palette.len()];
+
+    Column(
+        Modifier::rounded_corners(18.0)
+            .then(Modifier::draw_behind({
+                move |scope| {
+                    scope.draw_round_rect(
+                        Brush::solid(accent),
+                        CornerRadii::uniform(18.0),
+                    );
+                }
+            }))
+            .then(Modifier::padding(12.0)),
+        ColumnSpec::new().vertical_arrangement(LinearArrangement::SpacedBy(8.0)),
+        move || {
+            Text(
+                format!("Depth {}", depth),
+                Modifier::padding(6.0)
+                    .then(Modifier::background(Color(0.0, 0.0, 0.0, 0.25)))
+                    .then(Modifier::rounded_corners(10.0)),
+            );
+
+            if depth <= 1 {
+                Text(
+                    format!("Leaf node #{index}"),
+                    Modifier::padding(6.0)
+                        .then(Modifier::background(Color(1.0, 1.0, 1.0, 0.12)))
+                        .then(Modifier::rounded_corners(10.0)),
+                );
+            } else if horizontal {
+                Row(
+                    Modifier::fill_max_width(),
+                    RowSpec::new().horizontal_arrangement(LinearArrangement::SpacedBy(8.0)),
+                    move || {
+                        for child_idx in 0..2 {
+                            let key = (depth, index, child_idx);
+                            compose_core::with_key(&key, || {
+                                recursive_layout_node(depth - 1, false, index * 2 + child_idx + 1);
+                            });
+                        }
+                    },
+                );
+            } else {
+                Column(
+                    Modifier::fill_max_width(),
+                    ColumnSpec::new().vertical_arrangement(LinearArrangement::SpacedBy(8.0)),
+                    move || {
+                        for child_idx in 0..2 {
+                            let key = (depth, index, child_idx);
+                            compose_core::with_key(&key, || {
+                                recursive_layout_node(depth - 1, true, index * 2 + child_idx + 1);
+                            });
+                        }
+                    },
+                );
+            }
+        },
+    );
+}
 ```
-
-Test side effect cleanup:
-```bash
-cargo run --example test_cleanup
-```
-
-## Known issues
-
-- Switching between the "Async Runtime" and "CompositionLocal Test" tabs in the desktop demo can
-  occasionally panic with a slot-table mismatch (e.g. `slot kind mismatch at 109`). This behaviour
-  reproduces even without the new async demo wiring and is being tracked separately from the
-  coroutine executor changes showcased here.
 
 ## Roadmap
 
