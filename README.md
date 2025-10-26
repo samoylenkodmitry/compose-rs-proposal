@@ -5,14 +5,6 @@
 
 Compose-RS is a Jetpack Compose–inspired declarative UI framework. The repository accompanies the architectural proposal documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and provides crate scaffolding for the core runtime, procedural macros, UI primitives, and example applications.
 
-## Workspace layout
-
-- **`crates/compose-core/`** – Core runtime with slot table, composer, state management, side effects, and frame clock.
-- **`crates/compose-macros/`** – Procedural macro crate providing the `#[composable]` attribute.
-- **`crates/compose-runtime-std/`** – Standard runtime scheduler implementation with frame callbacks.
-- **`crates/compose-ui/`** – Declarative UI primitives (Column, Row, Box, Text), layout system with intrinsics, and modifier infrastructure.
-- **`apps/desktop-demo/`** – Working desktop demo with winit + pixels renderer showcasing interactive UI.
-
 ## Examples
 
 Run the interactive desktop example:
