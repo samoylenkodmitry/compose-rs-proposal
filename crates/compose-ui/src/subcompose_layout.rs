@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use compose_core::{Composer, NodeError, NodeId, Phase, SlotId, SlotTable, SubcomposeState};
+use compose_core::{ComposerHandle, NodeError, NodeId, Phase, SlotId, SlotTable, SubcomposeState};
 use indexmap::IndexSet;
 
 use crate::modifier::{Modifier, Size};
@@ -44,15 +44,15 @@ pub trait SubcomposeMeasureScope: SubcomposeLayoutScope {
 }
 
 /// Concrete implementation of [`SubcomposeMeasureScope`].
-pub struct SubcomposeMeasureScopeImpl<'a> {
-    composer: *mut Composer<'a>,
+pub struct SubcomposeMeasureScopeImpl {
+    composer: ComposerHandle,
     state: *mut SubcomposeState,
     constraints: Constraints,
 }
 
-impl<'a> SubcomposeMeasureScopeImpl<'a> {
+impl SubcomposeMeasureScopeImpl {
     pub fn new(
-        composer: *mut Composer<'a>,
+        composer: ComposerHandle,
         state: *mut SubcomposeState,
         constraints: Constraints,
     ) -> Self {
@@ -64,24 +64,22 @@ impl<'a> SubcomposeMeasureScopeImpl<'a> {
     }
 }
 
-impl<'a> SubcomposeLayoutScope for SubcomposeMeasureScopeImpl<'a> {
+impl SubcomposeLayoutScope for SubcomposeMeasureScopeImpl {
     fn constraints(&self) -> Constraints {
         self.constraints
     }
 }
 
-impl<'a> SubcomposeMeasureScope for SubcomposeMeasureScopeImpl<'a> {
+impl SubcomposeMeasureScope for SubcomposeMeasureScopeImpl {
     fn subcompose<Content>(&mut self, slot_id: SlotId, content: Content) -> Vec<SubcomposeChild>
     where
         Content: FnOnce(),
     {
         let nodes = unsafe {
-            let composer_ref = &mut *self.composer;
+            let composer_ref = &self.composer;
             let state_ref = &mut *self.state;
-            let (_, nodes) = composer_ref.install(|composer| {
-                composer.subcompose_measurement(state_ref, slot_id, move |_| {
-                    content();
-                })
+            let (_, nodes) = composer_ref.subcompose_measurement(state_ref, slot_id, move |_| {
+                content();
             });
             nodes
         };
@@ -90,8 +88,7 @@ impl<'a> SubcomposeMeasureScope for SubcomposeMeasureScopeImpl<'a> {
 }
 
 /// Trait object representing a reusable measure policy.
-pub type MeasurePolicy =
-    dyn for<'scope> Fn(&mut SubcomposeMeasureScopeImpl<'scope>, Constraints) -> MeasureResult;
+pub type MeasurePolicy = dyn Fn(&mut SubcomposeMeasureScopeImpl, Constraints) -> MeasureResult;
 
 /// Node responsible for orchestrating measure-time subcomposition.
 pub struct SubcomposeLayoutNode {
@@ -137,9 +134,9 @@ impl SubcomposeLayoutNode {
         &mut self.state
     }
 
-    pub fn measure<'a>(
-        &'a mut self,
-        composer: &'a mut Composer<'a>,
+    pub fn measure(
+        &mut self,
+        composer: &ComposerHandle,
         node_id: NodeId,
         constraints: Constraints,
     ) -> Result<MeasureResult, NodeError> {
@@ -149,8 +146,7 @@ impl SubcomposeLayoutNode {
         }
         let result = composer.subcompose_in(&mut self.slots, Some(node_id), |inner| {
             let state_ptr = &mut self.state as *mut _;
-            let composer_ptr = inner as *mut _;
-            let mut scope = SubcomposeMeasureScopeImpl::new(composer_ptr, state_ptr, constraints);
+            let mut scope = SubcomposeMeasureScopeImpl::new(inner.clone(), state_ptr, constraints);
             (self.measure_policy)(&mut scope, constraints)
         })?;
         self.state.dispose_or_reuse_starting_from_index(0);

@@ -1,7 +1,7 @@
 use super::*;
 use std::cell::RefCell;
 
-use compose_core::{self, Applier, MutableState, SlotTable};
+use compose_core::{self, Applier, ComposerHandle, MutableState, SlotTable};
 
 #[derive(Default)]
 struct DummyNode;
@@ -49,12 +49,12 @@ fn measure_subcomposes_content() {
         typed as *mut SubcomposeLayoutNode
     };
     let result = {
-        let mut composer =
-            compose_core::Composer::new(&mut slots, &mut applier, handle.clone(), Some(node_id));
+        let composer =
+            ComposerHandle::new_from_parts(&mut slots, &mut applier, handle.clone(), Some(node_id));
         composer.enter_phase(Phase::Measure);
         unsafe {
             (&mut *node_ptr)
-                .measure(&mut composer, node_id, Constraints::tight(0.0, 0.0))
+                .measure(&composer, node_id, Constraints::tight(0.0, 0.0))
                 .expect("measure result")
         }
     };
@@ -102,12 +102,12 @@ fn subcompose_reuses_nodes_across_measures() {
     };
 
     {
-        let mut composer =
-            compose_core::Composer::new(&mut slots, &mut applier, handle.clone(), Some(node_id));
+        let composer =
+            ComposerHandle::new_from_parts(&mut slots, &mut applier, handle.clone(), Some(node_id));
         composer.enter_phase(Phase::Measure);
         unsafe {
             (&mut *node_ptr)
-                .measure(&mut composer, node_id, Constraints::loose(100.0, 100.0))
+                .measure(&composer, node_id, Constraints::loose(100.0, 100.0))
                 .expect("first measure");
         }
     }
@@ -115,12 +115,12 @@ fn subcompose_reuses_nodes_across_measures() {
     slots.reset();
 
     {
-        let mut composer =
-            compose_core::Composer::new(&mut slots, &mut applier, handle.clone(), Some(node_id));
+        let composer =
+            ComposerHandle::new_from_parts(&mut slots, &mut applier, handle.clone(), Some(node_id));
         composer.enter_phase(Phase::Measure);
         unsafe {
             (&mut *node_ptr)
-                .measure(&mut composer, node_id, Constraints::loose(200.0, 200.0))
+                .measure(&composer, node_id, Constraints::loose(200.0, 200.0))
                 .expect("second measure");
         }
     }
@@ -169,12 +169,12 @@ fn inactive_slots_move_to_reusable_pool() {
     };
 
     {
-        let mut composer =
-            compose_core::Composer::new(&mut slots, &mut applier, handle.clone(), Some(node_id));
+        let composer =
+            ComposerHandle::new_from_parts(&mut slots, &mut applier, handle.clone(), Some(node_id));
         composer.enter_phase(Phase::Measure);
         unsafe {
             (&mut *node_ptr)
-                .measure(&mut composer, node_id, Constraints::loose(50.0, 50.0))
+                .measure(&composer, node_id, Constraints::loose(50.0, 50.0))
                 .expect("initial measure");
         }
     }
@@ -183,12 +183,12 @@ fn inactive_slots_move_to_reusable_pool() {
     toggle.set(false);
 
     {
-        let mut composer =
-            compose_core::Composer::new(&mut slots, &mut applier, handle.clone(), Some(node_id));
+        let composer =
+            ComposerHandle::new_from_parts(&mut slots, &mut applier, handle.clone(), Some(node_id));
         composer.enter_phase(Phase::Measure);
         unsafe {
             (&mut *node_ptr)
-                .measure(&mut composer, node_id, Constraints::loose(50.0, 50.0))
+                .measure(&composer, node_id, Constraints::loose(50.0, 50.0))
                 .expect("second measure");
         }
     }

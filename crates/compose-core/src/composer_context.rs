@@ -1,10 +1,10 @@
 use std::cell::RefCell;
 use std::thread_local;
 
-use crate::Composer;
+use crate::ComposerHandle;
 
 thread_local! {
-    static COMPOSER_STACK: RefCell<Vec<*mut ()>> = RefCell::new(Vec::new());
+    static COMPOSER_STACK: RefCell<Vec<ComposerHandle>> = RefCell::new(Vec::new());
 }
 
 #[must_use = "ComposerScopeGuard pops the composer stack on drop"]
@@ -19,35 +19,26 @@ impl Drop for ComposerScopeGuard {
     }
 }
 
-pub fn enter(composer: &mut Composer<'_>) -> ComposerScopeGuard {
+pub fn enter_handle(handle: &ComposerHandle) -> ComposerScopeGuard {
     COMPOSER_STACK.with(|stack| {
-        stack
-            .borrow_mut()
-            .push(composer as *mut Composer<'_> as *mut ());
+        stack.borrow_mut().push(handle.clone());
     });
     ComposerScopeGuard
 }
 
-pub fn with_composer<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
+pub fn with_current_composer_handle<R>(f: impl FnOnce(&ComposerHandle) -> R) -> R {
     COMPOSER_STACK.with(|stack| {
-        let ptr = *stack
-            .borrow()
+        let stack = stack.borrow();
+        let handle = stack
             .last()
-            .expect("with_composer: no active composer");
-        let composer = ptr as *mut Composer<'_>;
-        // SAFETY: the pointer was pushed from an active composer reference, and
-        // the guard ensures it stays valid for the duration of the call.
-        let composer = unsafe { &mut *composer }; // NOLINT: legacy interface
-        f(composer)
+            .expect("with_current_composer_handle: no active composer handle");
+        f(handle)
     })
 }
 
-pub fn try_with_composer<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> Option<R> {
+pub fn try_with_current_composer_handle<R>(f: impl FnOnce(&ComposerHandle) -> R) -> Option<R> {
     COMPOSER_STACK.with(|stack| {
-        let ptr = *stack.borrow().last()?;
-        let composer = ptr as *mut Composer<'_>;
-        // SAFETY: see `with_composer` above.
-        let composer = unsafe { &mut *composer };
-        Some(f(composer))
+        let stack = stack.borrow();
+        stack.last().map(|handle| f(handle))
     })
 }

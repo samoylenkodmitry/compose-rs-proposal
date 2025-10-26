@@ -12,7 +12,8 @@ use std::{
 };
 
 use compose_core::{
-    Applier, Composer, MemoryApplier, Node, NodeError, NodeId, Phase, RuntimeHandle, SlotTable,
+    Applier, ComposerHandle, MemoryApplier, Node, NodeError, NodeId, Phase, RuntimeHandle,
+    SlotTable,
 };
 
 #[cfg(test)]
@@ -359,16 +360,16 @@ impl<'a> LayoutBuilder<'a> {
         }
 
         self.slots.reset();
-        let mut outer = Composer::new(
+        let composer = ComposerHandle::new_from_parts(
             &mut self.slots,
             unsafe { &mut *self.applier },
             runtime_handle,
             Some(node_id),
         );
-        outer.enter_phase(Phase::Measure);
+        composer.enter_phase(Phase::Measure);
 
         let measure_result =
-            unsafe { (&mut *node_ptr).measure(&mut outer, node_id, inner_constraints)? };
+            unsafe { (&mut *node_ptr).measure(&composer, node_id, inner_constraints)? };
 
         let node_ids: Vec<NodeId> = measure_result
             .placements
