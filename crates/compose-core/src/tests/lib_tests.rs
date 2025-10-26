@@ -166,6 +166,34 @@ fn remember_init_can_call_use_state() {
     });
 }
 
+#[composable]
+fn fn_param_invokes_state<F: FnMut() + 'static>(callback: F) {
+    #[allow(unused_mut)]
+    let mut cb = callback;
+    cb();
+    compose_core::remember(|| {
+        cb();
+        0u32
+    });
+}
+
+#[test]
+fn fn_param_callback_can_reenter_composer() {
+    let (handle, _runtime) = runtime_handle();
+    let mut slots = SlotTable::new();
+    let mut applier = MemoryApplier::new();
+    let composer = ComposerHandle::new_from_parts(&mut slots, &mut applier, handle, None);
+
+    composer.install(|composer| {
+        let key = location_key(file!(), line!(), column!());
+        composer.with_group(key, |_composer| {
+            fn_param_invokes_state(|| {
+                compose_core::use_state(|| 0usize);
+            });
+        });
+    });
+}
+
 #[test]
 fn mutable_state_exposes_pending_value_while_borrowed() {
     let (runtime_handle, _runtime) = runtime_handle();

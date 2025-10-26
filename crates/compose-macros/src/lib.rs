@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::{parse_macro_input, FnArg, Ident, ItemFn, Pat, PatType, ReturnType, Type};
 
 /// Check if a type is Fn-like (impl FnMut/Fn/FnOnce, Box<dyn FnMut>, generic with Fn bound, etc.)
@@ -112,6 +112,94 @@ fn is_generic_fn_like(ty: &Type, generics: &syn::Generics) -> bool {
 /// Unified check: is this type Fn-like, either syntactically or via generic bounds?
 fn is_fn_param(ty: &Type, generics: &syn::Generics) -> bool {
     is_fn_like_type(ty) || is_generic_fn_like(ty, generics)
+}
+
+fn fn_arg_count_from_trait_bound(trait_bound: &syn::TraitBound) -> Option<usize> {
+    let segment = trait_bound.path.segments.last()?;
+    let ident_str = segment.ident.to_string();
+    if ident_str == "Fn" || ident_str == "FnMut" || ident_str == "FnOnce" {
+        if let syn::PathArguments::Parenthesized(args) = &segment.arguments {
+            Some(args.inputs.len())
+        } else {
+            Some(0)
+        }
+    } else {
+        None
+    }
+}
+
+fn fn_param_arg_count(ty: &Type, generics: &syn::Generics) -> Option<usize> {
+    match ty {
+        Type::BareFn(bare) => Some(bare.inputs.len()),
+        Type::TraitObject(trait_obj) => trait_obj.bounds.iter().find_map(|bound| match bound {
+            syn::TypeParamBound::Trait(trait_bound) => fn_arg_count_from_trait_bound(trait_bound),
+            _ => None,
+        }),
+        Type::Path(type_path) => {
+            if let Some(segment) = type_path.path.segments.last() {
+                if segment.ident == "Box" {
+                    if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                        for arg in &args.args {
+                            if let syn::GenericArgument::Type(Type::TraitObject(trait_obj)) = arg {
+                                if let Some(count) =
+                                    trait_obj.bounds.iter().find_map(|bound| match bound {
+                                        syn::TypeParamBound::Trait(trait_bound) => {
+                                            fn_arg_count_from_trait_bound(trait_bound)
+                                        }
+                                        _ => None,
+                                    })
+                                {
+                                    return Some(count);
+                                }
+                            }
+                        }
+                    }
+                } else if type_path.path.segments.len() == 1 {
+                    let ident = &segment.ident;
+                    for param in &generics.params {
+                        if let syn::GenericParam::Type(type_param) = param {
+                            if type_param.ident == *ident {
+                                if let Some(count) =
+                                    type_param.bounds.iter().find_map(|bound| match bound {
+                                        syn::TypeParamBound::Trait(trait_bound) => {
+                                            fn_arg_count_from_trait_bound(trait_bound)
+                                        }
+                                        _ => None,
+                                    })
+                                {
+                                    return Some(count);
+                                }
+                            }
+                        }
+                    }
+                    if let Some(where_clause) = &generics.where_clause {
+                        for predicate in &where_clause.predicates {
+                            if let syn::WherePredicate::Type(pred) = predicate {
+                                if let Type::Path(bounded) = &pred.bounded_ty {
+                                    if bounded.path.segments.len() == 1
+                                        && bounded.path.segments[0].ident == *ident
+                                    {
+                                        if let Some(count) =
+                                            pred.bounds.iter().find_map(|bound| match bound {
+                                                syn::TypeParamBound::Trait(trait_bound) => {
+                                                    fn_arg_count_from_trait_bound(trait_bound)
+                                                }
+                                                _ => None,
+                                            })
+                                        {
+                                            return Some(count);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 #[proc_macro_attribute]
@@ -264,13 +352,34 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     // impl Trait: no rebind needed, already has original name
                     quote! {}
                 } else if is_fn_param(ty, &generics) {
-                    // Fn-like param: rebind as &mut from slot
+                    let arg_count = fn_param_arg_count(ty, &generics).unwrap_or(0);
+                    let arg_names: Vec<Ident> = (0..arg_count)
+                        .map(|i| format_ident!("__fn_arg{}", i))
+                        .collect();
+                    let closure_args = if arg_names.is_empty() {
+                        quote! { || }
+                    } else {
+                        quote! { |#(#arg_names),*| }
+                    };
+                    let call_args = if arg_names.is_empty() {
+                        quote! {}
+                    } else {
+                        quote! { #(#arg_names),* }
+                    };
                     quote! {
-                        let #pat = __composer
-                            .with_slot_value::<compose_core::ParamSlot<#ty>, _>(
-                                #slot_ident,
-                                |slot| slot.get_mut(),
-                            );
+                        let #pat = {
+                            let __handle = __composer.clone();
+                            let __slot_index = #slot_ident;
+                            move #closure_args {
+                                __handle.with_slot_value_mut::<compose_core::ParamSlot<#ty>, _>(
+                                    __slot_index,
+                                    |slot| {
+                                        let __fn = slot.get_mut();
+                                        (__fn)(#call_args)
+                                    },
+                                )
+                            }
+                        };
                     }
                 } else {
                     // Regular rebind
