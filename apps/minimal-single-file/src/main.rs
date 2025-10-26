@@ -278,6 +278,7 @@ impl MemoryApplier {
             },
             color: computation.color,
             children: computation.children,
+            click_handler: computation.click_handler,
         })
     }
 
@@ -581,10 +582,17 @@ impl Size {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+struct Point {
+    x: f32,
+    y: f32,
+}
+
+#[derive(Clone, Default)]
 struct Modifier {
     size: Option<Size>,
     background: Option<Color>,
+    click_handler: Option<Rc<dyn Fn(Point)>>,
 }
 
 impl Modifier {
@@ -602,12 +610,23 @@ impl Modifier {
         }
     }
 
+    fn clickable(handler: impl Fn(Point) + 'static) -> Self {
+        let handler = Rc::new(handler);
+        Modifier {
+            click_handler: Some(handler),
+            ..Modifier::default()
+        }
+    }
+
     fn then(mut self, other: Modifier) -> Modifier {
         if other.size.is_some() {
             self.size = other.size;
         }
         if other.background.is_some() {
             self.background = other.background;
+        }
+        if other.click_handler.is_some() {
+            self.click_handler = other.click_handler;
         }
         self
     }
@@ -637,6 +656,7 @@ impl Node for BoxNode {
             size,
             color: self.modifier.background,
             children: Vec::new(),
+            click_handler: self.modifier.click_handler.clone(),
         }
     }
 }
@@ -669,6 +689,7 @@ impl Node for RowNode {
             size: Size::new(cursor_x, max_height),
             color: None,
             children,
+            click_handler: None,
         }
     }
 }
@@ -683,6 +704,7 @@ struct LayoutComputation {
     size: Size,
     color: Option<Color>,
     children: Vec<LayoutNodeSnapshot>,
+    click_handler: Option<Rc<dyn Fn(Point)>>,
 }
 
 #[derive(Clone, Copy)]
@@ -708,6 +730,7 @@ struct LayoutNodeSnapshot {
     rect: Rect,
     color: Option<Color>,
     children: Vec<LayoutNodeSnapshot>,
+    click_handler: Option<Rc<dyn Fn(Point)>>,
 }
 
 struct LayoutTree {
@@ -722,7 +745,15 @@ impl LayoutTree {
                 .color
                 .map(|c| format!("rgba({:.1}, {:.1}, {:.1}, {:.1})", c.0, c.1, c.2, c.3))
                 .unwrap_or_else(|| "none".to_string());
-            lines.push(format!("{}{} color: {}", indent, node.rect, color));
+            let clickable = if node.click_handler.is_some() {
+                " clickable"
+            } else {
+                ""
+            };
+            lines.push(format!(
+                "{}{} color: {}{}",
+                indent, node.rect, color, clickable
+            ));
             for child in &node.children {
                 describe_node(child, depth + 1, lines);
             }
@@ -814,7 +845,8 @@ trait Renderer {
 #[derive(Clone)]
 struct RectHitTarget {
     rect: Rect,
-    color: Color,
+    color: Option<Color>,
+    click_handler: Option<Rc<dyn Fn(Point)>>,
 }
 
 impl HitTestTarget for RectHitTarget {
@@ -824,10 +856,24 @@ impl HitTestTarget for RectHitTarget {
             PointerEventKind::Down => "down",
             PointerEventKind::Up => "up",
         };
-        println!(
-            "pointer {} at ({:.1}, {:.1}) inside {} with color rgba({:.1}, {:.1}, {:.1}, {:.1})",
-            event, x, y, self.rect, self.color.0, self.color.1, self.color.2, self.color.3
-        );
+        match self.color {
+            Some(color) => println!(
+                "pointer {} at ({:.1}, {:.1}) inside {} with color rgba({:.1}, {:.1}, {:.1}, {:.1})",
+                event, x, y, self.rect, color.0, color.1, color.2, color.3
+            ),
+            None => println!(
+                "pointer {} at ({:.1}, {:.1}) inside {} (no color)",
+                event, x, y, self.rect
+            ),
+        }
+        if matches!(kind, PointerEventKind::Up) {
+            if let Some(handler) = &self.click_handler {
+                handler(Point {
+                    x: x - self.rect.x,
+                    y: y - self.rect.y,
+                });
+            }
+        }
     }
 }
 
@@ -840,8 +886,17 @@ impl ConsoleScene {
         Self { rects: Vec::new() }
     }
 
-    fn push_rect(&mut self, rect: Rect, color: Color) {
-        self.rects.push(RectHitTarget { rect, color });
+    fn push_rect(
+        &mut self,
+        rect: Rect,
+        color: Option<Color>,
+        click_handler: Option<Rc<dyn Fn(Point)>>,
+    ) {
+        self.rects.push(RectHitTarget {
+            rect,
+            color,
+            click_handler,
+        });
     }
 
     fn rects(&self) -> &[RectHitTarget] {
@@ -873,11 +928,21 @@ impl SceneDebug for ConsoleScene {
     fn describe(&self) -> Vec<String> {
         self.rects()
             .iter()
-            .map(|rect| {
-                format!(
-                    "{} rgba({:.1}, {:.1}, {:.1}, {:.1})",
-                    rect.rect, rect.color.0, rect.color.1, rect.color.2, rect.color.3
-                )
+            .map(|rect| match rect.color {
+                Some(color) => format!(
+                    "{} rgba({:.1}, {:.1}, {:.1}, {:.1}) clickable={}",
+                    rect.rect,
+                    color.0,
+                    color.1,
+                    color.2,
+                    color.3,
+                    rect.click_handler.is_some()
+                ),
+                None => format!(
+                    "{} <no color> clickable={}",
+                    rect.rect,
+                    rect.click_handler.is_some()
+                ),
             })
             .collect()
     }
@@ -919,8 +984,8 @@ impl Renderer for ConsoleRenderer {
                 width: node.rect.width,
                 height: node.rect.height,
             };
-            if let Some(color) = node.color {
-                scene.push_rect(rect, color);
+            if node.color.is_some() || node.click_handler.is_some() {
+                scene.push_rect(rect, node.color, node.click_handler.clone());
             }
             for child in &node.children {
                 visit(child, (rect.x, rect.y), scene);
@@ -1130,7 +1195,13 @@ fn app() -> NodeId {
             Row(|| {
                 Box(
                     Modifier::size(Size::new(width, 120.0))
-                        .then(Modifier::background(first_color)),
+                        .then(Modifier::background(first_color))
+                        .then(Modifier::clickable(move |point| {
+                            println!(
+                                "clicked primary box at ({:.1}, {:.1}); counter = {}",
+                                point.x, point.y, current
+                            );
+                        })),
                 );
                 Box(
                     Modifier::size(Size::new(120.0, 120.0))
