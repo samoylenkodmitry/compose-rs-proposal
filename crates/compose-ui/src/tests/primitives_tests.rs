@@ -10,7 +10,7 @@ use crate::widgets::{
 };
 use crate::{run_test_composition, LayoutEngine, SnapshotState, TestComposition};
 use compose_core::{
-    self, location_key, Composer, Composition, MemoryApplier, MutableState, NodeId, Phase,
+    self, location_key, ComposerHandle, Composition, MemoryApplier, MutableState, NodeId, Phase,
     SlotTable, State,
 };
 use compose_ui_layout::{HorizontalAlignment, LinearArrangement, VerticalAlignment};
@@ -75,9 +75,10 @@ fn measure_subcompose_node(
         applier
             .with_node(root, |node: &mut SubcomposeLayoutNode| {
                 let applier_ref: &mut MemoryApplier = &mut *applier_ptr;
-                let mut composer = Composer::new(slots, applier_ref, handle.clone(), Some(root));
+                let composer =
+                    ComposerHandle::new_from_parts(slots, applier_ref, handle.clone(), Some(root));
                 composer.enter_phase(Phase::Measure);
-                node.measure(&mut composer, root, constraints)
+                node.measure(&composer, root, constraints)
                     .expect("measure succeeds");
             })
             .expect("node available");

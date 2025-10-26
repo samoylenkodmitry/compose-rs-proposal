@@ -110,7 +110,7 @@ fn subcompose_panics_outside_measure_or_layout() {
     let (handle, _runtime) = runtime_handle();
     let mut slots = SlotTable::new();
     let mut applier = MemoryApplier::new();
-    let mut composer = Composer::new(&mut slots, &mut applier, handle, None);
+    let composer = ComposerHandle::new_from_parts(&mut slots, &mut applier, handle, None);
     let mut state = SubcomposeState::default();
     let _ = composer.subcompose(&mut state, SlotId::new(1), |_| {});
 }
@@ -124,7 +124,8 @@ fn subcompose_reuses_nodes_across_calls() {
     let first_id;
 
     {
-        let mut composer = Composer::new(&mut slots, &mut applier, handle.clone(), None);
+        let composer =
+            ComposerHandle::new_from_parts(&mut slots, &mut applier, handle.clone(), None);
         composer.set_phase(Phase::Measure);
         let (_, first_nodes) = composer.subcompose(&mut state, SlotId::new(7), |composer| {
             composer.emit_node(|| TestDummyNode::default())
@@ -136,7 +137,8 @@ fn subcompose_reuses_nodes_across_calls() {
     slots.reset();
 
     {
-        let mut composer = Composer::new(&mut slots, &mut applier, handle.clone(), None);
+        let composer =
+            ComposerHandle::new_from_parts(&mut slots, &mut applier, handle.clone(), None);
         composer.set_phase(Phase::Measure);
         let (_, second_nodes) = composer.subcompose(&mut state, SlotId::new(7), |composer| {
             composer.emit_node(|| TestDummyNode::default())
@@ -144,6 +146,52 @@ fn subcompose_reuses_nodes_across_calls() {
         assert_eq!(second_nodes.len(), 1);
         assert_eq!(second_nodes[0], first_id);
     }
+}
+
+#[test]
+fn remember_init_can_call_use_state() {
+    let (handle, _runtime) = runtime_handle();
+    let mut slots = SlotTable::new();
+    let mut applier = MemoryApplier::new();
+    let composer = ComposerHandle::new_from_parts(&mut slots, &mut applier, handle, None);
+
+    composer.install(|composer| {
+        let key = location_key(file!(), line!(), column!());
+        composer.with_group(key, |composer| {
+            let _owned = composer.remember(|| {
+                let _state = composer.use_state(|| 0u32);
+                42u32
+            });
+        });
+    });
+}
+
+#[composable]
+fn fn_param_invokes_state<F: FnMut() + 'static>(callback: F) {
+    #[allow(unused_mut)]
+    let mut cb = callback;
+    cb();
+    compose_core::remember(|| {
+        cb();
+        0u32
+    });
+}
+
+#[test]
+fn fn_param_callback_can_reenter_composer() {
+    let (handle, _runtime) = runtime_handle();
+    let mut slots = SlotTable::new();
+    let mut applier = MemoryApplier::new();
+    let composer = ComposerHandle::new_from_parts(&mut slots, &mut applier, handle, None);
+
+    composer.install(|composer| {
+        let key = location_key(file!(), line!(), column!());
+        composer.with_group(key, |_composer| {
+            fn_param_invokes_state(|| {
+                compose_core::use_state(|| 0usize);
+            });
+        });
+    });
 }
 
 #[test]
@@ -894,7 +942,7 @@ fn recompose_handles_removed_scopes_gracefully() {
     }
 
     fn render_optional_scope(
-        composer: &mut Composer<'_>,
+        composer: &ComposerHandle,
         state_a: &MutableState<i32>,
         toggle_group: &MutableState<bool>,
     ) {
@@ -1120,19 +1168,15 @@ fn apply_child_diff(
 ) -> Vec<Operation> {
     // FUTURE(no_std): return bounded operation log.
     let handle = runtime.handle();
-    let mut composer = Composer::new(slots, applier, handle, Some(parent_id));
+    let composer = ComposerHandle::new_from_parts(slots, applier, handle, Some(parent_id));
     composer.push_parent(parent_id);
-    {
-        let frame = composer
-            .parent_stack
-            .last_mut()
-            .expect("parent frame available");
+    composer.with_parent_frame_mut(|frame| {
         frame
             .remembered
             .update(|entry| entry.children = previous.clone());
         frame.previous = previous;
         frame.new_children = new_children;
-    }
+    });
     composer.pop_parent();
     let mut commands = composer.take_commands();
     drop(composer);

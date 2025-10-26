@@ -40,8 +40,7 @@ where
 #[composable]
 pub fn SubcomposeLayout(
     modifier: Modifier,
-    measure_policy: impl for<'scope> Fn(&mut SubcomposeMeasureScopeImpl<'scope>, Constraints) -> MeasureResult
-        + 'static,
+    measure_policy: impl Fn(&mut SubcomposeMeasureScopeImpl, Constraints) -> MeasureResult + 'static,
 ) -> NodeId {
     let policy: Rc<SubcomposeMeasurePolicy> = Rc::new(measure_policy);
     let id = compose_core::with_current_composer(|composer| {

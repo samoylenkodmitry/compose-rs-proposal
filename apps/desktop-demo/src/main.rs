@@ -160,8 +160,8 @@ fn combined_app() {
                 render_tab_button(DemoTab::Counter);
                 render_tab_button(DemoTab::CompositionLocal);
                 render_tab_button(DemoTab::Async);
-            render_tab_button(DemoTab::Layout);
-        },
+                render_tab_button(DemoTab::Layout);
+            },
         );
 
         Spacer(Size {
@@ -302,10 +302,7 @@ fn recursive_layout_node(depth: usize, horizontal: bool, index: usize) {
         Modifier::rounded_corners(18.0)
             .then(Modifier::draw_behind({
                 move |scope| {
-                    scope.draw_round_rect(
-                        Brush::solid(accent),
-                        CornerRadii::uniform(18.0),
-                    );
+                    scope.draw_round_rect(Brush::solid(accent), CornerRadii::uniform(18.0));
                 }
             }))
             .then(Modifier::padding(12.0)),
