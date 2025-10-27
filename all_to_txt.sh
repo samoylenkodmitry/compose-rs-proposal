@@ -121,12 +121,12 @@ optimize_rust_code() {
     # When CORE_ONLY is set, filter the find results through CORE_PATTERN
     if [ "$CORE_ONLY" = true ]; then
         find . -name "target" -prune -o -name "tests" -prune -o -name "benches" -prune -o -name "*.rs" -type f -print | \
-        grep -v -E "(test|bench|example)" | sed 's|^\./||' | grep -E "$CORE_PATTERN" | sort | while read file; do
+        grep -v -E "(test|bench|example|minimal)" | sed 's|^\./||' | grep -E "$CORE_PATTERN" | sort | while read file; do
             echo "$file"
         done
     else
         find . -name "target" -prune -o -name "tests" -prune -o -name "benches" -prune -o -name "*.rs" -type f -print | \
-        grep -v -E "(test|bench|example)" | sed 's|^\./||' | sort | while read file; do
+        grep -v -E "(test|bench|example|minimal)" | sed 's|^\./||' | sort | while read file; do
             echo "$file"
         done
     fi
@@ -140,7 +140,7 @@ optimize_rust_code() {
     # Output code bodies. Apply CORE_PATTERN when CORE_ONLY=true.
     if [ "$CORE_ONLY" = true ]; then
         find . -name "target" -prune -o -name "tests" -prune -o -name "benches" -prune -o -name "*.rs" -type f -print | \
-        grep -v -E "(test|bench|example)" | sed 's|^\./||' | grep -E "$CORE_PATTERN" | sort | while read file; do
+        grep -v -E "(test|bench|example|minimal)" | sed 's|^\./||' | grep -E "$CORE_PATTERN" | sort | while read file; do
             echo "**$file**"
             echo '```rust'
             optimize_rust_code "$file"
@@ -148,7 +148,7 @@ optimize_rust_code() {
         done
     else
         find . -name "target" -prune -o -name "tests" -prune -o -name "benches" -prune -o -name "*.rs" -type f -print | \
-        grep -v -E "(test|bench|example)" | sed 's|^\./||' | sort | while read file; do
+        grep -v -E "(test|bench|example|minimal)" | sed 's|^\./||' | sort | while read file; do
             echo "**$file**"
             echo '```rust'
             optimize_rust_code "$file"
