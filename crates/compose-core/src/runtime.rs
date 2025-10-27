@@ -180,7 +180,17 @@ impl RuntimeInner {
 
     fn take_invalidated_scopes(&self) -> Vec<(ScopeId, Weak<RecomposeScopeInner>)> {
         // FUTURE(no_std): return iterator over small array storage.
-        self.scope_queue.borrow_mut().drain(..).collect()
+        let mut queue = self.scope_queue.borrow_mut();
+        if queue.is_empty() {
+            return Vec::new();
+        }
+        let pending: Vec<_> = queue.drain(..).collect();
+        drop(queue);
+        let invalid = self.invalid_scopes.borrow();
+        pending
+            .into_iter()
+            .filter(|(id, _)| invalid.contains(id))
+            .collect()
     }
 
     fn has_invalid_scopes(&self) -> bool {
