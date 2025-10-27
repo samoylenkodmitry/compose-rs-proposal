@@ -289,6 +289,27 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
             })
             .collect();
 
+        let param_setup_recompose: Vec<TokenStream2> = param_info
+            .iter()
+            .zip(param_state_slots.iter())
+            .map(|(info, slot_ident)| {
+                if info.is_impl_trait {
+                    quote! {}
+                } else if is_fn_param(&info.ty, &generics) {
+                    quote! {
+                        let #slot_ident = __composer
+                            .use_value_slot(|| compose_core::CallbackHolder::new());
+                    }
+                } else {
+                    let ty = &info.ty;
+                    quote! {
+                        let #slot_ident = __composer
+                            .use_value_slot(|| compose_core::ParamState::<#ty>::default());
+                    }
+                }
+            })
+            .collect();
+
         let rebinds: Vec<TokenStream2> = param_info
             .iter()
             .zip(param_state_slots.iter())
@@ -365,12 +386,6 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
             Span::call_site(),
         );
 
-        let recompose_call_args: Vec<TokenStream2> = param_state_slots
-            .iter()
-            .map(|slot_ident| quote! { #slot_ident })
-            .chain(std::iter::once(quote! { __result_slot_index }))
-            .collect();
-
         let recompose_setter = quote! {
             {
                 __composer.set_recompose_callback(move |
@@ -378,7 +393,6 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 {
                     #recompose_fn_ident #ty_generics_turbofish (
                         __composer
-                        #(, #recompose_call_args)*
                     );
                 });
             }
@@ -419,13 +433,10 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
             __value
         };
 
-        let recompose_fn_inputs: Vec<TokenStream2> = param_state_slots
-            .iter()
-            .map(|slot_ident| quote! { #slot_ident: usize })
-            .chain(std::iter::once(quote! { __result_slot_index: usize }))
-            .collect();
-
         let recompose_fn_body = quote! {
+            #(#param_setup_recompose)*
+            let __result_slot_index = __composer
+                .use_value_slot(|| compose_core::ReturnSlot::<#return_ty>::default());
             #(#rebinds_for_recompose)*
             let __value: #return_ty = {
                 #recompose_block
@@ -442,8 +453,7 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
         let recompose_fn = quote! {
             #[allow(non_snake_case)]
             fn #recompose_fn_ident #impl_generics (
-                __composer: &mut compose_core::Composer<'_>,
-                #( #recompose_fn_inputs ),*
+                __composer: &mut compose_core::Composer<'_>
             ) -> #return_ty #where_clause {
                 #recompose_fn_body
             }
