@@ -43,7 +43,6 @@ use std::hash::{Hash, Hasher};
 use std::rc::{Rc, Weak}; // FUTURE(no_std): replace Rc/Weak with arena-managed handles.
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::thread_local;
 
 use crate::state::{NeverEqual, SnapshotMutableState, UpdateScope};
 
@@ -2084,6 +2083,39 @@ impl<T> ParamSlot<T> {
             (*self.val.get())
                 .take()
                 .expect("ParamSlot take() called before set")
+        }
+    }
+}
+
+/// CallbackHolder keeps the latest callback closure alive across recompositions.
+/// It stores the callback in an Rc<RefCell<...>> so that the composer can hand out
+/// lightweight forwarder closures without cloning the underlying callback value.
+#[derive(Clone)]
+pub struct CallbackHolder {
+    rc: Rc<RefCell<Box<dyn FnMut()>>>,
+}
+
+impl CallbackHolder {
+    /// Create a new holder with a no-op callback so that callers can immediately invoke it.
+    pub fn new() -> Self {
+        Self {
+            rc: Rc::new(RefCell::new(Box::new(|| {}) as Box<dyn FnMut()>)),
+        }
+    }
+
+    /// Replace the stored callback with a new closure provided by the caller.
+    pub fn update<F>(&self, f: F)
+    where
+        F: FnMut() + 'static,
+    {
+        *self.rc.borrow_mut() = Box::new(f);
+    }
+
+    /// Produce a forwarder closure that keeps the holder alive and forwards calls to it.
+    pub fn clone_rc(&self) -> impl FnMut() + 'static {
+        let rc = self.rc.clone();
+        move || {
+            (rc.borrow_mut())();
         }
     }
 }
