@@ -6,7 +6,7 @@ use std::pin::Pin;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
-use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+use std::task::{Context, Poll, Waker};
 use std::thread::ThreadId;
 use std::thread_local;
 
@@ -144,7 +144,7 @@ impl RuntimeInner {
 
     fn init_task_waker(this: &Rc<Self>) {
         let weak = Rc::downgrade(this);
-        let waker = unsafe { Waker::from_raw(raw_runtime_task_waker(weak)) };
+        let waker = RuntimeTaskWaker::new(weak).into_waker();
         *this.task_waker.borrow_mut() = Some(waker);
     }
 
@@ -682,47 +682,28 @@ pub(crate) struct FrameCallbackEntry {
 }
 
 struct RuntimeTaskWaker {
-    inner: Weak<RuntimeInner>,
+    scheduler: Arc<dyn RuntimeScheduler>,
 }
 
 impl RuntimeTaskWaker {
-    fn wake(&self) {
-        if let Some(inner) = self.inner.upgrade() {
-            inner.schedule();
-        }
+    fn new(inner: Weak<RuntimeInner>) -> Self {
+        // Extract the Arc<RuntimeScheduler> which IS Send+Sync
+        // This way we can wake the runtime without storing the Rc::Weak
+        let scheduler = inner
+            .upgrade()
+            .map(|rc| rc.scheduler.clone())
+            .expect("RuntimeInner dropped before waker created");
+        Self { scheduler }
+    }
+
+    fn into_waker(self) -> Waker {
+        futures_task::waker(Arc::new(self))
     }
 }
 
-fn raw_runtime_task_waker(inner: Weak<RuntimeInner>) -> RawWaker {
-    let waker = Arc::new(RuntimeTaskWaker { inner });
-    RawWaker::new(Arc::into_raw(waker) as *const (), &RuntimeTaskWaker::VTABLE)
-}
-
-impl RuntimeTaskWaker {
-    const VTABLE: RawWakerVTable =
-        RawWakerVTable::new(Self::clone, Self::wake_ptr, Self::wake_by_ref, Self::drop);
-
-    unsafe fn clone(data: *const ()) -> RawWaker {
-        let arc = Arc::<RuntimeTaskWaker>::from_raw(data as *const RuntimeTaskWaker);
-        let cloned = arc.clone();
-        std::mem::forget(arc);
-        RawWaker::new(Arc::into_raw(cloned) as *const (), &Self::VTABLE)
-    }
-
-    unsafe fn wake_ptr(data: *const ()) {
-        let arc = Arc::<RuntimeTaskWaker>::from_raw(data as *const RuntimeTaskWaker);
-        arc.wake();
-        // dropping `arc` releases the reference
-    }
-
-    unsafe fn wake_by_ref(data: *const ()) {
-        let arc = Arc::<RuntimeTaskWaker>::from_raw(data as *const RuntimeTaskWaker);
-        arc.wake();
-        std::mem::forget(arc);
-    }
-
-    unsafe fn drop(data: *const ()) {
-        let _ = Arc::<RuntimeTaskWaker>::from_raw(data as *const RuntimeTaskWaker);
+impl futures_task::ArcWake for RuntimeTaskWaker {
+    fn wake_by_ref(arc_self: &Arc<Self>) {
+        arc_self.scheduler.schedule_frame();
     }
 }
 
