@@ -2294,15 +2294,6 @@ impl<T> ParamSlot<T> {
         }
     }
 
-    pub fn get_mut(&self) -> &'static mut T {
-        unsafe {
-            let ptr = (*self.val.get())
-                .as_mut()
-                .expect("ParamSlot accessed before set") as *mut T;
-            &mut *ptr
-        }
-    }
-
     /// Takes the value out temporarily (for recomposition callback)
     pub fn take(&self) -> T {
         unsafe {
