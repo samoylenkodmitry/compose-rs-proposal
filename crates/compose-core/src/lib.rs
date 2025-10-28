@@ -1104,6 +1104,23 @@ impl SlotTable {
         self.group_stack.clear();
     }
 
+    /// Trim slots beyond the cursor position.
+    ///
+    /// TODO(framework): This method is too aggressive and can accidentally remove
+    /// state that should persist (e.g., LaunchedEffect state) when conditional
+    /// rendering changes the slot table structure. This causes bugs like:
+    /// - Effect states being dropped when conditionals change
+    /// - Async tasks stopping unexpectedly
+    /// - State loss during recomposition
+    ///
+    /// Current workaround: Users must manually wrap conditionals with `with_key()`
+    /// to stabilize slot table structure.
+    ///
+    /// Better solution: Implement smarter slot table management that:
+    /// - Tracks which slots are "stable" vs "conditional"
+    /// - Only truncates truly unused slots
+    /// - Preserves effect state across conditional changes
+    /// - Automatically inserts stabilization keys for conditionals
     pub fn trim_to_cursor(&mut self) {
         self.slots.truncate(self.cursor);
         if let Some(frame) = self.group_stack.last_mut() {
@@ -1122,6 +1139,7 @@ impl SlotTable {
             }
         }
     }
+
 }
 
 pub trait Node: Any {

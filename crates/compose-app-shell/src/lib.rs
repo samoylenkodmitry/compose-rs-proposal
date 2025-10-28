@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 use std::time::Instant;
 
-use compose_core::{location_key, Composition, Key, MemoryApplier};
+use compose_core::{location_key, Composition, Key, MemoryApplier, NodeError};
 use compose_foundation::PointerEventKind;
 use compose_render_common::{HitTestTarget, RenderScene, Renderer};
 use compose_runtime_std::StdRuntime;
@@ -106,6 +106,12 @@ where
                     if changed {
                         self.layout_dirty = true;
                     }
+                }
+                Err(NodeError::Missing { id }) => {
+                    // Node was removed (likely due to conditional render or tab switch)
+                    // This is expected when scopes try to recompose after their nodes are gone
+                    log::debug!("Recomposition skipped: node {} no longer exists", id);
+                    self.layout_dirty = true;
                 }
                 Err(err) => {
                     log::error!("recomposition failed: {err}");
