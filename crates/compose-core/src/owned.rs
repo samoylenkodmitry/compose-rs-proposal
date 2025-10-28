@@ -50,14 +50,4 @@ impl<T> Owned<T> {
     pub fn replace(&self, new_value: T) {
         *self.inner.borrow_mut() = new_value;
     }
-
-    /// Return a raw pointer to the stored value.
-    ///
-    /// This is primarily used by code generation helpers that need to interact with
-    /// legacy APIs expecting raw pointers. The caller must ensure the pointer does not
-    /// outlive the underlying value and that mutable aliasing rules are upheld.
-    pub fn as_ptr(&self) -> *mut T {
-        let cell_ptr = Rc::as_ptr(&self.inner);
-        unsafe { (*cell_ptr).as_ptr() }
-    }
 }

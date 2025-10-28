@@ -36,7 +36,7 @@ pub fn run_in_mutable_snapshot<T>(block: impl FnOnce() -> T) -> Result<T, &'stat
 pub use runtime::{TestRuntime, TestScheduler};
 
 use std::any::Any;
-use std::cell::{Cell, Ref, RefCell, RefMut, UnsafeCell};
+use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet}; // FUTURE(no_std): replace HashMap/HashSet with arena-backed maps.
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -2276,31 +2276,28 @@ impl<T> ParamState<T> {
 /// ParamSlot holds function/closure parameters by ownership (no PartialEq/Clone required).
 /// Used by the #[composable] macro to store Fn-like parameters in the slot table.
 pub struct ParamSlot<T> {
-    val: UnsafeCell<Option<T>>,
+    val: RefCell<Option<T>>,
 }
 
 impl<T> Default for ParamSlot<T> {
     fn default() -> Self {
         Self {
-            val: UnsafeCell::new(None),
+            val: RefCell::new(None),
         }
     }
 }
 
 impl<T> ParamSlot<T> {
     pub fn set(&self, v: T) {
-        unsafe {
-            *self.val.get() = Some(v);
-        }
+        *self.val.borrow_mut() = Some(v);
     }
 
     /// Takes the value out temporarily (for recomposition callback)
     pub fn take(&self) -> T {
-        unsafe {
-            (*self.val.get())
-                .take()
-                .expect("ParamSlot take() called before set")
-        }
+        self.val
+            .borrow_mut()
+            .take()
+            .expect("ParamSlot take() called before set")
     }
 }
 
