@@ -70,20 +70,18 @@ fn run_subcompose_measure(
     let (composer, slots_host, applier_host) =
         prepare_measure_composer(slots, applier, handle, Some(node_id));
     composer.enter_phase(Phase::Measure);
-    let node_ptr = {
+    let node_handle = {
         let mut applier_ref = applier_host.borrow_typed();
         let node = applier_ref.get_mut(node_id).expect("node available");
         let typed = node
             .as_any_mut()
             .downcast_mut::<SubcomposeLayoutNode>()
             .expect("subcompose layout node");
-        typed as *mut SubcomposeLayoutNode
+        typed.handle()
     };
-    unsafe {
-        (&mut *node_ptr)
-            .measure(&composer, node_id, constraints)
-            .expect("measure succeeds");
-    }
+    node_handle
+        .measure(&composer, node_id, constraints)
+        .expect("measure succeeds");
     drop(composer);
     restore_measure_composer(slots, applier, slots_host, applier_host);
 }

@@ -328,7 +328,7 @@ impl LayoutBuilder {
         constraints: Constraints,
     ) -> Result<Option<Rc<MeasuredNode>>, NodeError> {
         // Extract modifier data while we have safe mutable access
-        let (node_ptr, props, offset) = {
+        let (node_handle, props, offset) = {
             let mut applier = self.applier.borrow_typed();
             let node = match applier.get_mut(node_id) {
                 Ok(node) => node,
@@ -336,11 +336,10 @@ impl LayoutBuilder {
             };
             let any = node.as_any_mut();
             if let Some(subcompose) = any.downcast_mut::<SubcomposeLayoutNode>() {
-                let modifier = subcompose.modifier.clone();
-                let props = modifier.layout_properties();
-                let offset = modifier.total_offset();
-                let node_ptr = subcompose as *mut SubcomposeLayoutNode;
-                (node_ptr, props, offset)
+                let handle = subcompose.handle();
+                let props = handle.layout_properties();
+                let offset = handle.total_offset();
+                (handle, props, offset)
             } else {
                 return Ok(None);
             }
@@ -383,27 +382,9 @@ impl LayoutBuilder {
         );
         composer.enter_phase(Phase::Measure);
 
-        // SAFETY: This is the core re-entrancy workaround.
-        // - `node_ptr` was obtained from a valid RefMut borrow above (lines 332-347)
-        // - That RefMut was properly dropped before this unsafe access
-        // - The node is stored in an Rc<RefCell<MemoryApplier>> which uses a HashMap
-        // - HashMap's entry won't be moved/invalidated during composition
-        // - During measure(), the composer may create NEW nodes but won't mutate THIS node
-        // - The applier can be borrowed immutably by composition code without conflict
-        //
-        // This pattern is necessary because:
-        // 1. SubcomposeLayoutNode::measure() needs to run composition
-        // 2. That composition may create/access other nodes in the applier
-        // 3. RefCell doesn't support re-entrant borrowing
-        // 4. The raw pointer bypasses RefCell's runtime checking for this controlled case
-        //
-        // Invariants that must hold:
-        // - No code path during measure() should try to borrow THIS specific node mutably
-        // - The applier's internal storage must not reallocate (HashMap ensures this)
-        let measure_result = unsafe {
-            let node = &mut *node_ptr;
-            node.measure(&composer, node_id, inner_constraints)?
-        };
+        // The handle keeps interior mutability within the node while releasing the
+        // applier borrow, allowing the composer to re-enter safely during measure.
+        let measure_result = node_handle.measure(&composer, node_id, inner_constraints)?;
 
         self.slots = slots_host.take();
 
@@ -413,16 +394,7 @@ impl LayoutBuilder {
             .map(|placement| placement.node_id)
             .collect();
 
-        // SAFETY: Final update to the subcompose node after measurement.
-        // - Same safety reasoning as the measure() call above applies
-        // - `node_ptr` is still valid (no reallocation occurred during measure)
-        // - The composer has finished its work, so no re-entrant borrowing will occur
-        // - This is a simple write operation that updates which children are active
-        // - No other code holds references to this node at this point
-        unsafe {
-            let node = &mut *node_ptr;
-            node.set_active_children(node_ids.iter().copied());
-        }
+        node_handle.set_active_children(node_ids.iter().copied());
 
         let mut width = measure_result.size.width + padding.horizontal_sum();
         let mut height = measure_result.size.height + padding.vertical_sum();
@@ -1053,7 +1025,7 @@ fn runtime_metadata_for(
         });
     }
     if let Ok(modifier) =
-        applier.with_node::<SubcomposeLayoutNode, _>(node_id, |node| node.modifier.clone())
+        applier.with_node::<SubcomposeLayoutNode, _>(node_id, |node| node.modifier())
     {
         return Ok(RuntimeNodeMetadata {
             modifier,

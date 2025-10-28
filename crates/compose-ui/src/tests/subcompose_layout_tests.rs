@@ -62,20 +62,18 @@ fn measure_once(
     let (composer, slots_host, applier_host) =
         setup_composer(slots, applier, handle.clone(), Some(node_id));
     composer.enter_phase(Phase::Measure);
-    let node_ptr = {
+    let node_handle = {
         let mut applier_ref = applier_host.borrow_typed();
         let node = applier_ref.get_mut(node_id).expect("node available");
         let typed = node
             .as_any_mut()
             .downcast_mut::<SubcomposeLayoutNode>()
             .expect("subcompose layout node");
-        typed as *mut SubcomposeLayoutNode
+        typed.handle()
     };
-    let result = unsafe {
-        (&mut *node_ptr)
-            .measure(&composer, node_id, constraints)
-            .expect("measure result")
-    };
+    let result = node_handle
+        .measure(&composer, node_id, constraints)
+        .expect("measure result");
     drop(composer);
     teardown_composer(slots, applier, slots_host, applier_host);
     result
