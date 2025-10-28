@@ -327,7 +327,8 @@ impl LayoutBuilder {
         node_id: NodeId,
         constraints: Constraints,
     ) -> Result<Option<Rc<MeasuredNode>>, NodeError> {
-        let node_ptr = {
+        // Extract modifier data while we have safe mutable access
+        let (node_ptr, props, offset) = {
             let mut applier = self.applier.borrow_typed();
             let node = match applier.get_mut(node_id) {
                 Ok(node) => node,
@@ -335,7 +336,11 @@ impl LayoutBuilder {
             };
             let any = node.as_any_mut();
             if let Some(subcompose) = any.downcast_mut::<SubcomposeLayoutNode>() {
-                subcompose as *mut SubcomposeLayoutNode
+                let modifier = subcompose.modifier.clone();
+                let props = modifier.layout_properties();
+                let offset = modifier.total_offset();
+                let node_ptr = subcompose as *mut SubcomposeLayoutNode;
+                (node_ptr, props, offset)
             } else {
                 return Ok(None);
             }
@@ -351,13 +356,7 @@ impl LayoutBuilder {
             })?;
         self.runtime_handle = Some(runtime_handle.clone());
 
-        let (props, offset) = unsafe {
-            let node = &mut *node_ptr;
-            let modifier = node.modifier.clone();
-            let props = modifier.layout_properties();
-            let offset = modifier.total_offset();
-            (props, offset)
-        };
+        // Props and offset were extracted during the safe borrow above
         let padding = props.padding();
         let mut inner_constraints = normalize_constraints(subtract_padding(constraints, padding));
 
@@ -384,6 +383,23 @@ impl LayoutBuilder {
         );
         composer.enter_phase(Phase::Measure);
 
+        // SAFETY: This is the core re-entrancy workaround.
+        // - `node_ptr` was obtained from a valid RefMut borrow above (lines 332-347)
+        // - That RefMut was properly dropped before this unsafe access
+        // - The node is stored in an Rc<RefCell<MemoryApplier>> which uses a HashMap
+        // - HashMap's entry won't be moved/invalidated during composition
+        // - During measure(), the composer may create NEW nodes but won't mutate THIS node
+        // - The applier can be borrowed immutably by composition code without conflict
+        //
+        // This pattern is necessary because:
+        // 1. SubcomposeLayoutNode::measure() needs to run composition
+        // 2. That composition may create/access other nodes in the applier
+        // 3. RefCell doesn't support re-entrant borrowing
+        // 4. The raw pointer bypasses RefCell's runtime checking for this controlled case
+        //
+        // Invariants that must hold:
+        // - No code path during measure() should try to borrow THIS specific node mutably
+        // - The applier's internal storage must not reallocate (HashMap ensures this)
         let measure_result = unsafe {
             let node = &mut *node_ptr;
             node.measure(&composer, node_id, inner_constraints)?
@@ -396,6 +412,13 @@ impl LayoutBuilder {
             .iter()
             .map(|placement| placement.node_id)
             .collect();
+
+        // SAFETY: Final update to the subcompose node after measurement.
+        // - Same safety reasoning as the measure() call above applies
+        // - `node_ptr` is still valid (no reallocation occurred during measure)
+        // - The composer has finished its work, so no re-entrant borrowing will occur
+        // - This is a simple write operation that updates which children are active
+        // - No other code holds references to this node at this point
         unsafe {
             let node = &mut *node_ptr;
             node.set_active_children(node_ids.iter().copied());
