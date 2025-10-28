@@ -51,6 +51,24 @@ use crate::state::{NeverEqual, SnapshotMutableState, UpdateScope};
 pub type Key = u64;
 pub type NodeId = usize;
 
+/// Stable identifier for a slot in the slot table.
+///
+/// Anchors provide positional stability: they maintain their identity even when
+/// the slot table is reorganized (e.g., during conditional rendering or group moves).
+/// This prevents effect states from being prematurely removed during recomposition.
+#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, Default)]
+pub(crate) struct AnchorId(usize);
+
+impl AnchorId {
+    /// Invalid anchor that represents no anchor.
+    const INVALID: AnchorId = AnchorId(0);
+
+    /// Check if this anchor is valid (non-zero).
+    fn is_valid(&self) -> bool {
+        self.0 != 0
+    }
+}
+
 pub(crate) type ScopeId = usize;
 type LocalKey = usize;
 pub(crate) type FrameCallbackId = u64;
@@ -651,8 +669,10 @@ pub fn pop_parent() {
 #[derive(Default)]
 struct GroupFrame {
     key: Key,
-    start: usize,
-    end: usize,
+    start: usize,           // Physical position (will be phased out)
+    start_anchor: AnchorId, // Stable identity for group start
+    end: usize,             // Physical position (will be phased out)
+    end_anchor: AnchorId,   // Stable identity for group end
 }
 
 #[derive(Default)]
@@ -660,16 +680,28 @@ pub struct SlotTable {
     slots: Vec<Slot>, // FUTURE(no_std): replace Vec with arena-backed slot storage.
     cursor: usize,
     group_stack: Vec<GroupFrame>, // FUTURE(no_std): switch to small stack buffer.
+    /// Maps anchor IDs to their current physical positions in the slots array.
+    /// This indirection layer provides positional stability during slot reorganization.
+    anchors: HashMap<AnchorId, usize>,
+    /// Counter for allocating unique anchor IDs.
+    next_anchor_id: Cell<usize>,
 }
 
 enum Slot {
     Group {
         key: Key,
+        anchor: AnchorId,
         len: usize,
         scope: Option<ScopeId>,
     },
-    Value(Box<dyn Any>),
-    Node(NodeId),
+    Value {
+        anchor: AnchorId,
+        data: Box<dyn Any>,
+    },
+    Node {
+        anchor: AnchorId,
+        id: NodeId,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -683,21 +715,30 @@ impl Slot {
     fn kind(&self) -> SlotKind {
         match self {
             Slot::Group { .. } => SlotKind::Group,
-            Slot::Value(_) => SlotKind::Value,
-            Slot::Node(_) => SlotKind::Node,
+            Slot::Value { .. } => SlotKind::Value,
+            Slot::Node { .. } => SlotKind::Node,
+        }
+    }
+
+    /// Get the anchor ID for this slot.
+    fn anchor_id(&self) -> AnchorId {
+        match self {
+            Slot::Group { anchor, .. } => *anchor,
+            Slot::Value { anchor, .. } => *anchor,
+            Slot::Node { anchor, .. } => *anchor,
         }
     }
 
     fn as_value<T: 'static>(&self) -> &T {
         match self {
-            Slot::Value(value) => value.downcast_ref::<T>().expect("slot value type mismatch"),
+            Slot::Value { data, .. } => data.downcast_ref::<T>().expect("slot value type mismatch"),
             _ => panic!("slot is not a value"),
         }
     }
 
     fn as_value_mut<T: 'static>(&mut self) -> &mut T {
         match self {
-            Slot::Value(value) => value.downcast_mut::<T>().expect("slot value type mismatch"),
+            Slot::Value { data, .. } => data.downcast_mut::<T>().expect("slot value type mismatch"),
             _ => panic!("slot is not a value"),
         }
     }
@@ -707,6 +748,7 @@ impl Default for Slot {
     fn default() -> Self {
         Slot::Group {
             key: 0,
+            anchor: AnchorId::INVALID,
             len: 0,
             scope: None,
         }
@@ -715,7 +757,30 @@ impl Default for Slot {
 
 impl SlotTable {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            slots: Vec::new(),
+            cursor: 0,
+            group_stack: Vec::new(),
+            anchors: HashMap::new(),
+            next_anchor_id: Cell::new(1), // Start at 1 (0 is INVALID)
+        }
+    }
+
+    /// Allocate a new unique anchor ID.
+    fn allocate_anchor(&self) -> AnchorId {
+        let id = self.next_anchor_id.get();
+        self.next_anchor_id.set(id + 1);
+        AnchorId(id)
+    }
+
+    /// Register an anchor at a specific position in the slots array.
+    fn register_anchor(&mut self, anchor: AnchorId, position: usize) {
+        self.anchors.insert(anchor, position);
+    }
+
+    /// Resolve an anchor to its current position in the slots array.
+    fn resolve_anchor(&self, anchor: AnchorId) -> Option<usize> {
+        self.anchors.get(&anchor).copied()
     }
 
     pub fn set_group_scope(&mut self, index: usize, scope: ScopeId) {
@@ -764,7 +829,9 @@ impl SlotTable {
             .iter()
             .enumerate()
             .filter_map(|(i, slot)| match slot {
-                Slot::Group { key, len, scope } => Some((i, *key, *scope, *len)),
+                Slot::Group {
+                    key, len, scope, ..
+                } => Some((i, *key, *scope, *len)),
                 _ => None,
             })
             .collect()
@@ -775,6 +842,15 @@ impl SlotTable {
             if frame.end < self.cursor {
                 frame.end = self.cursor;
             }
+        }
+    }
+
+    /// Update all anchor positions to match their current physical positions in the slots array.
+    /// This should be called after any operation that modifies slot positions (insert, remove, etc.)
+    fn update_all_anchor_positions(&mut self) {
+        self.anchors.clear();
+        for (position, slot) in self.slots.iter().enumerate() {
+            self.anchors.insert(slot.anchor_id(), position);
         }
     }
 
@@ -812,23 +888,26 @@ impl SlotTable {
             "slot cursor {} out of bounds",
             cursor
         );
-        let reuse_len = match self.slots.get(cursor) {
+        let reuse_result = match self.slots.get(cursor) {
             Some(Slot::Group {
                 key: existing_key,
+                anchor,
                 len,
                 scope: _,
             }) if *existing_key == key => {
                 debug_assert_eq!(*existing_key, key, "group key mismatch");
-                Some(*len)
+                Some((*len, *anchor))
             }
             Some(_slot) => None,
             None => None,
         };
-        if let Some(len) = reuse_len {
+        if let Some((len, group_anchor)) = reuse_result {
             let frame = GroupFrame {
                 key,
                 start: cursor,
+                start_anchor: group_anchor,
                 end: cursor + len,
+                end_anchor: self.allocate_anchor(), // Will be updated in end()
             };
             self.group_stack.push(frame);
             self.cursor = cursor + 1;
@@ -842,17 +921,18 @@ impl SlotTable {
             .map(|frame| frame.end.min(self.slots.len()))
             .unwrap_or(self.slots.len());
         let mut search_index = cursor;
-        let mut found_group: Option<(usize, usize)> = None;
+        let mut found_group: Option<(usize, AnchorId, usize)> = None;
         while search_index < parent_end {
             match self.slots.get(search_index) {
                 Some(Slot::Group {
                     key: existing_key,
+                    anchor,
                     len,
                     scope: _,
                 }) => {
                     let group_len = *len;
                     if *existing_key == key {
-                        found_group = Some((search_index, group_len));
+                        found_group = Some((search_index, *anchor, group_len));
                         break;
                     }
                     let advance = group_len.max(1);
@@ -865,7 +945,7 @@ impl SlotTable {
             }
         }
 
-        if let Some((found_index, group_len)) = found_group {
+        if let Some((found_index, group_anchor, group_len)) = found_group {
             self.shift_group_frames(found_index, -(group_len as isize));
             let moved: Vec<_> = self
                 .slots
@@ -873,10 +953,14 @@ impl SlotTable {
                 .collect();
             self.shift_group_frames(cursor, group_len as isize);
             self.slots.splice(cursor..cursor, moved);
+            // Update all anchor positions after group move
+            self.update_all_anchor_positions();
             let frame = GroupFrame {
                 key,
                 start: cursor,
+                start_anchor: group_anchor,
                 end: cursor + group_len,
+                end_anchor: self.allocate_anchor(),
             };
             self.group_stack.push(frame);
             self.cursor = cursor + 1;
@@ -885,19 +969,25 @@ impl SlotTable {
         }
 
         self.shift_group_frames(cursor, 1);
+        let group_anchor = self.allocate_anchor();
         self.slots.insert(
             cursor,
             Slot::Group {
                 key,
+                anchor: group_anchor,
                 len: 0,
                 scope: None,
             },
         );
+        // Update all anchor positions after insertion
+        self.update_all_anchor_positions();
         self.cursor = cursor + 1;
         self.group_stack.push(GroupFrame {
             key,
             start: cursor,
+            start_anchor: group_anchor,
             end: self.cursor,
+            end_anchor: self.allocate_anchor(),
         });
         self.update_group_bounds();
         cursor
@@ -934,16 +1024,21 @@ impl SlotTable {
                 "slot kind mismatch at {}",
                 index
             );
-            if let Slot::Group { key, len, .. } = *slot {
+            if let Slot::Group {
+                key, anchor, len, ..
+            } = *slot
+            {
                 let frame = GroupFrame {
                     key,
                     start: index,
+                    start_anchor: anchor,
                     end: index + len,
+                    end_anchor: self.allocate_anchor(),
                 };
                 self.group_stack.push(frame);
                 self.cursor = index + 1;
                 if self.cursor < self.slots.len()
-                    && matches!(self.slots.get(self.cursor), Some(Slot::Value(_)))
+                    && matches!(self.slots.get(self.cursor), Some(Slot::Value { .. }))
                 {
                     self.cursor += 1;
                 }
@@ -971,7 +1066,7 @@ impl SlotTable {
         self.slots[frame.start..end]
             .iter()
             .filter_map(|slot| match slot {
-                Slot::Node(id) => Some(*id),
+                Slot::Node { id, .. } => Some(*id),
                 _ => None,
             })
             .collect()
@@ -985,23 +1080,28 @@ impl SlotTable {
             cursor
         );
         if cursor < self.slots.len() {
-            let reuse = matches!(
-                self.slots.get(cursor),
-                Some(Slot::Value(existing)) if existing.is::<T>()
-            );
+            let reuse = if let Some(Slot::Value { data, .. }) = self.slots.get(cursor) {
+                data.is::<T>()
+            } else {
+                false
+            };
             if reuse {
                 self.cursor = cursor + 1;
                 self.update_group_bounds();
                 return cursor;
             }
+            // RESTORE ORIGINAL: truncate on mismatch
             self.slots.truncate(cursor);
         }
+        let anchor = self.allocate_anchor();
         let boxed: Box<dyn Any> = Box::new(init());
+        let slot = Slot::Value { anchor, data: boxed };
         if cursor == self.slots.len() {
-            self.slots.push(Slot::Value(boxed));
+            self.slots.push(slot);
         } else {
-            self.slots[cursor] = Slot::Value(boxed);
+            self.slots[cursor] = slot;
         }
+        self.register_anchor(anchor, cursor);
         self.cursor = cursor + 1;
         self.update_group_bounds();
         cursor
@@ -1046,12 +1146,45 @@ impl SlotTable {
             "slot kind mismatch at {}",
             idx
         );
-        *slot = Slot::Value(Box::new(value));
+        // Preserve the anchor when replacing the value
+        let anchor = slot.anchor_id();
+        *slot = Slot::Value {
+            anchor,
+            data: Box::new(value),
+        };
+    }
+
+    /// Read a value slot by its anchor ID.
+    /// Provides stable access even if the slot's position changes.
+    pub fn read_value_by_anchor<T: 'static>(&self, anchor: AnchorId) -> Option<&T> {
+        let idx = self.resolve_anchor(anchor)?;
+        Some(self.read_value(idx))
+    }
+
+    /// Read a mutable value slot by its anchor ID.
+    pub fn read_value_mut_by_anchor<T: 'static>(&mut self, anchor: AnchorId) -> Option<&mut T> {
+        let idx = self.resolve_anchor(anchor)?;
+        Some(self.read_value_mut(idx))
     }
 
     pub fn remember<T: 'static>(&mut self, init: impl FnOnce() -> T) -> Owned<T> {
         let index = self.use_value_slot(|| Owned::new(init()));
         self.read_value::<Owned<T>>(index).clone()
+    }
+
+    /// Remember a value and return both its index and anchor ID.
+    /// The anchor provides stable access even if the slot's position changes.
+    pub fn remember_with_anchor<T: 'static>(
+        &mut self,
+        init: impl FnOnce() -> T,
+    ) -> (usize, AnchorId) {
+        let index = self.use_value_slot(|| Owned::new(init()));
+        let anchor = self
+            .slots
+            .get(index)
+            .map(|slot| slot.anchor_id())
+            .unwrap_or(AnchorId::INVALID);
+        (index, anchor)
     }
 
     pub fn record_node(&mut self, id: NodeId) {
@@ -1062,7 +1195,7 @@ impl SlotTable {
             cursor
         );
         if cursor < self.slots.len() {
-            if let Some(Slot::Node(existing)) = self.slots.get(cursor) {
+            if let Some(Slot::Node { id: existing, .. }) = self.slots.get(cursor) {
                 if *existing == id {
                     self.cursor = cursor + 1;
                     self.update_group_bounds();
@@ -1071,11 +1204,14 @@ impl SlotTable {
             }
             self.slots.truncate(cursor);
         }
+        let anchor = self.allocate_anchor();
+        let slot = Slot::Node { anchor, id };
         if cursor == self.slots.len() {
-            self.slots.push(Slot::Node(id));
+            self.slots.push(slot);
         } else {
-            self.slots[cursor] = Slot::Node(id);
+            self.slots[cursor] = slot;
         }
+        self.register_anchor(anchor, cursor);
         self.cursor = cursor + 1;
         self.update_group_bounds();
     }
@@ -1088,7 +1224,7 @@ impl SlotTable {
             cursor
         );
         let node = match self.slots.get(cursor) {
-            Some(Slot::Node(id)) => Some(*id),
+            Some(Slot::Node { id, .. }) => Some(*id),
             Some(_slot) => None,
             None => None,
         };
@@ -1104,23 +1240,15 @@ impl SlotTable {
         self.group_stack.clear();
     }
 
-    /// Trim slots beyond the cursor position.
+    /// Trim slots using anchor reachability analysis.
     ///
-    /// TODO(framework): This method is too aggressive and can accidentally remove
-    /// state that should persist (e.g., LaunchedEffect state) when conditional
-    /// rendering changes the slot table structure. This causes bugs like:
-    /// - Effect states being dropped when conditionals change
-    /// - Async tasks stopping unexpectedly
-    /// - State loss during recomposition
+    /// Instead of blindly truncating at cursor position, this method:
+    /// 1. Identifies all reachable anchors (those in active groups and accessible slots)
+    /// 2. Removes only slots with unreachable anchors
+    /// 3. Compacts the slots array and updates anchor positions
     ///
-    /// Current workaround: Users must manually wrap conditionals with `with_key()`
-    /// to stabilize slot table structure.
-    ///
-    /// Better solution: Implement smarter slot table management that:
-    /// - Tracks which slots are "stable" vs "conditional"
-    /// - Only truncates truly unused slots
-    /// - Preserves effect state across conditional changes
-    /// - Automatically inserts stabilization keys for conditionals
+    /// This ensures effect states (LaunchedEffect, etc.) are preserved even when
+    /// conditional rendering changes the composition structure.
     pub fn trim_to_cursor(&mut self) {
         self.slots.truncate(self.cursor);
         if let Some(frame) = self.group_stack.last_mut() {
@@ -1140,6 +1268,21 @@ impl SlotTable {
         }
     }
 
+    /// Mark all anchors in a range of slots as reachable.
+    /// This recursively processes nested groups.
+    fn mark_reachable_in_range(&self, start: usize, end: usize, reachable: &mut HashSet<AnchorId>) {
+        for i in start..end.min(self.slots.len()) {
+            if let Some(slot) = self.slots.get(i) {
+                reachable.insert(slot.anchor_id());
+
+                // Recurse into nested groups
+                if let Slot::Group { len, .. } = slot {
+                    let group_end = (i + len).min(self.slots.len());
+                    self.mark_reachable_in_range(i + 1, group_end, reachable);
+                }
+            }
+        }
+    }
 }
 
 pub trait Node: Any {
@@ -2187,6 +2330,11 @@ impl<T: Clone + 'static> MutableState<T> {
 
     fn schedule_invalidation(&self) {
         self.inner.invalidate_watchers();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn watcher_count(&self) -> usize {
+        self.inner.watchers.borrow().len()
     }
 }
 

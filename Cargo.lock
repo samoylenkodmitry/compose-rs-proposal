@@ -373,6 +373,7 @@ dependencies = [
  "anyhow",
  "compose-macros",
  "compose-testing",
+ "compose-ui",
  "futures-task",
 ]
 

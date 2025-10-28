@@ -64,3 +64,7 @@ pub fn run_test_composition(mut build: impl FnMut()) -> TestComposition {
 }
 
 pub use compose_core::MutableState as SnapshotState;
+
+#[cfg(test)]
+#[path = "tests/anchor_async_tests.rs"]
+mod anchor_async_tests;

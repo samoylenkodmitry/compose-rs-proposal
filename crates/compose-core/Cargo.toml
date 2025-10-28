@@ -13,5 +13,6 @@ futures-task = "0.3"
 default = []
 
 [dev-dependencies]
+compose-ui = { path = "../compose-ui" }
 compose-macros = { path = "../compose-macros" }
 compose-testing = { path = "../compose-testing" }

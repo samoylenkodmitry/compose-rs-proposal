@@ -3,6 +3,7 @@ use crate as compose_core;
 use crate::snapshot::take_mutable_snapshot;
 use crate::state::{MutationPolicy, SnapshotMutableState};
 use compose_macros::composable;
+use compose_ui::{Column, ColumnSpec, Modifier, Row, RowSpec, Text};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -519,6 +520,489 @@ fn launched_effect_relaunches_on_branch_change() {
     {
         let scopes = recorded_scopes.borrow();
         assert!(!scopes.last().expect("branch B scope").1.is_active());
+    }
+}
+
+#[test]
+fn anchor_survives_conditional_removal() {
+    let mut composition = Composition::new(MemoryApplier::new());
+    let runtime = composition.runtime_handle();
+    let toggle = MutableState::with_runtime(true, runtime.clone());
+    let runs = Arc::new(AtomicUsize::new(0));
+    let captured_scope: Rc<RefCell<Option<LaunchedEffectScope>>> = Rc::new(RefCell::new(None));
+
+    let render = |composition: &mut Composition<MemoryApplier>| {
+        let toggle = toggle.clone();
+        let runs = Arc::clone(&runs);
+        let captured_scope = Rc::clone(&captured_scope);
+        composition
+            .render(0, move || {
+                if toggle.value() {
+                    compose_core::with_current_composer(|composer| {
+                        composer.emit_node(|| TestDummyNode::default());
+                    });
+                }
+
+                let runs_for_effect = Arc::clone(&runs);
+                let scope_slot = Rc::clone(&captured_scope);
+                LaunchedEffect!((), move |scope| {
+                    runs_for_effect.fetch_add(1, Ordering::SeqCst);
+                    scope_slot.borrow_mut().replace(scope);
+                });
+            })
+            .expect("render succeeds");
+    };
+
+    render(&mut composition);
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        1,
+        "effect should run exactly once on first composition"
+    );
+    {
+        let scope_ref = captured_scope.borrow();
+        let scope = scope_ref.as_ref().expect("scope captured on first run");
+        assert!(scope.is_active(), "scope stays active after first run");
+    }
+
+    toggle.set_value(false);
+    render(&mut composition);
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        1,
+        "effect should not rerun while conditional is absent"
+    );
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        1,
+        "effect run count should remain stable after conditional removal"
+    );
+    {
+        let scope_ref = captured_scope.borrow();
+        let scope = scope_ref
+            .as_ref()
+            .expect("scope retained after conditional removal");
+        assert!(
+            scope.is_active(),
+            "anchor should keep effect alive when slots ahead disappear"
+        );
+    }
+
+    toggle.set_value(true);
+    render(&mut composition);
+    assert!(
+        runs.load(Ordering::SeqCst) >= 1,
+        "effect should remain launched after conditional restoration"
+    );
+    {
+        let scope_ref = captured_scope.borrow();
+        let scope = scope_ref
+            .as_ref()
+            .expect("scope retained after conditional restoration");
+        assert!(
+            scope.is_active(),
+            "scope should remain active after conditional restoration"
+        );
+    }
+
+    drop(composition);
+    {
+        let scope_ref = captured_scope.borrow();
+        let scope = scope_ref.as_ref().expect("scope retained for final check");
+        assert!(
+            !scope.is_active(),
+            "dropping the composition should cancel the effect"
+        );
+    }
+}
+
+#[test]
+fn launched_effect_async_survives_conditional_cycle() {
+    let mut composition = Composition::new(MemoryApplier::new());
+    let runtime_handle = composition.runtime_handle();
+    let gate = MutableState::with_runtime(true, runtime_handle.clone());
+    let log: Rc<RefCell<Vec<u32>>> = Rc::new(RefCell::new(Vec::new()));
+    let spawns = Arc::new(AtomicUsize::new(0));
+
+    let mut render = {
+        let gate = gate.clone();
+        let log = log.clone();
+        let spawns = Arc::clone(&spawns);
+        move || {
+            if gate.value() {
+                compose_core::with_current_composer(|composer| {
+                    composer.emit_node(|| TestDummyNode::default());
+                });
+            }
+
+            let log = log.clone();
+            let spawns = Arc::clone(&spawns);
+            compose_core::LaunchedEffectAsync!((), move |scope| {
+                spawns.fetch_add(1, Ordering::SeqCst);
+                let log = log.clone();
+                Box::pin(async move {
+                    let clock = scope.runtime().frame_clock();
+                    while scope.is_active() {
+                        clock.next_frame().await;
+                        if !scope.is_active() {
+                            break;
+                        }
+                        log.borrow_mut().push(1);
+                    }
+                })
+            });
+        }
+    };
+
+    let key = location_key(file!(), line!(), column!());
+    composition
+        .render(key, &mut render)
+        .expect("initial render");
+    runtime_handle.drain_ui();
+    runtime_handle.drain_frame_callbacks(1);
+    runtime_handle.drain_ui();
+
+    let initial_spawns = spawns.load(Ordering::SeqCst);
+    assert!(initial_spawns >= 1, "effect should launch initially");
+    {
+        let log = log.borrow();
+        assert!(
+            !log.is_empty(),
+            "effect should produce entries after initial frame callback"
+        );
+    }
+
+    gate.set_value(false);
+    composition
+        .render(key, &mut render)
+        .expect("render with gate disabled");
+    runtime_handle.drain_ui();
+    let entries_before_pause = log.borrow().len();
+    runtime_handle.drain_frame_callbacks(2);
+    runtime_handle.drain_ui();
+    runtime_handle.drain_frame_callbacks(3);
+    runtime_handle.drain_ui();
+    {
+        let log = log.borrow();
+        assert!(
+            log.len() > entries_before_pause,
+            "effect should keep running while conditional content is absent"
+        );
+    }
+    assert_eq!(
+        spawns.load(Ordering::SeqCst),
+        initial_spawns,
+        "effect should not relaunch when conditional collapses"
+    );
+
+    gate.set_value(true);
+    composition
+        .render(key, &mut render)
+        .expect("render with gate restored");
+    runtime_handle.drain_ui();
+    let entries_before_restore = log.borrow().len();
+    runtime_handle.drain_frame_callbacks(4);
+    runtime_handle.drain_ui();
+    {
+        let log = log.borrow();
+        assert!(
+            log.len() > entries_before_restore,
+            "effect should continue running after conditional is restored"
+        );
+    }
+    assert!(
+        spawns.load(Ordering::SeqCst) >= initial_spawns,
+        "effect should remain launched after conditional restoration"
+    );
+
+    let entries_before_drop = log.borrow().len();
+    drop(composition);
+    runtime_handle.drain_frame_callbacks(5);
+    runtime_handle.drain_ui();
+    {
+        let log = log.borrow();
+        assert_eq!(
+            log.len(),
+            entries_before_drop,
+            "effect should stop producing entries after composition is dropped"
+        );
+    }
+}
+
+#[test]
+fn launched_effect_async_keeps_frames_after_backward_forward_flip() {
+    #[derive(Clone, Copy, Debug)]
+    struct TestAnimation {
+        progress: f32,
+        direction: f32,
+    }
+
+    impl Default for TestAnimation {
+        fn default() -> Self {
+            Self {
+                progress: 0.0,
+                direction: 1.0,
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct TestFrameStats {
+        frames: u32,
+        last_frame_ms: f32,
+    }
+
+    impl Default for TestFrameStats {
+        fn default() -> Self {
+            Self {
+                frames: 0,
+                last_frame_ms: 0.0,
+            }
+        }
+    }
+
+    let mut composition = Composition::new(MemoryApplier::new());
+    let runtime = composition.runtime_handle();
+    let animation = MutableState::with_runtime(TestAnimation::default(), runtime.clone());
+    let stats = MutableState::with_runtime(TestFrameStats::default(), runtime.clone());
+
+    let mut render = {
+        let animation = animation.clone();
+        let stats = stats.clone();
+        move || {
+            {
+                let animation_state = animation.clone();
+                let stats_state = stats.clone();
+                compose_core::LaunchedEffectAsync!((), move |scope| {
+                    let animation = animation_state.clone();
+                    let stats = stats_state.clone();
+                    Box::pin(async move {
+                        let clock = scope.runtime().frame_clock();
+                        let mut last_time: Option<u64> = None;
+                        while scope.is_active() {
+                            let nanos = clock.next_frame().await;
+                            if !scope.is_active() {
+                                break;
+                            }
+
+                            if let Some(previous) = last_time {
+                                let mut delta = nanos.saturating_sub(previous);
+                                if delta == 0 {
+                                    delta = 16_666_667;
+                                }
+                                let dt_ms = delta as f32 / 1_000_000.0;
+                                stats.update(|state| {
+                                    state.frames = state.frames.wrapping_add(1);
+                                    state.last_frame_ms = dt_ms;
+                                });
+                                animation.update(|anim| {
+                                    let next =
+                                        anim.progress + 0.1 * anim.direction * (dt_ms / 600.0);
+                                    if next >= 1.0 {
+                                        anim.progress = 1.0;
+                                        anim.direction = -1.0;
+                                    } else if next <= 0.0 {
+                                        anim.progress = 0.0;
+                                        anim.direction = 1.0;
+                                    } else {
+                                        anim.progress = next;
+                                    }
+                                });
+                            }
+
+                            last_time = Some(nanos);
+                        }
+                    })
+                });
+            }
+
+            let snapshot = animation.value();
+            if snapshot.progress > 0.0 {
+                compose_core::with_current_composer(|composer| {
+                    composer.emit_node(|| TestDummyNode::default());
+                });
+            }
+
+            // Touch stats to subscribe the current scope.
+            let _stats = stats.value();
+        }
+    };
+
+    let key = location_key(file!(), line!(), column!());
+    composition
+        .render(key, &mut render)
+        .expect("initial render");
+    runtime.drain_ui();
+    let _ = composition
+        .process_invalid_scopes()
+        .expect("initial recomposition");
+
+    let mut last_direction = animation.value().direction;
+    assert_eq!(last_direction, 1.0, "animation starts moving forward");
+
+    let mut forward_flip_observed = false;
+    let mut time = 0u64;
+    for _step in 0..32 {
+        time += 1_000_000_000;
+        runtime.drain_frame_callbacks(time);
+        let _ = composition
+            .process_invalid_scopes()
+            .expect("process recompositions");
+
+        let anim = animation.value();
+        let frames = stats.value().frames;
+
+        if last_direction < 0.0 && anim.direction > 0.0 {
+            forward_flip_observed = true;
+            let frames_before = frames;
+
+            for _ in 0..3 {
+                time += 1_000_000_000;
+                runtime.drain_frame_callbacks(time);
+                let _ = composition
+                    .process_invalid_scopes()
+                    .expect("process recompositions after flip");
+            }
+
+            let frames_after = stats.value().frames;
+            assert!(
+                frames_after > frames_before,
+                "frames should continue increasing after backward->forward flip (before {}, after {})",
+                frames_before,
+                frames_after
+            );
+            break;
+        }
+
+        last_direction = anim.direction;
+    }
+
+    assert!(
+        forward_flip_observed,
+        "animation should experience a backward->forward transition"
+    );
+
+    drop(composition);
+    runtime.drain_frame_callbacks(time.saturating_add(1));
+    runtime.drain_ui();
+}
+
+#[test]
+fn stats_scope_survives_conditional_gap() {
+    #[derive(Clone, Copy, Debug, Default)]
+    struct SimpleStats {
+        frames: u32,
+    }
+
+    let mut composition = Composition::new(MemoryApplier::new());
+    let runtime = composition.runtime_handle();
+    let animation = MutableState::with_runtime(0.0f32, runtime.clone());
+    let stats = MutableState::with_runtime(SimpleStats::default(), runtime.clone());
+    let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+
+    #[composable]
+    fn runtime_demo(
+        animation: MutableState<f32>,
+        stats: MutableState<SimpleStats>,
+        log: Rc<RefCell<Vec<String>>>,
+    ) {
+        let progress = animation.value();
+        let stats_snapshot = stats.value();
+
+        with_current_composer(|composer| {
+            composer.with_group(location_key(file!(), line!(), column!()), |composer| {
+                let progress_for_slot = progress;
+                composer.with_group(location_key(file!(), line!(), column!()), |composer| {
+                    if progress_for_slot > 0.0 {
+                        let id = composer.emit_node(|| TestDummyNode::default());
+                        log.borrow_mut()
+                            .push(format!("dummy {}", progress_for_slot));
+                        composer
+                            .with_node_mut(id, |_: &mut TestDummyNode| {})
+                            .expect("dummy node exists");
+                    }
+                });
+
+                composer.with_group(location_key(file!(), line!(), column!()), |composer| {
+                    let id = composer.emit_node(|| TestTextNode::default());
+                    log.borrow_mut()
+                        .push(format!("frames {}", stats_snapshot.frames));
+                    composer
+                        .with_node_mut(id, |node: &mut TestTextNode| {
+                            node.text = format!("{}", stats_snapshot.frames);
+                        })
+                        .expect("update text node");
+                });
+            });
+        });
+    }
+
+    let mut render = {
+        let animation = animation.clone();
+        let stats = stats.clone();
+        let log = Rc::clone(&log);
+        move || runtime_demo(animation.clone(), stats.clone(), Rc::clone(&log))
+    };
+
+    let key = location_key(file!(), line!(), column!());
+    composition
+        .render(key, &mut render)
+        .expect("initial render");
+
+    fn drain_all<A: Applier + 'static>(composition: &mut Composition<A>) -> Result<(), NodeError> {
+        loop {
+            if !composition.process_invalid_scopes()? {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    drain_all(&mut composition).expect("initial drain");
+    {
+        let entries = log.borrow();
+        assert_eq!(
+            entries.as_slice(),
+            ["frames 0"],
+            "initial composition should render frames text once"
+        );
+    }
+    log.borrow_mut().clear();
+
+    animation.set_value(1.0);
+    drain_all(&mut composition).expect("recompose at progress 1.0");
+    {
+        let entries = log.borrow();
+        assert!(
+            entries.iter().any(|entry| entry.starts_with("dummy")),
+            "progress > 0 should render dummy node"
+        );
+        assert!(
+            entries.iter().any(|entry| entry == "frames 0"),
+            "frames text should render after progress increases"
+        );
+    }
+    log.borrow_mut().clear();
+
+    animation.set_value(0.0);
+    drain_all(&mut composition).expect("recompose at progress 0.0");
+    {
+        let entries = log.borrow();
+        assert!(
+            entries.iter().all(|entry| entry.starts_with("frames")),
+            "only frames text should render when progress is zero"
+        );
+    }
+    log.borrow_mut().clear();
+
+    stats.update(|value| value.frames = value.frames.wrapping_add(1));
+    drain_all(&mut composition).expect("recompose after stats update");
+    {
+        let entries = log.borrow();
+        assert!(
+            entries.iter().any(|entry| entry == "frames 1"),
+            "frames text should re-render after stats change even after a gap"
+        );
     }
 }
 
@@ -1867,3 +2351,71 @@ fn snapshot_state_child_apply_after_parent_history() {
 
 // Note: Tests for ComposeTestRule and run_test_composition have been moved to
 // the compose-testing crate to avoid circular dependencies.
+
+#[composable]
+fn anchor_progress_content(toggle: MutableState<bool>, stats: MutableState<i32>) {
+    let show_progress = toggle.value();
+    compose_core::with_current_composer(|composer| {
+        composer.with_group(location_key(file!(), line!(), column!()), |composer| {
+            if show_progress {
+                composer.with_group(location_key(file!(), line!(), column!()), |composer| {
+                    composer.emit_node(|| TestDummyNode::default());
+                });
+            }
+        });
+    });
+    let _ = stats.value();
+}
+
+#[test]
+fn stats_watchers_survive_conditional_toggle() {
+    fn drain_all(composition: &mut Composition<MemoryApplier>) -> Result<(), NodeError> {
+        loop {
+            if !composition.process_invalid_scopes()? {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    let mut composition = Composition::new(MemoryApplier::new());
+    let runtime = composition.runtime_handle();
+    let toggle = MutableState::with_runtime(true, runtime.clone());
+    let stats = MutableState::with_runtime(0i32, runtime.clone());
+
+    let mut render = {
+        let toggle = toggle.clone();
+        let stats = stats.clone();
+        move || anchor_progress_content(toggle.clone(), stats.clone())
+    };
+
+    let key = location_key(file!(), line!(), column!());
+    composition
+        .render(key, &mut render)
+        .expect("initial render");
+    drain_all(&mut composition).expect("initial drain");
+    assert!(
+        stats.watcher_count() > 0,
+        "initial render should register stats watcher"
+    );
+
+    toggle.set_value(false);
+    composition
+        .render(key, &mut render)
+        .expect("render without progress");
+    drain_all(&mut composition).expect("drain without progress");
+    assert!(
+        stats.watcher_count() > 0,
+        "conditional removal should not drop stats watcher"
+    );
+
+    toggle.set_value(true);
+    composition
+        .render(key, &mut render)
+        .expect("render with progress again");
+    drain_all(&mut composition).expect("drain with progress");
+    assert!(
+        stats.watcher_count() > 0,
+        "restoring progress should keep stats watcher"
+    );
+}
