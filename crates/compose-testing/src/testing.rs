@@ -1,5 +1,5 @@
 use compose_core::{
-    location_key, Composition, Key, MemoryApplier, NodeError, NodeId, RuntimeHandle,
+    location_key, ApplierGuard, Composition, Key, MemoryApplier, NodeError, NodeId, RuntimeHandle,
 };
 
 #[cfg(test)]
@@ -90,14 +90,15 @@ impl ComposeTestRule {
 
     /// Gain mutable access to the underlying in-memory applier for assertions
     /// about the produced node tree.
-    pub fn applier_mut(&mut self) -> &mut MemoryApplier {
+    pub fn applier_mut(&mut self) -> ApplierGuard<'_, MemoryApplier> {
         self.composition.applier_mut()
     }
 
     /// Dump the current node tree as text for debugging
     pub fn dump_tree(&mut self) -> String {
         let root = self.composition.root();
-        self.composition.applier_mut().dump_tree(root)
+        let applier = self.composition.applier_mut();
+        applier.dump_tree(root)
     }
 
     /// Returns whether user content has been installed in this rule.

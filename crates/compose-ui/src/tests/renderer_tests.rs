@@ -9,7 +9,7 @@ use compose_core::{location_key, MemoryApplier, SlotId};
 fn compute_layout(composition: &mut Composition<MemoryApplier>, root: NodeId) -> LayoutTree {
     let handle = composition.runtime_handle();
     let layout = {
-        let applier = composition.applier_mut();
+        let mut applier = composition.applier_mut();
         applier.set_runtime_handle(handle);
         let result = applier
             .compute_layout(

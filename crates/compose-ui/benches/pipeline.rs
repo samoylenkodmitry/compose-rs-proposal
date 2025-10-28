@@ -103,7 +103,12 @@ impl PipelineFixture {
 
     fn measure(&mut self) -> LayoutMeasurements {
         let root = self.composition.root().expect("composition root");
-        measure_layout(self.composition.applier_mut(), root, self.root_size).expect("measure")
+        let mut applier_guard = self.composition.applier_mut();
+        let mut temp_applier = std::mem::take(&mut *applier_guard);
+        let measurements =
+            measure_layout(&mut temp_applier, root, self.root_size).expect("measure");
+        *applier_guard = temp_applier;
+        measurements
     }
 }
 
@@ -139,7 +144,12 @@ impl RecursiveFixture {
 
     fn measure(&mut self) -> LayoutMeasurements {
         let root = self.composition.root().expect("composition root");
-        measure_layout(self.composition.applier_mut(), root, self.root_size).expect("measure")
+        let mut applier_guard = self.composition.applier_mut();
+        let mut temp_applier = std::mem::take(&mut *applier_guard);
+        let measurements =
+            measure_layout(&mut temp_applier, root, self.root_size).expect("measure");
+        *applier_guard = temp_applier;
+        measurements
     }
 }
 

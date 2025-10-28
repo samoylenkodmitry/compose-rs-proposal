@@ -104,15 +104,51 @@ fn compose_test_node<N: Node + 'static>(init: impl FnOnce() -> N) -> NodeId {
     compose_core::with_current_composer(|composer| composer.emit_node(init))
 }
 
+fn setup_composer(
+    slots: &mut SlotTable,
+    applier: &mut MemoryApplier,
+    handle: RuntimeHandle,
+    root: Option<NodeId>,
+) -> (
+    Composer,
+    Rc<SlotsHost>,
+    Rc<ConcreteApplierHost<MemoryApplier>>,
+) {
+    let slots_host = Rc::new(SlotsHost::new(std::mem::take(slots)));
+    let applier_host = Rc::new(ConcreteApplierHost::new(std::mem::replace(
+        applier,
+        MemoryApplier::new(),
+    )));
+    let composer = Composer::new(Rc::clone(&slots_host), applier_host.clone(), handle, root);
+    (composer, slots_host, applier_host)
+}
+
+fn teardown_composer(
+    slots: &mut SlotTable,
+    applier: &mut MemoryApplier,
+    slots_host: Rc<SlotsHost>,
+    applier_host: Rc<ConcreteApplierHost<MemoryApplier>>,
+) {
+    *slots = Rc::try_unwrap(slots_host)
+        .unwrap_or_else(|_| panic!("slots host still has outstanding references"))
+        .into_inner();
+    *applier = Rc::try_unwrap(applier_host)
+        .unwrap_or_else(|_| panic!("applier host still has outstanding references"))
+        .into_inner();
+}
+
 #[test]
 #[should_panic(expected = "subcompose() may only be called during measure or layout")]
 fn subcompose_panics_outside_measure_or_layout() {
     let (handle, _runtime) = runtime_handle();
     let mut slots = SlotTable::new();
     let mut applier = MemoryApplier::new();
-    let mut composer = Composer::new(&mut slots, &mut applier, handle, None);
+    let (composer, slots_host, applier_host) =
+        setup_composer(&mut slots, &mut applier, handle, None);
     let mut state = SubcomposeState::default();
     let _ = composer.subcompose(&mut state, SlotId::new(1), |_| {});
+    drop(composer);
+    teardown_composer(&mut slots, &mut applier, slots_host, applier_host);
 }
 
 #[test]
@@ -124,25 +160,31 @@ fn subcompose_reuses_nodes_across_calls() {
     let first_id;
 
     {
-        let mut composer = Composer::new(&mut slots, &mut applier, handle.clone(), None);
+        let (composer, slots_host, applier_host) =
+            setup_composer(&mut slots, &mut applier, handle.clone(), None);
         composer.set_phase(Phase::Measure);
         let (_, first_nodes) = composer.subcompose(&mut state, SlotId::new(7), |composer| {
             composer.emit_node(|| TestDummyNode::default())
         });
         assert_eq!(first_nodes.len(), 1);
         first_id = first_nodes[0];
+        drop(composer);
+        teardown_composer(&mut slots, &mut applier, slots_host, applier_host);
     }
 
     slots.reset();
 
     {
-        let mut composer = Composer::new(&mut slots, &mut applier, handle.clone(), None);
+        let (composer, slots_host, applier_host) =
+            setup_composer(&mut slots, &mut applier, handle.clone(), None);
         composer.set_phase(Phase::Measure);
         let (_, second_nodes) = composer.subcompose(&mut state, SlotId::new(7), |composer| {
             composer.emit_node(|| TestDummyNode::default())
         });
         assert_eq!(second_nodes.len(), 1);
         assert_eq!(second_nodes[0], first_id);
+        drop(composer);
+        teardown_composer(&mut slots, &mut applier, slots_host, applier_host);
     }
 }
 
@@ -894,7 +936,7 @@ fn recompose_handles_removed_scopes_gracefully() {
     }
 
     fn render_optional_scope(
-        composer: &mut Composer<'_>,
+        composer: &Composer,
         state_a: &MutableState<i32>,
         toggle_group: &MutableState<bool>,
     ) {
@@ -1120,13 +1162,12 @@ fn apply_child_diff(
 ) -> Vec<Operation> {
     // FUTURE(no_std): return bounded operation log.
     let handle = runtime.handle();
-    let mut composer = Composer::new(slots, applier, handle, Some(parent_id));
+    let (composer, slots_host, applier_host) =
+        setup_composer(slots, applier, handle, Some(parent_id));
     composer.push_parent(parent_id);
     {
-        let frame = composer
-            .parent_stack
-            .last_mut()
-            .expect("parent frame available");
+        let mut stack = composer.parent_stack();
+        let frame = stack.last_mut().expect("parent frame available");
         frame
             .remembered
             .update(|entry| entry.children = previous.clone());
@@ -1136,6 +1177,7 @@ fn apply_child_diff(
     composer.pop_parent();
     let mut commands = composer.take_commands();
     drop(composer);
+    teardown_composer(slots, applier, slots_host, applier_host);
     for command in commands.iter_mut() {
         command(applier).expect("apply diff command");
     }

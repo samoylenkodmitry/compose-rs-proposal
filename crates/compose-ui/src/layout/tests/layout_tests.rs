@@ -155,7 +155,8 @@ fn layout_node_uses_measure_policy() -> Result<(), NodeError> {
     layout_node.children.insert(child_b);
     let layout_id = applier.create(Box::new(layout_node));
 
-    let mut builder = LayoutBuilder::new(&mut applier);
+    let applier_host = Rc::new(ConcreteApplierHost::new(applier));
+    let mut builder = LayoutBuilder::new(Rc::clone(&applier_host));
     let measured = builder.measure_node(
         layout_id,
         Constraints {

@@ -28,7 +28,7 @@ fn main() {
         .unwrap();
 
     if let Some(root) = composition.root() {
-        let applier = composition.applier_mut();
+        let mut applier = composition.applier_mut();
         println!("Root node #{} children:", root);
         if let Ok(root_node) = applier.with_node(root, |node: &mut compose_ui::LayoutNode| {
             println!("  Children: {:?}", node.children);

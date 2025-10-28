@@ -10,8 +10,8 @@ use crate::widgets::{
 };
 use crate::{run_test_composition, LayoutEngine, SnapshotState, TestComposition};
 use compose_core::{
-    self, location_key, Composer, Composition, MemoryApplier, MutableState, NodeId, Phase,
-    SlotTable, State,
+    self, location_key, Applier, Composer, Composition, ConcreteApplierHost, MemoryApplier,
+    MutableState, NodeId, Phase, SlotTable, SlotsHost, State,
 };
 use compose_ui_layout::{HorizontalAlignment, LinearArrangement, VerticalAlignment};
 use std::cell::{Cell, RefCell};
@@ -20,6 +20,72 @@ use std::rc::Rc;
 thread_local! {
     static COUNTER_ROW_INVOCATIONS: Cell<usize> = Cell::new(0);
     static COUNTER_TEXT_ID: RefCell<Option<NodeId>> = RefCell::new(None);
+}
+
+fn prepare_measure_composer(
+    slots: &mut SlotTable,
+    applier: &mut MemoryApplier,
+    handle: &compose_core::RuntimeHandle,
+    root: Option<NodeId>,
+) -> (
+    Composer,
+    Rc<SlotsHost>,
+    Rc<ConcreteApplierHost<MemoryApplier>>,
+) {
+    let slots_host = Rc::new(SlotsHost::new(std::mem::take(slots)));
+    let applier_host = Rc::new(ConcreteApplierHost::new(std::mem::replace(
+        applier,
+        MemoryApplier::new(),
+    )));
+    let composer = Composer::new(
+        Rc::clone(&slots_host),
+        applier_host.clone(),
+        handle.clone(),
+        root,
+    );
+    (composer, slots_host, applier_host)
+}
+
+fn restore_measure_composer(
+    slots: &mut SlotTable,
+    applier: &mut MemoryApplier,
+    slots_host: Rc<SlotsHost>,
+    applier_host: Rc<ConcreteApplierHost<MemoryApplier>>,
+) {
+    *slots = Rc::try_unwrap(slots_host)
+        .unwrap_or_else(|_| panic!("slots host still has outstanding references"))
+        .into_inner();
+    *applier = Rc::try_unwrap(applier_host)
+        .unwrap_or_else(|_| panic!("applier host still has outstanding references"))
+        .into_inner();
+}
+
+fn run_subcompose_measure(
+    slots: &mut SlotTable,
+    applier: &mut MemoryApplier,
+    handle: &compose_core::RuntimeHandle,
+    node_id: NodeId,
+    constraints: Constraints,
+) {
+    let (composer, slots_host, applier_host) =
+        prepare_measure_composer(slots, applier, handle, Some(node_id));
+    composer.enter_phase(Phase::Measure);
+    let node_ptr = {
+        let mut applier_ref = applier_host.borrow_typed();
+        let node = applier_ref.get_mut(node_id).expect("node available");
+        let typed = node
+            .as_any_mut()
+            .downcast_mut::<SubcomposeLayoutNode>()
+            .expect("subcompose layout node");
+        typed as *mut SubcomposeLayoutNode
+    };
+    unsafe {
+        (&mut *node_ptr)
+            .measure(&composer, node_id, constraints)
+            .expect("measure succeeds");
+    }
+    drop(composer);
+    restore_measure_composer(slots, applier, slots_host, applier_host);
 }
 
 #[test]
@@ -69,19 +135,10 @@ fn measure_subcompose_node(
     root: NodeId,
     constraints: Constraints,
 ) {
-    let applier = composition.applier_mut();
-    let applier_ptr: *mut MemoryApplier = applier;
-    unsafe {
-        applier
-            .with_node(root, |node: &mut SubcomposeLayoutNode| {
-                let applier_ref: &mut MemoryApplier = &mut *applier_ptr;
-                let mut composer = Composer::new(slots, applier_ref, handle.clone(), Some(root));
-                composer.enter_phase(Phase::Measure);
-                node.measure(&mut composer, root, constraints)
-                    .expect("measure succeeds");
-            })
-            .expect("node available");
-    }
+    let mut applier_guard = composition.applier_mut();
+    let mut temp_applier = std::mem::take(&mut *applier_guard);
+    run_subcompose_measure(slots, &mut temp_applier, handle, root, constraints);
+    *applier_guard = temp_applier;
 }
 
 #[composable]
@@ -132,7 +189,7 @@ fn button_triggers_state_update() {
     assert_eq!(state.get(), 0);
     let button_node_id = button_id.borrow().as_ref().copied().expect("button id");
     {
-        let applier = composition.applier_mut();
+        let mut applier = composition.applier_mut();
         applier
             .with_node(button_node_id, |node: &mut ButtonNode| {
                 node.trigger();
@@ -176,7 +233,7 @@ fn text_updates_with_state_after_write() {
         .copied()
         .expect("text node id");
     {
-        let applier = composition.applier_mut();
+        let mut applier = composition.applier_mut();
         applier
             .with_node(id, |node: &mut TextNode| {
                 assert_eq!(node.text, "Count = 0");
@@ -194,7 +251,7 @@ fn text_updates_with_state_after_write() {
         .expect("process invalid scopes succeeds");
 
     {
-        let applier = composition.applier_mut();
+        let mut applier = composition.applier_mut();
         applier
             .with_node(id, |node: &mut TextNode| {
                 assert_eq!(node.text, "Count = 1");
@@ -227,7 +284,7 @@ fn counter_state_skips_when_label_static() {
 
     let text_id = COUNTER_TEXT_ID.with(|slot| slot.borrow().expect("text id"));
     {
-        let applier = composition.applier_mut();
+        let mut applier = composition.applier_mut();
         applier
             .with_node(text_id, |node: &mut TextNode| {
                 assert_eq!(node.text, "Count = 0");
@@ -248,7 +305,7 @@ fn counter_state_skips_when_label_static() {
     COUNTER_ROW_INVOCATIONS.with(|calls| assert_eq!(calls.get(), 0));
 
     {
-        let applier = composition.applier_mut();
+        let mut applier = composition.applier_mut();
         applier
             .with_node(text_id, |node: &mut TextNode| {
                 assert_eq!(node.text, "Count = 1");

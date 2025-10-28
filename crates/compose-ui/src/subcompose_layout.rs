@@ -1,6 +1,8 @@
 use std::rc::Rc;
 
-use compose_core::{Composer, NodeError, NodeId, Phase, SlotId, SlotTable, SubcomposeState};
+use compose_core::{
+    Composer, NodeError, NodeId, Phase, SlotId, SlotTable, SlotsHost, SubcomposeState,
+};
 use indexmap::IndexSet;
 
 use crate::modifier::{Modifier, Size};
@@ -45,15 +47,15 @@ pub trait SubcomposeMeasureScope: SubcomposeLayoutScope {
 
 /// Concrete implementation of [`SubcomposeMeasureScope`].
 pub struct SubcomposeMeasureScopeImpl<'a> {
-    composer: *mut Composer<'a>,
-    state: *mut SubcomposeState,
+    composer: Composer,
+    state: &'a mut SubcomposeState,
     constraints: Constraints,
 }
 
 impl<'a> SubcomposeMeasureScopeImpl<'a> {
     pub fn new(
-        composer: *mut Composer<'a>,
-        state: *mut SubcomposeState,
+        composer: Composer,
+        state: &'a mut SubcomposeState,
         constraints: Constraints,
     ) -> Self {
         Self {
@@ -75,16 +77,9 @@ impl<'a> SubcomposeMeasureScope for SubcomposeMeasureScopeImpl<'a> {
     where
         Content: FnOnce(),
     {
-        let nodes = unsafe {
-            let composer_ref = &mut *self.composer;
-            let state_ref = &mut *self.state;
-            let (_, nodes) = composer_ref.install(|composer| {
-                composer.subcompose_measurement(state_ref, slot_id, move |_| {
-                    content();
-                })
-            });
-            nodes
-        };
+        let (_, nodes) = self
+            .composer
+            .subcompose_measurement(self.state, slot_id, |_| content());
         nodes.into_iter().map(SubcomposeChild::new).collect()
     }
 }
@@ -137,9 +132,9 @@ impl SubcomposeLayoutNode {
         &mut self.state
     }
 
-    pub fn measure<'a>(
-        &'a mut self,
-        composer: &'a mut Composer<'a>,
+    pub fn measure(
+        &mut self,
+        composer: &Composer,
         node_id: NodeId,
         constraints: Constraints,
     ) -> Result<MeasureResult, NodeError> {
@@ -147,12 +142,15 @@ impl SubcomposeLayoutNode {
         if !matches!(previous, Phase::Measure | Phase::Layout) {
             composer.enter_phase(Phase::Measure);
         }
-        let result = composer.subcompose_in(&mut self.slots, Some(node_id), |inner| {
-            let state_ptr = &mut self.state as *mut _;
-            let composer_ptr = inner as *mut _;
-            let mut scope = SubcomposeMeasureScopeImpl::new(composer_ptr, state_ptr, constraints);
-            (self.measure_policy)(&mut scope, constraints)
+        let slots_host = Rc::new(SlotsHost::new(std::mem::take(&mut self.slots)));
+        let constraints_copy = constraints;
+        let policy = Rc::clone(&self.measure_policy);
+        let state = &mut self.state;
+        let result = composer.subcompose_in(&slots_host, Some(node_id), move |inner| {
+            let mut scope = SubcomposeMeasureScopeImpl::new(inner.clone(), state, constraints_copy);
+            (policy)(&mut scope, constraints_copy)
         })?;
+        self.slots = slots_host.take();
         self.state.dispose_or_reuse_starting_from_index(0);
         if previous != composer.phase() {
             composer.enter_phase(previous);

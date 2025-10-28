@@ -36,10 +36,12 @@ pub fn run_in_mutable_snapshot<T>(block: impl FnOnce() -> T) -> Result<T, &'stat
 pub use runtime::{TestRuntime, TestScheduler};
 
 use std::any::Any;
-use std::cell::{Cell, RefCell, UnsafeCell};
+use std::cell::{Cell, Ref, RefCell, RefMut, UnsafeCell};
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet}; // FUTURE(no_std): replace HashMap/HashSet with arena-backed maps.
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::marker::PhantomData;
+use std::ops::{Deref, DerefMut};
 use std::rc::{Rc, Weak}; // FUTURE(no_std): replace Rc/Weak with arena-managed handles.
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -94,7 +96,7 @@ impl RecomposeScopeInner {
     }
 }
 
-type RecomposeCallback = Box<dyn for<'a> FnMut(&mut Composer<'a>) + 'static>;
+type RecomposeCallback = Box<dyn FnMut(&Composer) + 'static>;
 
 #[derive(Clone)]
 pub struct RecomposeScope {
@@ -157,7 +159,7 @@ impl RecomposeScope {
         *self.inner.recompose.borrow_mut() = Some(callback);
     }
 
-    fn run_recompose(&self, composer: &mut Composer<'_>) {
+    fn run_recompose(&self, composer: &Composer) {
         let mut callback_cell = self.inner.recompose.borrow_mut();
         if let Some(mut callback) = callback_cell.take() {
             drop(callback_cell);
@@ -265,11 +267,11 @@ pub enum Phase {
 pub use composer_context::with_composer as with_current_composer;
 
 #[allow(non_snake_case)]
-pub fn withCurrentComposer<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
+pub fn withCurrentComposer<R>(f: impl FnOnce(&Composer) -> R) -> R {
     composer_context::with_composer(f)
 }
 
-fn with_current_composer_opt<R>(f: impl FnOnce(&mut Composer<'_>) -> R) -> Option<R> {
+fn with_current_composer_opt<R>(f: impl FnOnce(&Composer) -> R) -> Option<R> {
     composer_context::try_with_composer(f)
 }
 
@@ -351,11 +353,11 @@ pub fn derivedStateOf<T: 'static + Clone>(compute: impl Fn() -> T + 'static) -> 
 
 pub struct ProvidedValue {
     key: LocalKey,
-    apply: Box<dyn Fn(&mut Composer<'_>) -> Rc<dyn Any>>, // FUTURE(no_std): return arena-backed local storage pointer.
+    apply: Box<dyn Fn(&Composer) -> Rc<dyn Any>>, // FUTURE(no_std): return arena-backed local storage pointer.
 }
 
 impl ProvidedValue {
-    fn into_entry(self, composer: &mut Composer<'_>) -> (LocalKey, Rc<dyn Any>) {
+    fn into_entry(self, composer: &Composer) -> (LocalKey, Rc<dyn Any>) {
         // FUTURE(no_std): avoid Rc allocation per entry.
         let ProvidedValue { key, apply } = self;
         let entry = apply(composer);
@@ -433,7 +435,7 @@ impl<T: Clone + 'static> CompositionLocal<T> {
         let key = self.key;
         ProvidedValue {
             key,
-            apply: Box::new(move |composer: &mut Composer<'_>| {
+            apply: Box::new(move |composer: &Composer| {
                 let runtime = composer.runtime_handle();
                 let entry_ref = composer
                     .remember(|| Rc::new(LocalStateEntry::new(value.clone(), runtime.clone())));
@@ -491,7 +493,7 @@ impl<T: Clone + 'static> StaticCompositionLocal<T> {
         let key = self.key;
         ProvidedValue {
             key,
-            apply: Box::new(move |composer: &mut Composer<'_>| {
+            apply: Box::new(move |composer: &Composer| {
                 // For static locals, we don't use MutableState - just store the value directly
                 // This means reads won't be tracked, and changes will cause full subtree recomposition
                 let entry_ref = composer.remember(|| Rc::new(StaticLocalEntry::new(value.clone())));
@@ -1141,10 +1143,24 @@ impl dyn Node {
     }
 }
 
-pub trait Applier {
+pub trait Applier: Any {
     fn create(&mut self, node: Box<dyn Node>) -> NodeId;
     fn get_mut(&mut self, id: NodeId) -> Result<&mut dyn Node, NodeError>;
     fn remove(&mut self, id: NodeId) -> Result<(), NodeError>;
+
+    fn as_any(&self) -> &dyn Any
+    where
+        Self: Sized,
+    {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any
+    where
+        Self: Sized,
+    {
+        self
+    }
 }
 
 pub(crate) type Command = Box<dyn FnMut(&mut dyn Applier) -> Result<(), NodeError> + 'static>;
@@ -1267,56 +1283,110 @@ impl Applier for MemoryApplier {
     }
 }
 
-pub struct Composer<'a> {
-    slots: &'a mut SlotTable,
-    applier: &'a mut dyn Applier,
-    runtime: RuntimeHandle,
-    parent_stack: Vec<ParentFrame>, // FUTURE(no_std): replace Vec with stack-allocated frames.
-    subcompose_stack: Vec<SubcomposeFrame>, // FUTURE(no_std): migrate to smallvec-backed storage.
-    pub(crate) root: Option<NodeId>,
-    commands: Vec<Command>, // FUTURE(no_std): replace Vec with ring buffer.
-    scope_stack: Vec<RecomposeScope>, // FUTURE(no_std): replace Vec with arena handles.
-    local_stack: Vec<LocalContext>, // FUTURE(no_std): store locals in preallocated slab.
-    side_effects: Vec<Box<dyn FnOnce()>>, // FUTURE(no_std): switch to bounded callback queue.
-    phase: Phase,
-    pending_scope_options: Option<RecomposeOptions>,
+pub trait ApplierHost {
+    fn borrow_dyn(&self) -> RefMut<'_, dyn Applier>;
 }
 
-#[derive(Default, Clone)]
-struct ParentChildren {
-    children: Vec<NodeId>, // FUTURE(no_std): store child ids in smallvec.
+pub struct ConcreteApplierHost<A: Applier + 'static> {
+    inner: RefCell<A>,
 }
 
-struct ParentFrame {
-    id: NodeId,
-    remembered: Owned<ParentChildren>,
-    previous: Vec<NodeId>, // FUTURE(no_std): replace Vec with fixed-capacity array.
-    new_children: Vec<NodeId>, // FUTURE(no_std): replace Vec with fixed-capacity array.
-}
-
-struct SubcomposeFrame {
-    nodes: Vec<NodeId>, // FUTURE(no_std): store nodes in bounded scratch space.
-    scopes: Vec<RecomposeScope>, // FUTURE(no_std): store scopes in arena-backed list.
-}
-
-impl Default for SubcomposeFrame {
-    fn default() -> Self {
+impl<A: Applier + 'static> ConcreteApplierHost<A> {
+    pub fn new(applier: A) -> Self {
         Self {
-            nodes: Vec::new(),
-            scopes: Vec::new(),
+            inner: RefCell::new(applier),
         }
+    }
+
+    pub fn borrow_typed(&self) -> RefMut<'_, A> {
+        self.inner.borrow_mut()
+    }
+
+    pub fn into_inner(self) -> A {
+        self.inner.into_inner()
     }
 }
 
-#[derive(Default, Clone)]
-struct LocalContext {
-    values: HashMap<LocalKey, Rc<dyn Any>>, // FUTURE(no_std): replace HashMap/Rc with arena-backed storage.
+impl<A: Applier + 'static> ApplierHost for ConcreteApplierHost<A> {
+    fn borrow_dyn(&self) -> RefMut<'_, dyn Applier> {
+        RefMut::map(self.inner.borrow_mut(), |applier| {
+            applier as &mut dyn Applier
+        })
+    }
 }
 
-impl<'a> Composer<'a> {
+pub struct ApplierGuard<'a, A: Applier + 'static> {
+    inner: RefMut<'a, A>,
+}
+
+impl<'a, A: Applier + 'static> ApplierGuard<'a, A> {
+    fn new(inner: RefMut<'a, A>) -> Self {
+        Self { inner }
+    }
+}
+
+impl<'a, A: Applier + 'static> Deref for ApplierGuard<'a, A> {
+    type Target = A;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<'a, A: Applier + 'static> DerefMut for ApplierGuard<'a, A> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
+pub struct SlotsHost {
+    inner: RefCell<SlotTable>,
+}
+
+impl SlotsHost {
+    pub fn new(table: SlotTable) -> Self {
+        Self {
+            inner: RefCell::new(table),
+        }
+    }
+
+    pub fn borrow(&self) -> Ref<'_, SlotTable> {
+        self.inner.borrow()
+    }
+
+    pub fn borrow_mut(&self) -> RefMut<'_, SlotTable> {
+        self.inner.borrow_mut()
+    }
+
+    pub fn into_inner(self) -> SlotTable {
+        self.inner.into_inner()
+    }
+
+    pub fn take(&self) -> SlotTable {
+        std::mem::take(&mut *self.inner.borrow_mut())
+    }
+}
+
+pub(crate) struct ComposerCore {
+    slots: Rc<SlotsHost>,
+    applier: Rc<dyn ApplierHost>,
+    runtime: RuntimeHandle,
+    parent_stack: RefCell<Vec<ParentFrame>>,
+    subcompose_stack: RefCell<Vec<SubcomposeFrame>>,
+    root: Cell<Option<NodeId>>,
+    commands: RefCell<Vec<Command>>,
+    scope_stack: RefCell<Vec<RecomposeScope>>,
+    local_stack: RefCell<Vec<LocalContext>>,
+    side_effects: RefCell<Vec<Box<dyn FnOnce()>>>,
+    pending_scope_options: RefCell<Option<RecomposeOptions>>,
+    phase: Cell<Phase>,
+    _not_send: PhantomData<*const ()>,
+}
+
+impl ComposerCore {
     pub fn new(
-        slots: &'a mut SlotTable,
-        applier: &'a mut dyn Applier,
+        slots: Rc<SlotsHost>,
+        applier: Rc<dyn ApplierHost>,
         runtime: RuntimeHandle,
         root: Option<NodeId>,
     ) -> Self {
@@ -1324,21 +1394,87 @@ impl<'a> Composer<'a> {
             slots,
             applier,
             runtime,
-            parent_stack: Vec::new(),
-            subcompose_stack: Vec::new(),
-            root,
-            commands: Vec::new(),
-            scope_stack: Vec::new(),
-            local_stack: Vec::new(),
-            side_effects: Vec::new(),
-            phase: Phase::Compose,
-            pending_scope_options: None,
+            parent_stack: RefCell::new(Vec::new()),
+            subcompose_stack: RefCell::new(Vec::new()),
+            root: Cell::new(root),
+            commands: RefCell::new(Vec::new()),
+            scope_stack: RefCell::new(Vec::new()),
+            local_stack: RefCell::new(Vec::new()),
+            side_effects: RefCell::new(Vec::new()),
+            pending_scope_options: RefCell::new(None),
+            phase: Cell::new(Phase::Compose),
+            _not_send: PhantomData,
         }
     }
+}
 
-    pub fn install<R>(&'a mut self, f: impl FnOnce(&mut Composer<'a>) -> R) -> R {
+#[derive(Clone)]
+pub struct Composer {
+    core: Rc<ComposerCore>,
+}
+
+impl Composer {
+    pub fn new(
+        slots: Rc<SlotsHost>,
+        applier: Rc<dyn ApplierHost>,
+        runtime: RuntimeHandle,
+        root: Option<NodeId>,
+    ) -> Self {
+        let core = Rc::new(ComposerCore::new(slots, applier, runtime, root));
+        Self { core }
+    }
+
+    pub(crate) fn from_core(core: Rc<ComposerCore>) -> Self {
+        Self { core }
+    }
+
+    pub(crate) fn clone_core(&self) -> Rc<ComposerCore> {
+        Rc::clone(&self.core)
+    }
+
+    fn slots(&self) -> Ref<'_, SlotTable> {
+        self.core.slots.borrow()
+    }
+
+    fn slots_mut(&self) -> RefMut<'_, SlotTable> {
+        self.core.slots.borrow_mut()
+    }
+
+    fn parent_stack(&self) -> RefMut<'_, Vec<ParentFrame>> {
+        self.core.parent_stack.borrow_mut()
+    }
+
+    fn subcompose_stack(&self) -> RefMut<'_, Vec<SubcomposeFrame>> {
+        self.core.subcompose_stack.borrow_mut()
+    }
+
+    fn commands_mut(&self) -> RefMut<'_, Vec<Command>> {
+        self.core.commands.borrow_mut()
+    }
+
+    fn scope_stack(&self) -> RefMut<'_, Vec<RecomposeScope>> {
+        self.core.scope_stack.borrow_mut()
+    }
+
+    fn local_stack(&self) -> RefMut<'_, Vec<LocalContext>> {
+        self.core.local_stack.borrow_mut()
+    }
+
+    fn side_effects_mut(&self) -> RefMut<'_, Vec<Box<dyn FnOnce()>>> {
+        self.core.side_effects.borrow_mut()
+    }
+
+    fn pending_scope_options(&self) -> RefMut<'_, Option<RecomposeOptions>> {
+        self.core.pending_scope_options.borrow_mut()
+    }
+
+    fn borrow_applier(&self) -> RefMut<'_, dyn Applier> {
+        self.core.applier.borrow_dyn()
+    }
+
+    pub fn install<R>(&self, f: impl FnOnce(&Composer) -> R) -> R {
         let _composer_guard = composer_context::enter(self);
-        runtime::push_active_runtime(&self.runtime);
+        runtime::push_active_runtime(&self.core.runtime);
         struct Guard;
         impl Drop for Guard {
             fn drop(&mut self) {
@@ -1351,73 +1487,99 @@ impl<'a> Composer<'a> {
         result
     }
 
-    pub fn with_group<R>(&mut self, key: Key, f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
-        let index = self.slots.start(key);
-        let scope_ref = self
-            .slots
-            .remember(|| RecomposeScope::new(self.runtime.clone()))
-            .with(|scope| scope.clone());
-        if let Some(options) = self.pending_scope_options.take() {
+    pub fn with_group<R>(&self, key: Key, f: impl FnOnce(&Composer) -> R) -> R {
+        let (index, scope_ref) = {
+            let mut slots = self.slots_mut();
+            let index = slots.start(key);
+            let scope_ref = slots
+                .remember(|| RecomposeScope::new(self.runtime_handle()))
+                .with(|scope| scope.clone());
+            (index, scope_ref)
+        };
+
+        if let Some(options) = self.pending_scope_options().take() {
             if options.force_recompose {
                 scope_ref.force_recompose();
             } else if options.force_reuse {
                 scope_ref.force_reuse();
             }
         }
-        self.slots.set_group_scope(index, scope_ref.id());
-        self.scope_stack.push(scope_ref.clone());
-        if let Some(frame) = self.subcompose_stack.last_mut() {
-            frame.scopes.push(scope_ref.clone());
+
+        {
+            let mut slots = self.slots_mut();
+            slots.set_group_scope(index, scope_ref.id());
         }
-        scope_ref.snapshot_locals(&self.local_stack);
+
+        {
+            let mut stack = self.scope_stack();
+            stack.push(scope_ref.clone());
+        }
+
+        {
+            let mut stack = self.subcompose_stack();
+            if let Some(frame) = stack.last_mut() {
+                frame.scopes.push(scope_ref.clone());
+            }
+        }
+
+        {
+            let locals = self.core.local_stack.borrow();
+            scope_ref.snapshot_locals(&locals);
+        }
+
         let result = f(self);
-        self.scope_stack.pop();
+
+        {
+            let mut stack = self.scope_stack();
+            stack.pop();
+        }
         scope_ref.mark_recomposed();
-        self.slots.end();
+        self.slots_mut().end();
         result
     }
 
     pub fn compose_with_reuse<R>(
-        &mut self,
+        &self,
         key: Key,
         options: RecomposeOptions,
-        f: impl FnOnce(&mut Composer<'_>) -> R,
+        f: impl FnOnce(&Composer) -> R,
     ) -> R {
-        self.pending_scope_options = Some(options);
+        self.pending_scope_options().replace(options);
         self.with_group(key, f)
     }
 
-    pub fn with_key<K: Hash, R>(&mut self, key: &K, f: impl FnOnce(&mut Composer<'_>) -> R) -> R {
+    pub fn with_key<K: Hash, R>(&self, key: &K, f: impl FnOnce(&Composer) -> R) -> R {
         let hashed = hash_key(key);
         self.with_group(hashed, f)
     }
 
-    pub fn remember<T: 'static>(&mut self, init: impl FnOnce() -> T) -> Owned<T> {
-        self.slots.remember(init)
+    pub fn remember<T: 'static>(&self, init: impl FnOnce() -> T) -> Owned<T> {
+        self.slots_mut().remember(init)
     }
 
-    pub fn use_value_slot<T: 'static>(&mut self, init: impl FnOnce() -> T) -> usize {
-        self.slots.use_value_slot(init)
+    pub fn use_value_slot<T: 'static>(&self, init: impl FnOnce() -> T) -> usize {
+        self.slots_mut().use_value_slot(init)
     }
 
-    pub fn read_slot_value<T: 'static>(&self, idx: usize) -> &T {
-        self.slots.read_value(idx)
+    pub fn read_slot_value<T: 'static>(&self, idx: usize) -> Ref<'_, T> {
+        Ref::map(self.slots(), |slots| slots.read_value(idx))
     }
 
-    pub fn read_slot_value_mut<T: 'static>(&mut self, idx: usize) -> &mut T {
-        self.slots.read_value_mut(idx)
+    pub fn read_slot_value_mut<T: 'static>(&self, idx: usize) -> RefMut<'_, T> {
+        RefMut::map(self.slots_mut(), |slots| slots.read_value_mut(idx))
     }
 
-    pub fn write_slot_value<T: 'static>(&mut self, idx: usize, value: T) {
-        self.slots.write_value(idx, value);
+    pub fn write_slot_value<T: 'static>(&self, idx: usize, value: T) {
+        self.slots_mut().write_value(idx, value);
     }
 
-    pub fn mutable_state_of<T: Clone + 'static>(&mut self, initial: T) -> MutableState<T> {
-        MutableState::with_runtime(initial, self.runtime.clone())
+    pub fn mutable_state_of<T: Clone + 'static>(&self, initial: T) -> MutableState<T> {
+        MutableState::with_runtime(initial, self.runtime_handle())
     }
 
-    pub fn read_composition_local<T: Clone + 'static>(&mut self, local: &CompositionLocal<T>) -> T {
-        for context in self.local_stack.iter().rev() {
+    pub fn read_composition_local<T: Clone + 'static>(&self, local: &CompositionLocal<T>) -> T {
+        let stack = self.core.local_stack.borrow();
+        for context in stack.iter().rev() {
             if let Some(entry) = context.values.get(&local.key) {
                 let typed = entry
                     .clone()
@@ -1430,10 +1592,11 @@ impl<'a> Composer<'a> {
     }
 
     pub fn read_static_composition_local<T: Clone + 'static>(
-        &mut self,
+        &self,
         local: &StaticCompositionLocal<T>,
     ) -> T {
-        for context in self.local_stack.iter().rev() {
+        let stack = self.core.local_stack.borrow();
+        for context in stack.iter().rev() {
             if let Some(entry) = context.values.get(&local.key) {
                 let typed = entry
                     .clone()
@@ -1446,35 +1609,28 @@ impl<'a> Composer<'a> {
     }
 
     pub fn current_recompose_scope(&self) -> Option<RecomposeScope> {
-        self.scope_stack.last().cloned()
+        self.core.scope_stack.borrow().last().cloned()
     }
 
-    #[inline(always)]
     pub fn phase(&self) -> Phase {
-        self.phase
+        self.core.phase.get()
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
-    #[inline(always)]
-    pub(crate) fn set_phase(&mut self, phase: Phase) {
-        self.phase = phase;
+    pub(crate) fn set_phase(&self, phase: Phase) {
+        self.core.phase.set(phase);
     }
 
-    #[inline(always)]
-    pub fn enter_phase(&mut self, phase: Phase) {
+    pub fn enter_phase(&self, phase: Phase) {
         self.set_phase(phase);
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
-    #[inline(always)]
     pub(crate) fn subcompose<R>(
-        &mut self,
+        &self,
         state: &mut SubcomposeState,
         slot_id: SlotId,
-        content: impl FnOnce(&mut Composer<'_>) -> R,
+        content: impl FnOnce(&Composer) -> R,
     ) -> (R, Vec<NodeId>) {
-        // FUTURE(no_std): return smallvec-backed node list.
-        match self.phase {
+        match self.phase() {
             Phase::Measure | Phase::Layout => {}
             current => panic!(
                 "subcompose() may only be called during measure or layout; current phase: {:?}",
@@ -1482,111 +1638,107 @@ impl<'a> Composer<'a> {
             ),
         }
 
-        self.subcompose_stack.push(SubcomposeFrame::default());
+        self.subcompose_stack().push(SubcomposeFrame::default());
         struct StackGuard {
-            stack: *mut Vec<SubcomposeFrame>, // FUTURE(no_std): replace Vec with fixed stack buffer.
+            core: Rc<ComposerCore>,
             leaked: bool,
-        }
-        impl StackGuard {
-            fn new(stack: *mut Vec<SubcomposeFrame>) -> Self {
-                Self {
-                    stack,
-                    leaked: false,
-                }
-            }
-
-            unsafe fn into_frame(mut self) -> SubcomposeFrame {
-                self.leaked = true;
-                (*self.stack).pop().expect("subcompose stack underflow")
-            }
         }
         impl Drop for StackGuard {
             fn drop(&mut self) {
                 if !self.leaked {
-                    unsafe {
-                        (*self.stack).pop();
-                    }
+                    self.core.subcompose_stack.borrow_mut().pop();
                 }
             }
         }
+        let mut guard = StackGuard {
+            core: self.clone_core(),
+            leaked: false,
+        };
 
-        let guard = StackGuard::new(&mut self.subcompose_stack as *mut _);
         let result = self.with_group(slot_id.raw(), |composer| content(composer));
-        let frame = unsafe { guard.into_frame() };
+        let frame = {
+            let mut stack = guard.core.subcompose_stack.borrow_mut();
+            let frame = stack.pop().expect("subcompose stack underflow");
+            guard.leaked = true;
+            frame
+        };
         let nodes = frame.nodes;
         let scopes = frame.scopes;
         state.register_active(slot_id, &nodes, &scopes);
         (result, nodes)
     }
 
-    #[inline(always)]
     pub fn subcompose_measurement<R>(
-        &mut self,
+        &self,
         state: &mut SubcomposeState,
         slot_id: SlotId,
-        content: impl FnOnce(&mut Composer<'_>) -> R,
+        content: impl FnOnce(&Composer) -> R,
     ) -> (R, Vec<NodeId>) {
-        // FUTURE(no_std): return node list without heap allocation.
         self.subcompose(state, slot_id, content)
     }
 
-    /// Run a nested composition using alternate slots while preserving the
-    /// current applier/runtime, phase, and local context.
     pub fn subcompose_in<R>(
-        &mut self,
-        slots: &mut SlotTable,
+        &self,
+        slots: &Rc<SlotsHost>,
         root: Option<NodeId>,
-        f: impl FnOnce(&mut Composer<'_>) -> R,
+        f: impl FnOnce(&Composer) -> R,
     ) -> Result<R, NodeError> {
         let runtime_handle = self.runtime_handle();
-        slots.reset();
+        slots.borrow_mut().reset();
         let phase = self.phase();
-        let locals = self.local_stack.clone();
-        let (result, mut commands, side_effects) = {
-            let mut inner = {
-                let applier = &mut *self.applier;
-                Composer::new(slots, applier, runtime_handle.clone(), root)
-            };
-            inner.set_phase(phase);
-            inner.local_stack = locals;
-            inner.install(|composer| {
-                let output = f(composer);
-                let commands = composer.take_commands();
-                let side_effects = composer.take_side_effects();
-                (output, commands, side_effects)
-            })
-        };
+        let locals = self.core.local_stack.borrow().clone();
+        let core = Rc::new(ComposerCore::new(
+            Rc::clone(slots),
+            Rc::clone(&self.core.applier),
+            runtime_handle.clone(),
+            root,
+        ));
+        core.phase.set(phase);
+        *core.local_stack.borrow_mut() = locals;
+        let composer = Composer::from_core(core);
+        let (result, mut commands, side_effects) = composer.install(|composer| {
+            let output = f(composer);
+            let commands = composer.take_commands();
+            let side_effects = composer.take_side_effects();
+            (output, commands, side_effects)
+        });
 
-        for mut command in commands.drain(..) {
-            command(&mut *self.applier)?;
-        }
-        for mut update in runtime_handle.take_updates() {
-            update(&mut *self.applier)?;
+        {
+            let mut applier = self.borrow_applier();
+            for mut command in commands.drain(..) {
+                command(&mut *applier)?;
+            }
+            for mut update in runtime_handle.take_updates() {
+                update(&mut *applier)?;
+            }
         }
         runtime_handle.drain_ui();
         for effect in side_effects {
             effect();
         }
         runtime_handle.drain_ui();
-        slots.trim_to_cursor();
+        slots.borrow_mut().trim_to_cursor();
         Ok(result)
     }
 
-    pub fn skip_current_group(&mut self) {
-        let nodes = self.slots.node_ids_in_current_group();
-        self.slots.skip_current();
+    pub fn skip_current_group(&self) {
+        let nodes = {
+            let slots = self.slots();
+            slots.node_ids_in_current_group()
+        };
+        self.slots_mut().skip_current();
         for id in nodes {
             self.attach_to_parent(id);
         }
     }
 
     pub fn runtime_handle(&self) -> RuntimeHandle {
-        self.runtime.clone()
+        self.core.runtime.clone()
     }
 
-    pub fn set_recompose_callback<F>(&mut self, callback: F)
+    pub fn set_recompose_callback<F>(&self, callback: F)
     where
-        F: for<'b> FnMut(&mut Composer<'b>) + 'static,
+        F: FnMut(&Composer) + 'static,
     {
         if let Some(scope) = self.current_recompose_scope() {
             scope.set_recompose(Box::new(callback));
@@ -1594,9 +1746,9 @@ impl<'a> Composer<'a> {
     }
 
     pub fn with_composition_locals<R>(
-        &mut self,
-        provided: Vec<ProvidedValue>, // FUTURE(no_std): accept smallvec-backed provided values.
-        f: impl FnOnce(&mut Composer<'_>) -> R,
+        &self,
+        provided: Vec<ProvidedValue>,
+        f: impl FnOnce(&Composer) -> R,
     ) -> R {
         if provided.is_empty() {
             return f(self);
@@ -1606,37 +1758,60 @@ impl<'a> Composer<'a> {
             let (key, entry) = value.into_entry(self);
             context.values.insert(key, entry);
         }
-        self.local_stack.push(context);
+        {
+            let mut stack = self.local_stack();
+            stack.push(context);
+        }
         let result = f(self);
-        self.local_stack.pop();
+        {
+            let mut stack = self.local_stack();
+            stack.pop();
+        }
         result
     }
 
-    fn recompose_group(&mut self, scope: &RecomposeScope) {
-        if let Some(_index) = self.slots.start_recompose_at_scope(scope.id()) {
-            self.scope_stack.push(scope.clone());
-            let saved_locals = std::mem::take(&mut self.local_stack);
-            self.local_stack = scope.local_stack();
+    fn recompose_group(&self, scope: &RecomposeScope) {
+        let index_opt = self.slots_mut().start_recompose_at_scope(scope.id());
+        if index_opt.is_some() {
+            {
+                let mut stack = self.scope_stack();
+                stack.push(scope.clone());
+            }
+            let saved_locals = {
+                let mut locals = self.local_stack();
+                std::mem::take(&mut *locals)
+            };
+            {
+                let mut locals = self.local_stack();
+                *locals = scope.local_stack();
+            }
             scope.run_recompose(self);
-            self.local_stack = saved_locals;
-            self.scope_stack.pop();
-            self.slots.end_recompose();
+            {
+                let mut locals = self.local_stack();
+                *locals = saved_locals;
+            }
+            {
+                let mut stack = self.scope_stack();
+                stack.pop();
+            }
+            self.slots_mut().end_recompose();
             scope.mark_recomposed();
         } else {
             scope.mark_recomposed();
         }
     }
 
-    pub fn use_state<T: Clone + 'static>(&mut self, init: impl FnOnce() -> T) -> MutableState<T> {
+    pub fn use_state<T: Clone + 'static>(&self, init: impl FnOnce() -> T) -> MutableState<T> {
+        let runtime = self.runtime_handle();
         let state = self
-            .slots
-            .remember(|| MutableState::with_runtime(init(), self.runtime.clone()));
+            .slots_mut()
+            .remember(|| MutableState::with_runtime(init(), runtime.clone()));
         state.with(|state| state.clone())
     }
 
-    pub fn emit_node<N: Node + 'static>(&mut self, init: impl FnOnce() -> N) -> NodeId {
-        if let Some(id) = self.slots.read_node() {
-            self.commands
+    pub fn emit_node<N: Node + 'static>(&self, init: impl FnOnce() -> N) -> NodeId {
+        if let Some(id) = self.slots_mut().read_node() {
+            self.commands_mut()
                 .push(Box::new(move |applier: &mut dyn Applier| {
                     let node = applier.get_mut(id)?;
                     let typed =
@@ -1652,9 +1827,16 @@ impl<'a> Composer<'a> {
             self.attach_to_parent(id);
             return id;
         }
-        let id = self.applier.create(Box::new(init()));
-        self.slots.record_node(id);
-        self.commands
+
+        let id = {
+            let mut applier = self.borrow_applier();
+            applier.create(Box::new(init()))
+        };
+        {
+            let mut slots = self.slots_mut();
+            slots.record_node(id);
+        }
+        self.commands_mut()
             .push(Box::new(move |applier: &mut dyn Applier| {
                 let node = applier.get_mut(id)?;
                 node.mount();
@@ -1664,24 +1846,28 @@ impl<'a> Composer<'a> {
         id
     }
 
-    fn attach_to_parent(&mut self, id: NodeId) {
-        if let Some(frame) = self.subcompose_stack.last_mut() {
+    fn attach_to_parent(&self, id: NodeId) {
+        let mut subcompose_stack = self.subcompose_stack();
+        if let Some(frame) = subcompose_stack.last_mut() {
             frame.nodes.push(id);
             return;
         }
-        if let Some(frame) = self.parent_stack.last_mut() {
+        drop(subcompose_stack);
+        let mut parent_stack = self.parent_stack();
+        if let Some(frame) = parent_stack.last_mut() {
             frame.new_children.push(id);
         } else {
-            self.root = Some(id);
+            self.core.root.set(Some(id));
         }
     }
 
     pub fn with_node_mut<N: Node + 'static, R>(
-        &mut self,
+        &self,
         id: NodeId,
         f: impl FnOnce(&mut N) -> R,
     ) -> Result<R, NodeError> {
-        let node = self.applier.get_mut(id)?;
+        let mut applier = self.borrow_applier();
+        let node = applier.get_mut(id)?;
         let typed = node
             .as_any_mut()
             .downcast_mut::<N>()
@@ -1692,10 +1878,10 @@ impl<'a> Composer<'a> {
         Ok(f(typed))
     }
 
-    pub fn push_parent(&mut self, id: NodeId) {
-        let remembered = self.slots.remember(|| ParentChildren::default());
+    pub fn push_parent(&self, id: NodeId) {
+        let remembered = self.remember(|| ParentChildren::default());
         let previous = remembered.with(|entry| entry.children.clone());
-        self.parent_stack.push(ParentFrame {
+        self.parent_stack().push(ParentFrame {
             id,
             remembered,
             previous,
@@ -1703,15 +1889,18 @@ impl<'a> Composer<'a> {
         });
     }
 
-    pub fn pop_parent(&mut self) {
-        if let Some(frame) = self.parent_stack.pop() {
+    pub fn pop_parent(&self) {
+        let frame_opt = {
+            let mut stack = self.parent_stack();
+            stack.pop()
+        };
+        if let Some(frame) = frame_opt {
             let ParentFrame {
                 id,
                 remembered,
                 previous,
                 new_children,
             } = frame;
-            // Debug logging
             if std::env::var("COMPOSE_DEBUG").is_ok() {
                 eprintln!("pop_parent: node #{}", id);
                 eprintln!("  previous children: {:?}", previous);
@@ -1726,13 +1915,13 @@ impl<'a> Composer<'a> {
                     let child = current[index];
                     if !desired.contains(&child) {
                         current.remove(index);
-                        self.commands
+                        self.commands_mut()
                             .push(Box::new(move |applier: &mut dyn Applier| {
                                 let parent_node = applier.get_mut(id)?;
                                 parent_node.remove_child(child);
                                 Ok(())
                             }));
-                        self.commands
+                        self.commands_mut()
                             .push(Box::new(move |applier: &mut dyn Applier| {
                                 {
                                     let node = applier.get_mut(child)?;
@@ -1751,7 +1940,7 @@ impl<'a> Composer<'a> {
                             current.remove(from_index);
                             let to_index = target_index.min(current.len());
                             current.insert(to_index, child);
-                            self.commands
+                            self.commands_mut()
                                 .push(Box::new(move |applier: &mut dyn Applier| {
                                     let parent_node = applier.get_mut(id)?;
                                     parent_node.move_child(from_index, to_index);
@@ -1762,14 +1951,14 @@ impl<'a> Composer<'a> {
                         let insert_index = target_index.min(current.len());
                         let appended_index = current.len();
                         current.insert(insert_index, child);
-                        self.commands
+                        self.commands_mut()
                             .push(Box::new(move |applier: &mut dyn Applier| {
                                 let parent_node = applier.get_mut(id)?;
                                 parent_node.insert_child(child);
                                 Ok(())
                             }));
                         if insert_index != appended_index {
-                            self.commands
+                            self.commands_mut()
                                 .push(Box::new(move |applier: &mut dyn Applier| {
                                     let parent_node = applier.get_mut(id)?;
                                     parent_node.move_child(appended_index, insert_index);
@@ -1783,19 +1972,56 @@ impl<'a> Composer<'a> {
         }
     }
 
-    pub fn take_commands(&mut self) -> Vec<Command> {
-        // FUTURE(no_std): provide iterator view without Vec allocation.
-        std::mem::take(&mut self.commands)
+    pub fn take_commands(&self) -> Vec<Command> {
+        std::mem::take(&mut *self.commands_mut())
     }
 
-    pub fn register_side_effect(&mut self, effect: impl FnOnce() + 'static) {
-        self.side_effects.push(Box::new(effect));
+    pub fn register_side_effect(&self, effect: impl FnOnce() + 'static) {
+        self.side_effects_mut().push(Box::new(effect));
     }
 
-    pub fn take_side_effects(&mut self) -> Vec<Box<dyn FnOnce()>> {
-        // FUTURE(no_std): drain into bounded callback buffer.
-        std::mem::take(&mut self.side_effects)
+    pub fn take_side_effects(&self) -> Vec<Box<dyn FnOnce()>> {
+        std::mem::take(&mut *self.side_effects_mut())
     }
+
+    pub(crate) fn root(&self) -> Option<NodeId> {
+        self.core.root.get()
+    }
+
+    pub(crate) fn set_root(&self, node: Option<NodeId>) {
+        self.core.root.set(node);
+    }
+}
+
+#[derive(Default, Clone)]
+struct ParentChildren {
+    children: Vec<NodeId>,
+}
+
+struct ParentFrame {
+    id: NodeId,
+    remembered: Owned<ParentChildren>,
+    previous: Vec<NodeId>,
+    new_children: Vec<NodeId>,
+}
+
+struct SubcomposeFrame {
+    nodes: Vec<NodeId>,
+    scopes: Vec<RecomposeScope>,
+}
+
+impl Default for SubcomposeFrame {
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            scopes: Vec::new(),
+        }
+    }
+}
+
+#[derive(Default, Clone)]
+struct LocalContext {
+    values: HashMap<LocalKey, Rc<dyn Any>>,
 }
 
 struct MutableStateInner<T: Clone + 'static> {
@@ -2146,59 +2372,70 @@ impl<T> Default for ReturnSlot<T> {
     }
 }
 
-pub struct Composition<A: Applier> {
-    slots: SlotTable,
-    applier: A,
+pub struct Composition<A: Applier + 'static> {
+    slots: Rc<SlotsHost>,
+    applier: Rc<ConcreteApplierHost<A>>,
     runtime: Runtime,
     root: Option<NodeId>,
 }
 
-impl<A: Applier> Composition<A> {
+impl<A: Applier + 'static> Composition<A> {
     pub fn new(applier: A) -> Self {
         Self::with_runtime(applier, Runtime::new(Arc::new(DefaultScheduler::default())))
     }
 
     pub fn with_runtime(applier: A, runtime: Runtime) -> Self {
         Self {
-            slots: SlotTable::new(),
-            applier,
+            slots: Rc::new(SlotsHost::new(SlotTable::new())),
+            applier: Rc::new(ConcreteApplierHost::new(applier)),
             runtime,
             root: None,
         }
     }
 
+    fn slots_host(&self) -> Rc<SlotsHost> {
+        Rc::clone(&self.slots)
+    }
+
+    fn applier_host(&self) -> Rc<dyn ApplierHost> {
+        self.applier.clone()
+    }
+
     pub fn render(&mut self, key: Key, mut content: impl FnMut()) -> Result<(), NodeError> {
-        self.slots.reset();
+        self.slots.borrow_mut().reset();
         let runtime_handle = self.runtime_handle();
         runtime_handle.drain_ui();
-        let (root, commands, side_effects) = {
-            let mut composer = Composer::new(
-                &mut self.slots,
-                &mut self.applier,
-                runtime_handle.clone(),
-                self.root,
-            );
-            composer.install(|composer| {
-                composer.with_group(key, |_| content());
-                let root = composer.root;
-                let commands = composer.take_commands();
-                let side_effects = composer.take_side_effects();
-                (root, commands, side_effects)
-            })
-        };
-        for mut command in commands {
-            command(&mut self.applier)?;
+        let composer = Composer::new(
+            Rc::clone(&self.slots),
+            self.applier.clone(),
+            runtime_handle.clone(),
+            self.root,
+        );
+        let (root, mut commands, side_effects) = composer.install(|composer| {
+            composer.with_group(key, |_| content());
+            let root = composer.root();
+            let commands = composer.take_commands();
+            let side_effects = composer.take_side_effects();
+            (root, commands, side_effects)
+        });
+
+        {
+            let mut applier = self.applier.borrow_dyn();
+            for mut command in commands.drain(..) {
+                command(&mut *applier)?;
+            }
+            for mut update in runtime_handle.take_updates() {
+                update(&mut *applier)?;
+            }
         }
-        for mut command in runtime_handle.take_updates() {
-            command(&mut self.applier)?;
-        }
+
         runtime_handle.drain_ui();
         for effect in side_effects {
             effect();
         }
         runtime_handle.drain_ui();
         self.root = root;
-        self.slots.trim_to_cursor();
+        self.slots.borrow_mut().trim_to_cursor();
         let _ = self.process_invalid_scopes()?;
         if !self.runtime.has_updates()
             && !runtime_handle.has_invalid_scopes()
@@ -2218,8 +2455,8 @@ impl<A: Applier> Composition<A> {
         self.runtime.handle()
     }
 
-    pub fn applier_mut(&mut self) -> &mut A {
-        &mut self.applier
+    pub fn applier_mut(&mut self) -> ApplierGuard<'_, A> {
+        ApplierGuard::new(self.applier.borrow_typed())
     }
 
     pub fn root(&self) -> Option<NodeId> {
@@ -2248,9 +2485,13 @@ impl<A: Applier> Composition<A> {
             }
             did_recompose = true;
             let runtime_clone = runtime_handle.clone();
-            let (commands, side_effects) = {
-                let mut composer =
-                    Composer::new(&mut self.slots, &mut self.applier, runtime_clone, self.root);
+            let (mut commands, side_effects) = {
+                let composer = Composer::new(
+                    self.slots_host(),
+                    self.applier_host(),
+                    runtime_clone,
+                    self.root,
+                );
                 composer.install(|composer| {
                     for scope in scopes.iter() {
                         composer.recompose_group(scope);
@@ -2260,11 +2501,14 @@ impl<A: Applier> Composition<A> {
                     (commands, side_effects)
                 })
             };
-            for mut command in commands {
-                command(&mut self.applier)?;
-            }
-            for mut update in runtime_handle.take_updates() {
-                update(&mut self.applier)?;
+            {
+                let mut applier = self.applier.borrow_dyn();
+                for mut command in commands.drain(..) {
+                    command(&mut *applier)?;
+                }
+                for mut update in runtime_handle.take_updates() {
+                    update(&mut *applier)?;
+                }
             }
             for effect in side_effects {
                 effect();
@@ -2283,13 +2527,13 @@ impl<A: Applier> Composition<A> {
 
     pub fn flush_pending_node_updates(&mut self) -> Result<(), NodeError> {
         let updates = self.runtime_handle().take_updates();
+        let mut applier = self.applier.borrow_dyn();
         for mut update in updates {
-            update(&mut self.applier)?;
+            update(&mut *applier)?;
         }
         Ok(())
     }
 }
-
 pub fn location_key(file: &str, line: u32, column: u32) -> Key {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();

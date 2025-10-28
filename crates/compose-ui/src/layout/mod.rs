@@ -6,13 +6,13 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     fmt,
-    marker::PhantomData,
     rc::Rc,
     sync::atomic::{AtomicU64, Ordering},
 };
 
 use compose_core::{
-    Applier, Composer, MemoryApplier, Node, NodeError, NodeId, Phase, RuntimeHandle, SlotTable,
+    Applier, ApplierHost, Composer, ConcreteApplierHost, MemoryApplier, Node, NodeError, NodeId,
+    Phase, RuntimeHandle, SlotTable, SlotsHost,
 };
 
 #[cfg(test)]
@@ -244,37 +244,47 @@ pub fn measure_layout(
         min_height: 0.0,
         max_height: max_size.height,
     };
-    let mut builder = LayoutBuilder::new(applier);
+    let original_applier = std::mem::replace(applier, MemoryApplier::new());
+    let applier_host = Rc::new(ConcreteApplierHost::new(original_applier));
+    let mut builder = LayoutBuilder::new(Rc::clone(&applier_host));
     let measured = builder.measure_node(root, normalize_constraints(constraints))?;
-    let metadata = collect_runtime_metadata(applier, &measured)?;
+    let metadata = {
+        let mut applier_ref = applier_host.borrow_typed();
+        collect_runtime_metadata(&mut *applier_ref, &measured)?
+    };
+    drop(builder);
+    let applier_inner = Rc::try_unwrap(applier_host)
+        .unwrap_or_else(|_| panic!("layout builder should be sole owner of applier host"))
+        .into_inner();
+    *applier = applier_inner;
     let semantics_root = build_semantics_node(&measured, &metadata);
     let semantics = SemanticsTree::new(semantics_root);
     let layout_tree = build_layout_tree_from_metadata(&measured, &metadata);
     Ok(LayoutMeasurements::new(measured, semantics, layout_tree))
 }
 
-struct LayoutBuilder<'a> {
-    applier: *mut MemoryApplier,
+struct LayoutBuilder {
+    applier: Rc<ConcreteApplierHost<MemoryApplier>>,
     runtime_handle: Option<RuntimeHandle>,
     slots: SlotTable,
     cache_epoch: u64,
-    _marker: PhantomData<&'a mut MemoryApplier>,
 }
 
-impl<'a> LayoutBuilder<'a> {
-    fn new(applier: &'a mut MemoryApplier) -> Self {
+impl LayoutBuilder {
+    fn new(applier: Rc<ConcreteApplierHost<MemoryApplier>>) -> Self {
         let epoch = NEXT_CACHE_EPOCH.fetch_add(1, Ordering::Relaxed);
+        let runtime_handle = applier.borrow_typed().runtime_handle();
         Self {
             applier,
-            runtime_handle: applier.runtime_handle(),
+            runtime_handle,
             slots: SlotTable::new(),
             cache_epoch: epoch,
-            _marker: PhantomData,
         }
     }
 
-    fn applier_mut(&mut self) -> &mut MemoryApplier {
-        unsafe { &mut *self.applier }
+    fn with_applier<R>(&self, f: impl FnOnce(&mut MemoryApplier) -> R) -> R {
+        let mut applier = self.applier.borrow_typed();
+        f(&mut *applier)
     }
 
     fn measure_node(
@@ -286,16 +296,22 @@ impl<'a> LayoutBuilder<'a> {
         if let Some(subcompose) = self.try_measure_subcompose(node_id, constraints)? {
             return Ok(subcompose);
         }
-        if let Some(layout) = try_clone::<LayoutNode>(self.applier_mut(), node_id)? {
+        if let Some(layout) =
+            self.with_applier(|applier| try_clone::<LayoutNode>(applier, node_id))?
+        {
             return self.measure_layout_node(node_id, layout, constraints);
         }
-        if let Some(text) = try_clone::<TextNode>(self.applier_mut(), node_id)? {
+        if let Some(text) = self.with_applier(|applier| try_clone::<TextNode>(applier, node_id))? {
             return Ok(measure_text(node_id, &text, constraints));
         }
-        if let Some(spacer) = try_clone::<SpacerNode>(self.applier_mut(), node_id)? {
+        if let Some(spacer) =
+            self.with_applier(|applier| try_clone::<SpacerNode>(applier, node_id))?
+        {
             return Ok(measure_spacer(node_id, &spacer, constraints));
         }
-        if let Some(button) = try_clone::<ButtonNode>(self.applier_mut(), node_id)? {
+        if let Some(button) =
+            self.with_applier(|applier| try_clone::<ButtonNode>(applier, node_id))?
+        {
             return self.measure_button(node_id, button, constraints);
         }
         Ok(Rc::new(MeasuredNode::new(
@@ -312,7 +328,7 @@ impl<'a> LayoutBuilder<'a> {
         constraints: Constraints,
     ) -> Result<Option<Rc<MeasuredNode>>, NodeError> {
         let node_ptr = {
-            let applier = self.applier_mut();
+            let mut applier = self.applier.borrow_typed();
             let node = match applier.get_mut(node_id) {
                 Ok(node) => node,
                 Err(err) => return Err(err),
@@ -328,7 +344,7 @@ impl<'a> LayoutBuilder<'a> {
         let runtime_handle = self
             .runtime_handle
             .clone()
-            .or_else(|| unsafe { (*self.applier).runtime_handle() })
+            .or_else(|| self.with_applier(|applier| applier.runtime_handle()))
             .ok_or(NodeError::MissingContext {
                 id: node_id,
                 reason: "runtime handle required for subcomposition",
@@ -357,18 +373,23 @@ impl<'a> LayoutBuilder<'a> {
             inner_constraints.max_height = inner_constraints.max_height.min(constrained_height);
             inner_constraints.min_height = inner_constraints.min_height.min(constrained_height);
         }
-
         self.slots.reset();
-        let mut outer = Composer::new(
-            &mut self.slots,
-            unsafe { &mut *self.applier },
-            runtime_handle,
+        let slots_host = Rc::new(SlotsHost::new(std::mem::take(&mut self.slots)));
+        let applier_host: Rc<dyn ApplierHost> = self.applier.clone();
+        let composer = Composer::new(
+            Rc::clone(&slots_host),
+            applier_host,
+            runtime_handle.clone(),
             Some(node_id),
         );
-        outer.enter_phase(Phase::Measure);
+        composer.enter_phase(Phase::Measure);
 
-        let measure_result =
-            unsafe { (&mut *node_ptr).measure(&mut outer, node_id, inner_constraints)? };
+        let measure_result = unsafe {
+            let node = &mut *node_ptr;
+            node.measure(&composer, node_id, inner_constraints)?
+        };
+
+        self.slots = slots_host.take();
 
         let node_ids: Vec<NodeId> = measure_result
             .placements
@@ -461,13 +482,15 @@ impl<'a> LayoutBuilder<'a> {
         for &child_id in node.children.iter() {
             let measured = Rc::new(RefCell::new(None));
             let position = Rc::new(RefCell::new(None));
-            let cache_handles = match unsafe {
-                (&mut *self.applier)
+            let cache_handles = {
+                let mut applier = self.applier.borrow_typed();
+                match applier
                     .with_node::<LayoutNode, _>(child_id, |layout_node| layout_node.cache_handles())
-            } {
-                Ok(handles) => handles,
-                Err(NodeError::TypeMismatch { .. }) => LayoutNodeCacheHandles::default(),
-                Err(err) => return Err(err),
+                {
+                    Ok(handles) => handles,
+                    Err(NodeError::TypeMismatch { .. }) => LayoutNodeCacheHandles::default(),
+                    Err(err) => return Err(err),
+                }
             };
             cache_handles.activate(self.cache_epoch);
             records.insert(
@@ -478,7 +501,7 @@ impl<'a> LayoutBuilder<'a> {
                 },
             );
             measurables.push(Box::new(LayoutChildMeasurable::new(
-                self.applier,
+                Rc::clone(&self.applier),
                 child_id,
                 measured,
                 position,
@@ -646,7 +669,7 @@ struct ChildRecord {
 }
 
 struct LayoutChildMeasurable {
-    applier: *mut MemoryApplier,
+    applier: Rc<ConcreteApplierHost<MemoryApplier>>,
     node_id: NodeId,
     measured: Rc<RefCell<Option<Rc<MeasuredNode>>>>,
     last_position: Rc<RefCell<Option<Point>>>,
@@ -658,7 +681,7 @@ struct LayoutChildMeasurable {
 
 impl LayoutChildMeasurable {
     fn new(
-        applier: *mut MemoryApplier,
+        applier: Rc<ConcreteApplierHost<MemoryApplier>>,
         node_id: NodeId,
         measured: Rc<RefCell<Option<Rc<MeasuredNode>>>>,
         last_position: Rc<RefCell<Option<Point>>>,
@@ -693,15 +716,13 @@ impl LayoutChildMeasurable {
             return Some(cached);
         }
 
-        match unsafe {
-            measure_node_via_ptr(
-                self.applier,
-                self.runtime_handle.clone(),
-                self.node_id,
-                constraints,
-                self.cache_epoch,
-            )
-        } {
+        match measure_node_with_host(
+            Rc::clone(&self.applier),
+            self.runtime_handle.clone(),
+            self.node_id,
+            constraints,
+            self.cache_epoch,
+        ) {
             Ok(measured) => {
                 self.cache
                     .store_measurement(constraints, Rc::clone(&measured));
@@ -721,15 +742,13 @@ impl Measurable for LayoutChildMeasurable {
         if let Some(cached) = self.cache.get_measurement(constraints) {
             *self.measured.borrow_mut() = Some(Rc::clone(&cached));
         } else {
-            match unsafe {
-                measure_node_via_ptr(
-                    self.applier,
-                    self.runtime_handle.clone(),
-                    self.node_id,
-                    constraints,
-                    self.cache_epoch,
-                )
-            } {
+            match measure_node_with_host(
+                Rc::clone(&self.applier),
+                self.runtime_handle.clone(),
+                self.node_id,
+                constraints,
+                self.cache_epoch,
+            ) {
                 Ok(measured) => {
                     self.cache
                         .store_measurement(constraints, Rc::clone(&measured));
@@ -800,18 +819,16 @@ impl Measurable for LayoutChildMeasurable {
         // Access the node's modifier to extract weight information
         // We use with_node which is safe, but we need to convert the raw pointer
         // to a mutable reference temporarily for the API
-        unsafe {
-            let applier = &mut *(self.applier as *mut MemoryApplier);
-            applier
-                .with_node::<LayoutNode, _>(self.node_id, |layout_node| {
-                    let props = layout_node.modifier.layout_properties();
-                    props.weight().map(|weight_data| {
-                        compose_ui_layout::FlexParentData::new(weight_data.weight, weight_data.fill)
-                    })
+        let mut applier = self.applier.borrow_typed();
+        applier
+            .with_node::<LayoutNode, _>(self.node_id, |layout_node| {
+                let props = layout_node.modifier.layout_properties();
+                props.weight().map(|weight_data| {
+                    compose_ui_layout::FlexParentData::new(weight_data.weight, weight_data.fill)
                 })
-                .ok()
-                .flatten()
-        }
+            })
+            .ok()
+            .flatten()
     }
 }
 
@@ -861,21 +878,20 @@ impl Placeable for LayoutChildPlaceable {
     }
 }
 
-unsafe fn measure_node_via_ptr(
-    applier: *mut MemoryApplier,
+fn measure_node_with_host(
+    applier: Rc<ConcreteApplierHost<MemoryApplier>>,
     runtime_handle: Option<RuntimeHandle>,
     node_id: NodeId,
     constraints: Constraints,
     epoch: u64,
 ) -> Result<Rc<MeasuredNode>, NodeError> {
-    let runtime_handle = runtime_handle.or_else(|| (*applier).runtime_handle());
-    let mut builder = LayoutBuilder {
-        applier,
-        runtime_handle,
-        slots: SlotTable::new(),
-        cache_epoch: epoch,
-        _marker: PhantomData,
+    let runtime_handle = match runtime_handle {
+        Some(handle) => Some(handle),
+        None => applier.borrow_typed().runtime_handle(),
     };
+    let mut builder = LayoutBuilder::new(applier);
+    builder.runtime_handle = runtime_handle;
+    builder.cache_epoch = epoch;
     builder.measure_node(node_id, constraints)
 }
 

@@ -171,7 +171,7 @@ where
         };
         if let Some(root) = self.composition.root() {
             let handle = self.composition.runtime_handle();
-            let applier = self.composition.applier_mut();
+            let mut applier = self.composition.applier_mut();
             applier.set_runtime_handle(handle);
             match applier.compute_layout(root, viewport_size) {
                 Ok(layout_tree) => {

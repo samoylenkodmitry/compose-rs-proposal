@@ -389,7 +389,7 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
         let recompose_setter = quote! {
             {
                 __composer.set_recompose_callback(move |
-                    __composer: &mut compose_core::Composer<'_>|
+                    __composer: &compose_core::Composer|
                 {
                     #recompose_fn_ident #ty_generics_turbofish (
                         __composer
@@ -453,7 +453,7 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
         let recompose_fn = quote! {
             #[allow(non_snake_case)]
             fn #recompose_fn_ident #impl_generics (
-                __composer: &mut compose_core::Composer<'_>
+                __composer: &compose_core::Composer
             ) -> #return_ty #where_clause {
                 #recompose_fn_body
             }
@@ -462,7 +462,7 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
         let helper_fn = quote! {
             #[allow(non_snake_case)]
             fn #helper_ident #impl_generics (
-                __composer: &mut compose_core::Composer<'_>
+                __composer: &compose_core::Composer
                 #(, #helper_inputs)*
             ) -> #return_ty #where_clause {
                 #helper_body
@@ -483,8 +483,8 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
             .collect();
 
         let wrapped = quote!({
-            compose_core::with_current_composer(|__composer: &mut compose_core::Composer<'_>| {
-                __composer.with_group(#key_expr, |__composer: &mut compose_core::Composer<'_>| {
+            compose_core::with_current_composer(|__composer: &compose_core::Composer| {
+                __composer.with_group(#key_expr, |__composer: &compose_core::Composer| {
                     #helper_ident(__composer #(, #wrapper_args)*)
                 })
             })
@@ -498,8 +498,8 @@ pub fn composable(attr: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         // no_skip path: still uses simple rebinds
         let wrapped = quote!({
-            compose_core::with_current_composer(|__composer: &mut compose_core::Composer<'_>| {
-                __composer.with_group(#key_expr, |__scope: &mut compose_core::Composer<'_>| {
+            compose_core::with_current_composer(|__composer: &compose_core::Composer| {
+                __composer.with_group(#key_expr, |__scope: &compose_core::Composer| {
                     #(#rebinds_for_no_skip)*
                     #original_block
                 })

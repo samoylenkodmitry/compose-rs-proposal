@@ -1,7 +1,8 @@
 use super::*;
 use std::cell::RefCell;
+use std::rc::Rc;
 
-use compose_core::{self, Applier, MutableState, SlotTable};
+use compose_core::{self, Applier, ConcreteApplierHost, MutableState, SlotTable, SlotsHost};
 
 #[derive(Default)]
 struct DummyNode;
@@ -15,6 +16,69 @@ fn runtime_handle() -> (
     let composition = compose_core::Composition::new(compose_core::MemoryApplier::new());
     let handle = composition.runtime_handle();
     (handle, composition)
+}
+
+fn setup_composer(
+    slots: &mut SlotTable,
+    applier: &mut compose_core::MemoryApplier,
+    handle: compose_core::RuntimeHandle,
+    root: Option<compose_core::NodeId>,
+) -> (
+    compose_core::Composer,
+    Rc<SlotsHost>,
+    Rc<ConcreteApplierHost<compose_core::MemoryApplier>>,
+) {
+    let slots_host = Rc::new(SlotsHost::new(std::mem::take(slots)));
+    let applier_host = Rc::new(ConcreteApplierHost::new(std::mem::replace(
+        applier,
+        compose_core::MemoryApplier::new(),
+    )));
+    let composer =
+        compose_core::Composer::new(Rc::clone(&slots_host), applier_host.clone(), handle, root);
+    (composer, slots_host, applier_host)
+}
+
+fn teardown_composer(
+    slots: &mut SlotTable,
+    applier: &mut compose_core::MemoryApplier,
+    slots_host: Rc<SlotsHost>,
+    applier_host: Rc<ConcreteApplierHost<compose_core::MemoryApplier>>,
+) {
+    *slots = Rc::try_unwrap(slots_host)
+        .unwrap_or_else(|_| panic!("slots host still has outstanding references"))
+        .into_inner();
+    *applier = Rc::try_unwrap(applier_host)
+        .unwrap_or_else(|_| panic!("applier host still has outstanding references"))
+        .into_inner();
+}
+
+fn measure_once(
+    slots: &mut SlotTable,
+    applier: &mut compose_core::MemoryApplier,
+    handle: &compose_core::RuntimeHandle,
+    node_id: compose_core::NodeId,
+    constraints: Constraints,
+) -> MeasureResult {
+    let (composer, slots_host, applier_host) =
+        setup_composer(slots, applier, handle.clone(), Some(node_id));
+    composer.enter_phase(Phase::Measure);
+    let node_ptr = {
+        let mut applier_ref = applier_host.borrow_typed();
+        let node = applier_ref.get_mut(node_id).expect("node available");
+        let typed = node
+            .as_any_mut()
+            .downcast_mut::<SubcomposeLayoutNode>()
+            .expect("subcompose layout node");
+        typed as *mut SubcomposeLayoutNode
+    };
+    let result = unsafe {
+        (&mut *node_ptr)
+            .measure(&composer, node_id, constraints)
+            .expect("measure result")
+    };
+    drop(composer);
+    teardown_composer(slots, applier, slots_host, applier_host);
+    result
 }
 
 #[test]
@@ -40,24 +104,13 @@ fn measure_subcomposes_content() {
         crate::modifier::Modifier::empty(),
         Rc::clone(&policy),
     )));
-    let node_ptr = {
-        let node = applier.get_mut(node_id).expect("node available");
-        let typed = node
-            .as_any_mut()
-            .downcast_mut::<SubcomposeLayoutNode>()
-            .expect("subcompose layout node");
-        typed as *mut SubcomposeLayoutNode
-    };
-    let result = {
-        let mut composer =
-            compose_core::Composer::new(&mut slots, &mut applier, handle.clone(), Some(node_id));
-        composer.enter_phase(Phase::Measure);
-        unsafe {
-            (&mut *node_ptr)
-                .measure(&mut composer, node_id, Constraints::tight(0.0, 0.0))
-                .expect("measure result")
-        }
-    };
+    let result = measure_once(
+        &mut slots,
+        &mut applier,
+        &handle,
+        node_id,
+        Constraints::tight(0.0, 0.0),
+    );
     assert_eq!(result.size, Size::default());
     {
         let node = applier.get_mut(node_id).expect("node available");
@@ -92,38 +145,21 @@ fn subcompose_reuses_nodes_across_measures() {
         crate::modifier::Modifier::empty(),
         Rc::clone(&policy),
     )));
-    let node_ptr = {
-        let node = applier.get_mut(node_id).expect("node available");
-        let typed = node
-            .as_any_mut()
-            .downcast_mut::<SubcomposeLayoutNode>()
-            .expect("subcompose layout node");
-        typed as *mut SubcomposeLayoutNode
-    };
-
-    {
-        let mut composer =
-            compose_core::Composer::new(&mut slots, &mut applier, handle.clone(), Some(node_id));
-        composer.enter_phase(Phase::Measure);
-        unsafe {
-            (&mut *node_ptr)
-                .measure(&mut composer, node_id, Constraints::loose(100.0, 100.0))
-                .expect("first measure");
-        }
-    }
-
+    let _ = measure_once(
+        &mut slots,
+        &mut applier,
+        &handle,
+        node_id,
+        Constraints::loose(100.0, 100.0),
+    );
     slots.reset();
-
-    {
-        let mut composer =
-            compose_core::Composer::new(&mut slots, &mut applier, handle.clone(), Some(node_id));
-        composer.enter_phase(Phase::Measure);
-        unsafe {
-            (&mut *node_ptr)
-                .measure(&mut composer, node_id, Constraints::loose(200.0, 200.0))
-                .expect("second measure");
-        }
-    }
+    let _ = measure_once(
+        &mut slots,
+        &mut applier,
+        &handle,
+        node_id,
+        Constraints::loose(200.0, 200.0),
+    );
 
     let recorded = recorded.borrow();
     assert_eq!(recorded.len(), 2);
@@ -159,39 +195,24 @@ fn inactive_slots_move_to_reusable_pool() {
         crate::modifier::Modifier::empty(),
         Rc::clone(&policy),
     )));
-    let node_ptr = {
-        let node = applier.get_mut(node_id).expect("node available");
-        let typed = node
-            .as_any_mut()
-            .downcast_mut::<SubcomposeLayoutNode>()
-            .expect("subcompose layout node");
-        typed as *mut SubcomposeLayoutNode
-    };
-
-    {
-        let mut composer =
-            compose_core::Composer::new(&mut slots, &mut applier, handle.clone(), Some(node_id));
-        composer.enter_phase(Phase::Measure);
-        unsafe {
-            (&mut *node_ptr)
-                .measure(&mut composer, node_id, Constraints::loose(50.0, 50.0))
-                .expect("initial measure");
-        }
-    }
+    let _ = measure_once(
+        &mut slots,
+        &mut applier,
+        &handle,
+        node_id,
+        Constraints::loose(50.0, 50.0),
+    );
 
     slots.reset();
     toggle.set(false);
 
-    {
-        let mut composer =
-            compose_core::Composer::new(&mut slots, &mut applier, handle.clone(), Some(node_id));
-        composer.enter_phase(Phase::Measure);
-        unsafe {
-            (&mut *node_ptr)
-                .measure(&mut composer, node_id, Constraints::loose(50.0, 50.0))
-                .expect("second measure");
-        }
-    }
+    let _ = measure_once(
+        &mut slots,
+        &mut applier,
+        &handle,
+        node_id,
+        Constraints::loose(50.0, 50.0),
+    );
 
     {
         let node = applier.get_mut(node_id).expect("node available");
