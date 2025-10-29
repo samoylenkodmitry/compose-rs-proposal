@@ -702,6 +702,11 @@ enum Slot {
         anchor: AnchorId,
         id: NodeId,
     },
+    /// Gap: Marks an unused slot that can be reused or compacted.
+    /// This prevents destructive truncation that would destroy sibling components.
+    Gap {
+        anchor: AnchorId,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -709,6 +714,7 @@ enum SlotKind {
     Group,
     Value,
     Node,
+    Gap,
 }
 
 impl Slot {
@@ -717,6 +723,7 @@ impl Slot {
             Slot::Group { .. } => SlotKind::Group,
             Slot::Value { .. } => SlotKind::Value,
             Slot::Node { .. } => SlotKind::Node,
+            Slot::Gap { .. } => SlotKind::Gap,
         }
     }
 
@@ -726,6 +733,7 @@ impl Slot {
             Slot::Group { anchor, .. } => *anchor,
             Slot::Value { anchor, .. } => *anchor,
             Slot::Node { anchor, .. } => *anchor,
+            Slot::Gap { anchor, .. } => *anchor,
         }
     }
 
@@ -783,6 +791,49 @@ impl SlotTable {
         self.anchors.get(&anchor).copied()
     }
 
+    /// Mark a range of slots as gaps instead of truncating.
+    /// This preserves sibling components while allowing structure changes.
+    /// When encountering a Group, recursively marks the entire group structure as gaps.
+    fn mark_range_as_gaps(&mut self, start: usize, end: usize) {
+        let mut i = start;
+        let end = end.min(self.slots.len());
+
+        while i < end {
+            if i >= self.slots.len() {
+                break;
+            }
+
+            let (anchor, group_len) = {
+                let slot = &self.slots[i];
+                let anchor = slot.anchor_id();
+                let group_len = if let Slot::Group { len, .. } = slot {
+                    *len
+                } else {
+                    0
+                };
+                (anchor, group_len)
+            };
+
+            // Mark this slot as a gap
+            self.slots[i] = Slot::Gap { anchor };
+
+            // If it was a group, recursively mark its children as gaps too
+            if group_len > 0 {
+                // Mark children (from i+1 to i+group_len)
+                let children_end = (i + group_len).min(end);
+                for j in (i + 1)..children_end {
+                    if j < self.slots.len() {
+                        let child_anchor = self.slots[j].anchor_id();
+                        self.slots[j] = Slot::Gap { anchor: child_anchor };
+                    }
+                }
+                i = (i + group_len).max(i + 1);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
     pub fn set_group_scope(&mut self, index: usize, scope: ScopeId) {
         let slot = self
             .slots
@@ -792,15 +843,9 @@ impl SlotTable {
             Slot::Group {
                 scope: scope_opt, ..
             } => {
-                if let Some(existing) = scope_opt {
-                    debug_assert_eq!(
-                        *existing, scope,
-                        "Group scope id changed unexpectedly at slot {}",
-                        index
-                    );
-                } else {
-                    *scope_opt = Some(scope);
-                }
+                // With gaps implementation, Groups can be reused across compositions.
+                // Always update the scope to the current value.
+                *scope_opt = Some(scope);
             }
             _ => panic!("set_group_scope: slot at index is not a group"),
         }
@@ -1081,6 +1126,7 @@ impl SlotTable {
         );
 
         if cursor < self.slots.len() {
+            // Check if we can reuse the existing slot
             let reuse = matches!(
                 self.slots.get(cursor),
                 Some(Slot::Value { data, .. }) if data.is::<T>()
@@ -1090,20 +1136,34 @@ impl SlotTable {
                 self.update_group_bounds();
                 return cursor;
             }
-            // TODO: Implement gap-based cleanup instead of truncation
-            // For now, use simple truncation (requires with_key workaround for conditional rendering)
-            self.slots.truncate(cursor);
+
+            // Check if the slot is a Gap that we can replace
+            if matches!(self.slots.get(cursor), Some(Slot::Gap { .. })) {
+                let anchor = self.allocate_anchor();
+                let boxed: Box<dyn Any> = Box::new(init());
+                self.slots[cursor] = Slot::Value { anchor, data: boxed };
+                self.register_anchor(anchor, cursor);
+                self.cursor = cursor + 1;
+                self.update_group_bounds();
+                return cursor;
+            }
+
+            // Type mismatch: replace current slot (mark old content as unreachable via gap)
+            // We replace in-place to maintain cursor position
+            let anchor = self.allocate_anchor();
+            let boxed: Box<dyn Any> = Box::new(init());
+            self.slots[cursor] = Slot::Value { anchor, data: boxed };
+            self.register_anchor(anchor, cursor);
+            self.cursor = cursor + 1;
+            self.update_group_bounds();
+            return cursor;
         }
 
+        // We're at the end of the slot table, append new slot
         let anchor = self.allocate_anchor();
         let boxed: Box<dyn Any> = Box::new(init());
         let slot = Slot::Value { anchor, data: boxed };
-        if cursor == self.slots.len() {
-            self.slots.push(slot);
-        } else {
-            self.slots[cursor] = slot;
-        }
-
+        self.slots.push(slot);
         self.register_anchor(anchor, cursor);
         self.cursor = cursor + 1;
         self.update_group_bounds();
@@ -1198,6 +1258,7 @@ impl SlotTable {
             cursor
         );
         if cursor < self.slots.len() {
+            // Check if we can reuse the existing node slot
             if let Some(Slot::Node { id: existing, .. }) = self.slots.get(cursor) {
                 if *existing == id {
                     self.cursor = cursor + 1;
@@ -1205,6 +1266,19 @@ impl SlotTable {
                     return;
                 }
             }
+
+            // Check if the slot is a Gap that we can replace
+            if matches!(self.slots.get(cursor), Some(Slot::Gap { .. })) {
+                let anchor = self.allocate_anchor();
+                self.slots[cursor] = Slot::Node { anchor, id };
+                self.register_anchor(anchor, cursor);
+                self.cursor = cursor + 1;
+                self.update_group_bounds();
+                return;
+            }
+
+            // Type mismatch for Node: Use truncation to avoid node type mismatches in applier
+            // (Unlike Values/Groups, Nodes are tied to applier lifecycle and can't be safely reused)
             self.slots.truncate(cursor);
         }
 
@@ -1215,7 +1289,6 @@ impl SlotTable {
         } else {
             self.slots[cursor] = slot;
         }
-
         self.register_anchor(anchor, cursor);
         self.cursor = cursor + 1;
         self.update_group_bounds();
@@ -1245,48 +1318,48 @@ impl SlotTable {
         self.group_stack.clear();
     }
 
-    /// Trim slots using anchor reachability analysis.
+    /// Trim slots by marking unreachable slots as gaps.
     ///
     /// Instead of blindly truncating at cursor position, this method:
-    /// 1. Identifies all reachable anchors (those in active groups and accessible slots)
-    /// 2. Removes only slots with unreachable anchors
-    /// 3. Compacts the slots array and updates anchor positions
+    /// 1. Marks slots from cursor to end of current group as gaps
+    /// 2. Updates the group length to reflect the actual content
+    /// 3. Preserves sibling components outside the current group
     ///
     /// This ensures effect states (LaunchedEffect, etc.) are preserved even when
     /// conditional rendering changes the composition structure.
     pub fn trim_to_cursor(&mut self) {
-        // For now, use simple truncation
-        // TODO: Implement full anchor-based reachability analysis
-        self.slots.truncate(self.cursor);
-        if let Some(frame) = self.group_stack.last_mut() {
-            frame.end = self.cursor;
-            if let Some(slot) = self.slots.get_mut(frame.start) {
+        if let Some(frame) = self.group_stack.last() {
+            let group_start = frame.start;
+            let group_end = frame.end.min(self.slots.len());
+            let group_key = frame.key;
+
+            // Mark unreachable slots within this group as gaps
+            if self.cursor < group_end {
+                self.mark_range_as_gaps(self.cursor, group_end);
+            }
+
+            // Now update the frame
+            if let Some(frame) = self.group_stack.last_mut() {
+                frame.end = self.cursor;
+            }
+
+            if let Some(slot) = self.slots.get_mut(group_start) {
                 debug_assert_eq!(
                     SlotKind::Group,
                     slot.kind(),
                     "slot kind mismatch at {}",
-                    frame.start
+                    group_start
                 );
                 if let Slot::Group { key, len, .. } = slot {
-                    debug_assert_eq!(*key, frame.key, "group key mismatch");
-                    *len = frame.end.saturating_sub(frame.start);
+                    debug_assert_eq!(*key, group_key, "group key mismatch");
+                    *len = self.cursor.saturating_sub(group_start);
                 }
             }
-        }
-    }
-
-    /// Mark all anchors in a range of slots as reachable.
-    /// This recursively processes nested groups.
-    fn mark_reachable_in_range(&self, start: usize, end: usize, reachable: &mut HashSet<AnchorId>) {
-        for i in start..end.min(self.slots.len()) {
-            if let Some(slot) = self.slots.get(i) {
-                reachable.insert(slot.anchor_id());
-
-                // Recurse into nested groups
-                if let Slot::Group { len, .. } = slot {
-                    let group_end = (i + len).min(self.slots.len());
-                    self.mark_reachable_in_range(i + 1, group_end, reachable);
-                }
+        } else {
+            // If there's no group stack, we're at the root level
+            // Mark everything beyond cursor as gaps
+            if self.cursor < self.slots.len() {
+                self.mark_range_as_gaps(self.cursor, self.slots.len());
             }
         }
     }

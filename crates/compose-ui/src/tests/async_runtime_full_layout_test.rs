@@ -258,17 +258,17 @@ fn drain_all<A: compose_core::Applier + 'static>(
 ) -> Result<(), compose_core::NodeError> {
     let mut iterations = 0;
     loop {
-        if !composition.should_render() {
+        // Check if process_invalid_scopes did any work
+        if !composition.process_invalid_scopes()? {
             if iterations > 100 {
                 println!("drain_all: Took {} iterations to stabilize", iterations);
             }
             return Ok(());
         }
-        composition.process_invalid_scopes()?;
         iterations += 1;
         if iterations > 1000 {
-            eprintln!("drain_all: Exceeded 1000 iterations, giving up. This indicates an infinite recomposition loop.");
-            return Ok(()); // Give up instead of panicking
+            eprintln!("drain_all: Exceeded 1000 iterations, giving up. This indicates an infinite recomposition loop. {iterations}");
+            return Err(compose_core::NodeError::MissingContext { id: 0 , reason: "drain_all: Exceeded 1000 iterations"} ); // Indicate error instead of panicking
         }
     }
 }
