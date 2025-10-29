@@ -608,21 +608,21 @@ fn async_runtime_example() {
                                         compose_core::with_key(&(progress_width > 0.0), || {
                                             if progress_width > 0.0 {
                                                 Row(
-                                                Modifier::width(progress_width.min(360.0))
-                                                    .then(Modifier::height(26.0))
-                                                    .then(Modifier::rounded_corners(13.0))
-                                                    .then(Modifier::draw_behind(|scope| {
-                                                        scope.draw_round_rect(
-                                                            Brush::linear_gradient(vec![
-                                                                Color(0.25, 0.55, 0.95, 1.0),
-                                                                Color(0.15, 0.35, 0.80, 1.0),
-                                                            ]),
-                                                            CornerRadii::uniform(13.0),
-                                                        );
-                                                    })),
-                                                RowSpec::default(),
-                                                || {},
-                                            );
+                                                    Modifier::width(progress_width.min(360.0))
+                                                        .then(Modifier::height(26.0))
+                                                        .then(Modifier::rounded_corners(13.0))
+                                                        .then(Modifier::draw_behind(|scope| {
+                                                            scope.draw_round_rect(
+                                                                Brush::linear_gradient(vec![
+                                                                    Color(0.25, 0.55, 0.95, 1.0),
+                                                                    Color(0.15, 0.35, 0.80, 1.0),
+                                                                ]),
+                                                                CornerRadii::uniform(13.0),
+                                                            );
+                                                        })),
+                                                    RowSpec::default(),
+                                                    || {},
+                                                );
                                             }
                                         });
                                     }

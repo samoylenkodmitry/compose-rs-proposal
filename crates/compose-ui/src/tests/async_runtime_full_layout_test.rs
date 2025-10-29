@@ -130,126 +130,114 @@ fn async_runtime_full_layout(
     }
 
     // Full layout structure matching the demo
-    Column(
-        Modifier::padding(32.0),
-        ColumnSpec::default(),
-        move || {
-            // Title Text
-            Text("Async Runtime Demo", Modifier::padding(12.0));
+    Column(Modifier::padding(32.0), ColumnSpec::default(), move || {
+        // Title Text
+        Text("Async Runtime Demo", Modifier::padding(12.0));
+
+        Spacer(Size {
+            width: 0.0,
+            height: 16.0,
+        });
+
+        // Get snapshots for this render
+        let animation_snapshot = animation.get();
+        let stats_snapshot = stats.get();
+        let progress_value = animation_snapshot.progress.clamp(0.0, 1.0);
+        let fill_width = 320.0 * progress_value;
+
+        // Progress Column with conditional Row
+        Column(Modifier::padding(8.0), ColumnSpec::default(), move || {
+            Text(
+                format!("Progress: {:>3}%", (progress_value * 100.0) as i32),
+                Modifier::padding(6.0),
+            );
 
             Spacer(Size {
                 width: 0.0,
-                height: 16.0,
+                height: 8.0,
             });
 
-            // Get snapshots for this render
-            let animation_snapshot = animation.get();
-            let stats_snapshot = stats.get();
-            let progress_value = animation_snapshot.progress.clamp(0.0, 1.0);
-            let fill_width = 320.0 * progress_value;
-
-            // Progress Column with conditional Row
-            Column(
-                Modifier::padding(8.0),
-                ColumnSpec::default(),
-                move || {
-                    Text(
-                        format!("Progress: {:>3}%", (progress_value * 100.0) as i32),
-                        Modifier::padding(6.0),
-                    );
-
-                    Spacer(Size {
-                        width: 0.0,
-                        height: 8.0,
-                    });
-
-                    // Outer container Row
-                    Row(
-                        Modifier::height(26.0).then(Modifier::rounded_corners(13.0)),
-                        RowSpec::default(),
-                        {
-                            let progress_width = fill_width;
-                            move || {
-                                // CRITICAL: Conditional rendering that triggers the bug
-                                // When progress goes from >0 to 0 and back, this changes composition structure
-                                if progress_width > 0.0 {
-                                    Row(
-                                        Modifier::width(progress_width.min(360.0))
-                                            .then(Modifier::height(26.0))
-                                            .then(Modifier::rounded_corners(13.0))
-                                            .then(Modifier::draw_behind(|scope| {
-                                                scope.draw_round_rect(
-                                                    Brush::linear_gradient(vec![
-                                                        Color(0.25, 0.55, 0.95, 1.0),
-                                                        Color(0.15, 0.35, 0.80, 1.0),
-                                                    ]),
-                                                    CornerRadii::uniform(13.0),
-                                                );
-                                            })),
-                                        RowSpec::default(),
-                                        || {},
-                                    );
-                                }
-                            }
-                        },
-                    );
+            // Outer container Row
+            Row(
+                Modifier::height(26.0).then(Modifier::rounded_corners(13.0)),
+                RowSpec::default(),
+                {
+                    let progress_width = fill_width;
+                    move || {
+                        // CRITICAL: Conditional rendering that triggers the bug
+                        // When progress goes from >0 to 0 and back, this changes composition structure
+                        if progress_width > 0.0 {
+                            Row(
+                                Modifier::width(progress_width.min(360.0))
+                                    .then(Modifier::height(26.0))
+                                    .then(Modifier::rounded_corners(13.0))
+                                    .then(Modifier::draw_behind(|scope| {
+                                        scope.draw_round_rect(
+                                            Brush::linear_gradient(vec![
+                                                Color(0.25, 0.55, 0.95, 1.0),
+                                                Color(0.15, 0.35, 0.80, 1.0),
+                                            ]),
+                                            CornerRadii::uniform(13.0),
+                                        );
+                                    })),
+                                RowSpec::default(),
+                                || {},
+                            );
+                        }
+                    }
                 },
             );
+        });
 
-            Spacer(Size {
-                width: 0.0,
-                height: 12.0,
-            });
+        Spacer(Size {
+            width: 0.0,
+            height: 12.0,
+        });
 
-            // Stats Text - THIS SHOULD UPDATE BUT FREEZES
-            Text(
-                format!(
-                    "Frames advanced: {} (direction: {})",
-                    stats_snapshot.frames,
-                    if animation_snapshot.direction >= 0.0 {
-                        "forward"
-                    } else {
-                        "reverse"
-                    }
-                ),
-                Modifier::padding(8.0),
-            );
+        // Stats Text - THIS SHOULD UPDATE BUT FREEZES
+        Text(
+            format!(
+                "Frames advanced: {} (direction: {})",
+                stats_snapshot.frames,
+                if animation_snapshot.direction >= 0.0 {
+                    "forward"
+                } else {
+                    "reverse"
+                }
+            ),
+            Modifier::padding(8.0),
+        );
 
-            Spacer(Size {
-                width: 0.0,
-                height: 16.0,
-            });
+        Spacer(Size {
+            width: 0.0,
+            height: 16.0,
+        });
 
-            // Button Row
-            {
-                let is_running_for_button = is_running.clone();
-                Row(
-                    Modifier::padding(4.0),
-                    RowSpec::default(),
+        // Button Row
+        {
+            let is_running_for_button = is_running.clone();
+            Row(Modifier::padding(4.0), RowSpec::default(), move || {
+                let running = is_running_for_button.get();
+
+                // Pause/Resume Button - APPEARANCE SHOULD CHANGE BUT FREEZES
+                let button_label = if running {
+                    "Pause animation"
+                } else {
+                    "Resume animation"
+                };
+                Button(
+                    Modifier::padding(12.0),
+                    {
+                        let toggle_state = is_running_for_button.clone();
+                        move || toggle_state.set(!toggle_state.get())
+                    },
                     move || {
-                        let running = is_running_for_button.get();
-
-                        // Pause/Resume Button - APPEARANCE SHOULD CHANGE BUT FREEZES
-                        let button_label = if running {
-                            "Pause animation"
-                        } else {
-                            "Resume animation"
-                        };
-                        Button(
-                            Modifier::padding(12.0),
-                            {
-                                let toggle_state = is_running_for_button.clone();
-                                move || toggle_state.set(!toggle_state.get())
-                            },
-                            move || {
-                                Text(button_label, Modifier::padding(6.0));
-                            },
-                        );
+                        Text(button_label, Modifier::padding(6.0));
                     },
                 );
-            }
-        },
-    );
+            });
+        }
+    });
 }
 
 /// Helper to drain all pending recompositions until stable
@@ -268,7 +256,10 @@ fn drain_all<A: compose_core::Applier + 'static>(
         iterations += 1;
         if iterations > 1000 {
             eprintln!("drain_all: Exceeded 1000 iterations, giving up. This indicates an infinite recomposition loop. {iterations}");
-            return Err(compose_core::NodeError::MissingContext { id: 0 , reason: "drain_all: Exceeded 1000 iterations"} ); // Indicate error instead of panicking
+            return Err(compose_core::NodeError::MissingContext {
+                id: 0,
+                reason: "drain_all: Exceeded 1000 iterations",
+            }); // Indicate error instead of panicking
         }
     }
 }
@@ -303,6 +294,27 @@ fn async_runtime_full_layout_freezes_after_forward_flip() {
         time += 16_666_667; // 60 FPS (16.67ms per frame)
         runtime.drain_frame_callbacks(time);
         drain_all(&mut composition).expect("drain loop");
+        {
+            use crate::layout::LayoutEngine;
+            let root = composition.root().expect("composition root");
+            let compute_result = {
+                let mut applier = composition.applier_mut();
+                applier.compute_layout(
+                    root,
+                    crate::modifier::Size {
+                        width: 1280.0,
+                        height: 720.0,
+                    },
+                )
+            };
+            if let Err(err) = compute_result {
+                let tree = {
+                    let applier = composition.applier_mut();
+                    applier.dump_tree(Some(root))
+                };
+                panic!("layout compute failed: {err:?}\nTree:\n{tree}");
+            }
+        }
 
         let anim = animation.get();
         let current_direction = anim.direction;
@@ -335,6 +347,27 @@ fn async_runtime_full_layout_freezes_after_forward_flip() {
         time += 16_666_667;
         runtime.drain_frame_callbacks(time);
         drain_all(&mut composition).expect("drain post-flip");
+        {
+            use crate::layout::LayoutEngine;
+            let root = composition.root().expect("composition root");
+            let compute_result = {
+                let mut applier = composition.applier_mut();
+                applier.compute_layout(
+                    root,
+                    crate::modifier::Size {
+                        width: 1280.0,
+                        height: 720.0,
+                    },
+                )
+            };
+            if let Err(err) = compute_result {
+                let tree = {
+                    let applier = composition.applier_mut();
+                    applier.dump_tree(Some(root))
+                };
+                panic!("layout compute failed: {err:?}\nTree:\n{tree}");
+            }
+        }
     }
 
     let frames_after_flip = stats.get().frames;

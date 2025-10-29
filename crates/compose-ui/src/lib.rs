@@ -72,3 +72,7 @@ mod anchor_async_tests;
 #[cfg(test)]
 #[path = "tests/async_runtime_full_layout_test.rs"]
 mod async_runtime_full_layout_test;
+
+#[cfg(test)]
+#[path = "tests/tab_switching_tests.rs"]
+mod tab_switching_tests;

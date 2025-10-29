@@ -355,6 +355,7 @@ version = "0.1.0"
 dependencies = [
  "compose-core",
  "compose-foundation",
+ "compose-macros",
  "compose-render-common",
  "compose-runtime-std",
  "compose-ui",

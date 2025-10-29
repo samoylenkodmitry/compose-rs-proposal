@@ -13,3 +13,6 @@ compose-ui = { path = "../compose-ui" }
 compose-ui-graphics = { path = "../compose-ui-graphics" }
 compose-foundation = { path = "../compose-foundation" }
 log = "0.4"
+
+[dev-dependencies]
+compose-macros = { path = "../compose-macros" }

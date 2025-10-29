@@ -332,6 +332,7 @@ impl LayoutBuilder {
             let mut applier = self.applier.borrow_typed();
             let node = match applier.get_mut(node_id) {
                 Ok(node) => node,
+                Err(NodeError::Missing { .. }) => return Ok(None),
                 Err(err) => return Err(err),
             };
             let any = node.as_any_mut();
@@ -482,10 +483,14 @@ impl LayoutBuilder {
                 match applier
                     .with_node::<LayoutNode, _>(child_id, |layout_node| layout_node.cache_handles())
                 {
-                    Ok(handles) => handles,
-                    Err(NodeError::TypeMismatch { .. }) => LayoutNodeCacheHandles::default(),
+                    Ok(handles) => Some(handles),
+                    Err(NodeError::TypeMismatch { .. }) => Some(LayoutNodeCacheHandles::default()),
+                    Err(NodeError::Missing { .. }) => None,
                     Err(err) => return Err(err),
                 }
+            };
+            let Some(cache_handles) = cache_handles else {
+                continue;
             };
             cache_handles.activate(self.cache_epoch);
             records.insert(
@@ -1229,7 +1234,7 @@ fn try_clone<T: Node + Clone + 'static>(
 ) -> Result<Option<T>, NodeError> {
     match applier.with_node(node_id, |node: &mut T| node.clone()) {
         Ok(value) => Ok(Some(value)),
-        Err(NodeError::TypeMismatch { .. }) => Ok(None),
+        Err(NodeError::TypeMismatch { .. }) | Err(NodeError::Missing { .. }) => Ok(None),
         Err(err) => Err(err),
     }
 }

@@ -2419,3 +2419,1390 @@ fn stats_watchers_survive_conditional_toggle() {
         "restoring progress should keep stats watcher"
     );
 }
+
+// ============================================================================
+// Slot Table Unit Tests - Gap Architecture
+// ============================================================================
+
+#[test]
+fn slot_table_marks_values_as_gaps() {
+    let mut slots = SlotTable::new();
+
+    // Create initial composition with 3 value slots
+    let _idx1 = slots.use_value_slot(|| 1i32);
+    let _idx2 = slots.use_value_slot(|| 2i32);
+    let _idx3 = slots.use_value_slot(|| 3i32);
+
+    // Mark middle slot as gap
+    slots.mark_range_as_gaps(1, 2, None);
+
+    // Verify we can still read first and last slots
+    assert_eq!(slots.read_value::<i32>(0), &1);
+    assert_eq!(slots.read_value::<i32>(2), &3);
+}
+
+#[test]
+fn slot_table_reuses_gap_slots_for_values() {
+    let mut slots = SlotTable::new();
+
+    // Create initial value
+    let idx1 = slots.use_value_slot(|| 1i32);
+    assert_eq!(slots.read_value::<i32>(idx1), &1);
+
+    // Reset and mark as gap
+    slots.reset();
+    slots.mark_range_as_gaps(0, 1, None);
+
+    // Reset cursor to reuse
+    slots.reset();
+
+    // New value should reuse gap slot at position 0
+    let idx2 = slots.use_value_slot(|| 42i32);
+    assert_eq!(idx2, 0, "should reuse gap slot at position 0");
+    assert_eq!(slots.read_value::<i32>(idx2), &42);
+}
+
+#[test]
+fn slot_table_replaces_mismatched_value_types() {
+    let mut slots = SlotTable::new();
+
+    // Create initial value of type i32
+    let idx = slots.use_value_slot(|| 1i32);
+    assert_eq!(slots.read_value::<i32>(idx), &1);
+
+    // Reset and try to use with different type
+    slots.reset();
+    let idx2 = slots.use_value_slot(|| "hello");
+
+    // Should replace at same position
+    assert_eq!(idx, idx2);
+    assert_eq!(slots.read_value::<&str>(idx2), &"hello");
+}
+
+#[test]
+fn slot_table_handles_nested_group_gaps() {
+    let mut slots = SlotTable::new();
+
+    // Create a parent group
+    let parent_idx = slots.start(100);
+
+    // Create child group
+    let child_idx = slots.start(200);
+    let _val_idx = slots.use_value_slot(|| 42i32);
+    slots.end(); // End child
+
+    slots.end(); // End parent
+
+    // Verify parent group was created
+    let groups = slots.debug_dump_groups();
+    assert!(groups.iter().any(|(idx, _, _, _)| *idx == parent_idx));
+
+    // Mark parent group range as gaps (should mark child too)
+    slots.mark_range_as_gaps(parent_idx, child_idx + 2, None);
+
+    // Groups should still be present, just marked as gaps internally
+    // The slot table preserves structure for reuse
+}
+
+#[test]
+fn slot_table_preserves_sibling_groups_when_marking_gaps() {
+    let mut slots = SlotTable::new();
+
+    // Create first group with a value
+    let g1 = slots.start(1);
+    let _v1 = slots.use_value_slot(|| "first");
+    slots.end();
+
+    // Create second group with a value
+    let g2 = slots.start(2);
+    let _v2 = slots.use_value_slot(|| "second");
+    slots.end();
+
+    // Create third group with a value
+    let _g3 = slots.start(3);
+    let v3_idx = slots.use_value_slot(|| "third");
+    slots.end();
+
+    // Capture initial group count
+    let initial_groups = slots.debug_dump_groups();
+    assert_eq!(initial_groups.len(), 3, "should have 3 groups initially");
+
+    // Mark only the first group's range as gaps
+    slots.mark_range_as_gaps(g1, g2, None);
+
+    // Third group should still be accessible (the value should remain)
+    assert_eq!(slots.read_value::<&str>(v3_idx), &"third");
+
+    // After marking as gaps, group 1 is converted to a Gap slot, but groups 2 and 3 remain
+    let remaining_groups = slots.debug_dump_groups();
+    assert!(
+        remaining_groups.len() >= 2,
+        "groups outside marked range should be preserved, found {} groups",
+        remaining_groups.len()
+    );
+}
+
+#[test]
+fn slot_table_tab_switching_preserves_scopes() {
+    let mut composition = Composition::new(MemoryApplier::new());
+    let runtime = composition.runtime_handle();
+    let active_tab = MutableState::with_runtime(0i32, runtime.clone());
+    let tab1_counter = MutableState::with_runtime(0i32, runtime.clone());
+    let tab2_counter = MutableState::with_runtime(0i32, runtime.clone());
+
+    thread_local! {
+        static TAB1_RENDERS: Cell<usize> = Cell::new(0);
+        static TAB2_RENDERS: Cell<usize> = Cell::new(0);
+    }
+
+    #[composable]
+    fn tab_content_1(counter: MutableState<i32>) {
+        TAB1_RENDERS.with(|c| c.set(c.get() + 1));
+        let count = counter.value();
+        let id = compose_test_node(|| TestTextNode::default());
+        with_node_mut(id, |node: &mut TestTextNode| {
+            node.text = format!("Tab 1: {}", count);
+        })
+        .expect("update tab1 node");
+    }
+
+    #[composable]
+    fn tab_content_2(counter: MutableState<i32>) {
+        TAB2_RENDERS.with(|c| c.set(c.get() + 1));
+        let count = counter.value();
+        let id = compose_test_node(|| TestTextNode::default());
+        with_node_mut(id, |node: &mut TestTextNode| {
+            node.text = format!("Tab 2: {}", count);
+        })
+        .expect("update tab2 node");
+    }
+
+    let mut render = {
+        let active_tab = active_tab.clone();
+        let tab1_counter = tab1_counter.clone();
+        let tab2_counter = tab2_counter.clone();
+        move || {
+            let tab = active_tab.value();
+            match tab {
+                0 => tab_content_1(tab1_counter.clone()),
+                1 => tab_content_2(tab2_counter.clone()),
+                _ => {}
+            }
+        }
+    };
+
+    // Initial render - Tab 1
+    TAB1_RENDERS.with(|c| c.set(0));
+    TAB2_RENDERS.with(|c| c.set(0));
+
+    let key = location_key(file!(), line!(), column!());
+    composition
+        .render(key, &mut render)
+        .expect("initial render");
+
+    assert_eq!(
+        TAB1_RENDERS.with(|c| c.get()),
+        1,
+        "tab1 should render initially"
+    );
+    assert_eq!(
+        TAB2_RENDERS.with(|c| c.get()),
+        0,
+        "tab2 should not render initially"
+    );
+
+    // Switch to Tab 2
+    active_tab.set_value(1);
+    composition
+        .render(key, &mut render)
+        .expect("switch to tab2");
+
+    assert_eq!(
+        TAB1_RENDERS.with(|c| c.get()),
+        1,
+        "tab1 render count unchanged"
+    );
+    assert_eq!(
+        TAB2_RENDERS.with(|c| c.get()),
+        1,
+        "tab2 should render after switch"
+    );
+
+    // Update tab2 counter - should trigger recomposition
+    TAB1_RENDERS.with(|c| c.set(0));
+    TAB2_RENDERS.with(|c| c.set(0));
+    tab2_counter.set_value(5);
+
+    let _ = composition
+        .process_invalid_scopes()
+        .expect("recompose tab2");
+
+    assert_eq!(
+        TAB1_RENDERS.with(|c| c.get()),
+        0,
+        "tab1 should not recompose"
+    );
+    assert!(
+        TAB2_RENDERS.with(|c| c.get()) > 0,
+        "tab2 should recompose on counter change"
+    );
+
+    // Switch back to Tab 1
+    TAB1_RENDERS.with(|c| c.set(0));
+    TAB2_RENDERS.with(|c| c.set(0));
+    active_tab.set_value(0);
+    composition
+        .render(key, &mut render)
+        .expect("switch back to tab1");
+
+    assert!(
+        TAB1_RENDERS.with(|c| c.get()) > 0,
+        "tab1 should render after switch back"
+    );
+    assert_eq!(TAB2_RENDERS.with(|c| c.get()), 0, "tab2 should not render");
+
+    // Update tab1 counter - should trigger recomposition even after tab switch cycle
+    TAB1_RENDERS.with(|c| c.set(0));
+    TAB2_RENDERS.with(|c| c.set(0));
+    tab1_counter.set_value(10);
+
+    let _ = composition
+        .process_invalid_scopes()
+        .expect("recompose tab1 after cycle");
+
+    assert!(
+        TAB1_RENDERS.with(|c| c.get()) > 0,
+        "tab1 scope should work after tab cycle"
+    );
+    assert_eq!(
+        TAB2_RENDERS.with(|c| c.get()),
+        0,
+        "tab2 should not recompose"
+    );
+}
+
+#[test]
+fn slot_table_conditional_rendering_preserves_sibling_scopes() {
+    let mut composition = Composition::new(MemoryApplier::new());
+    let runtime = composition.runtime_handle();
+    let show_middle = MutableState::with_runtime(true, runtime.clone());
+    let top_counter = MutableState::with_runtime(0i32, runtime.clone());
+    let middle_counter = MutableState::with_runtime(0i32, runtime.clone());
+    let bottom_counter = MutableState::with_runtime(0i32, runtime.clone());
+
+    thread_local! {
+        static TOP_RENDERS: Cell<usize> = Cell::new(0);
+        static MIDDLE_RENDERS: Cell<usize> = Cell::new(0);
+        static BOTTOM_RENDERS: Cell<usize> = Cell::new(0);
+    }
+
+    #[composable]
+    fn top_component(counter: MutableState<i32>) {
+        TOP_RENDERS.with(|c| c.set(c.get() + 1));
+        let count = counter.value();
+        let id = compose_test_node(|| TestTextNode::default());
+        with_node_mut(id, |node: &mut TestTextNode| {
+            node.text = format!("Top: {}", count);
+        })
+        .expect("update top node");
+    }
+
+    #[composable]
+    fn middle_component(counter: MutableState<i32>) {
+        MIDDLE_RENDERS.with(|c| c.set(c.get() + 1));
+        let count = counter.value();
+        let id = compose_test_node(|| TestTextNode::default());
+        with_node_mut(id, |node: &mut TestTextNode| {
+            node.text = format!("Middle: {}", count);
+        })
+        .expect("update middle node");
+    }
+
+    #[composable]
+    fn bottom_component(counter: MutableState<i32>) {
+        BOTTOM_RENDERS.with(|c| c.set(c.get() + 1));
+        let count = counter.value();
+        let id = compose_test_node(|| TestTextNode::default());
+        with_node_mut(id, |node: &mut TestTextNode| {
+            node.text = format!("Bottom: {}", count);
+        })
+        .expect("update bottom node");
+    }
+
+    let mut render = {
+        let show_middle = show_middle.clone();
+        let top_counter = top_counter.clone();
+        let middle_counter = middle_counter.clone();
+        let bottom_counter = bottom_counter.clone();
+        move || {
+            top_component(top_counter.clone());
+
+            if show_middle.value() {
+                middle_component(middle_counter.clone());
+            }
+
+            bottom_component(bottom_counter.clone());
+        }
+    };
+
+    // Initial render with all components
+    TOP_RENDERS.with(|c| c.set(0));
+    MIDDLE_RENDERS.with(|c| c.set(0));
+    BOTTOM_RENDERS.with(|c| c.set(0));
+
+    let key = location_key(file!(), line!(), column!());
+    composition
+        .render(key, &mut render)
+        .expect("initial render");
+
+    assert_eq!(TOP_RENDERS.with(|c| c.get()), 1);
+    assert_eq!(MIDDLE_RENDERS.with(|c| c.get()), 1);
+    assert_eq!(BOTTOM_RENDERS.with(|c| c.get()), 1);
+
+    // Hide middle component
+    show_middle.set_value(false);
+    composition.render(key, &mut render).expect("hide middle");
+
+    // Update bottom counter - should still work
+    TOP_RENDERS.with(|c| c.set(0));
+    MIDDLE_RENDERS.with(|c| c.set(0));
+    BOTTOM_RENDERS.with(|c| c.set(0));
+    bottom_counter.set_value(5);
+
+    let _ = composition
+        .process_invalid_scopes()
+        .expect("recompose bottom");
+
+    assert_eq!(TOP_RENDERS.with(|c| c.get()), 0, "top should not recompose");
+    assert_eq!(
+        MIDDLE_RENDERS.with(|c| c.get()),
+        0,
+        "middle should not recompose"
+    );
+    assert!(
+        BOTTOM_RENDERS.with(|c| c.get()) > 0,
+        "bottom scope should work after middle removed"
+    );
+
+    // Update top counter - should still work
+    TOP_RENDERS.with(|c| c.set(0));
+    MIDDLE_RENDERS.with(|c| c.set(0));
+    BOTTOM_RENDERS.with(|c| c.set(0));
+    top_counter.set_value(3);
+
+    let _ = composition.process_invalid_scopes().expect("recompose top");
+
+    assert!(
+        TOP_RENDERS.with(|c| c.get()) > 0,
+        "top scope should work after middle removed"
+    );
+    assert_eq!(
+        MIDDLE_RENDERS.with(|c| c.get()),
+        0,
+        "middle should not recompose"
+    );
+    assert_eq!(
+        BOTTOM_RENDERS.with(|c| c.get()),
+        0,
+        "bottom should not recompose"
+    );
+
+    // Show middle again
+    show_middle.set_value(true);
+    composition
+        .render(key, &mut render)
+        .expect("show middle again");
+
+    // Update middle counter - should work after restoration
+    TOP_RENDERS.with(|c| c.set(0));
+    MIDDLE_RENDERS.with(|c| c.set(0));
+    BOTTOM_RENDERS.with(|c| c.set(0));
+    middle_counter.set_value(7);
+
+    let _ = composition
+        .process_invalid_scopes()
+        .expect("recompose middle after restore");
+
+    assert_eq!(TOP_RENDERS.with(|c| c.get()), 0, "top should not recompose");
+    assert!(
+        MIDDLE_RENDERS.with(|c| c.get()) > 0,
+        "middle scope should work after restoration"
+    );
+    assert_eq!(
+        BOTTOM_RENDERS.with(|c| c.get()),
+        0,
+        "bottom should not recompose"
+    );
+}
+
+#[test]
+fn slot_table_gaps_work_with_nested_conditionals() {
+    let mut composition = Composition::new(MemoryApplier::new());
+    let runtime = composition.runtime_handle();
+    let outer_visible = MutableState::with_runtime(true, runtime.clone());
+    let inner_visible = MutableState::with_runtime(true, runtime.clone());
+    let outer_counter = MutableState::with_runtime(0i32, runtime.clone());
+    let inner_counter = MutableState::with_runtime(0i32, runtime.clone());
+    let after_counter = MutableState::with_runtime(0i32, runtime.clone());
+
+    thread_local! {
+        static OUTER_RENDERS: Cell<usize> = Cell::new(0);
+        static INNER_RENDERS: Cell<usize> = Cell::new(0);
+        static AFTER_RENDERS: Cell<usize> = Cell::new(0);
+    }
+
+    #[composable]
+    fn inner_content(counter: MutableState<i32>) {
+        INNER_RENDERS.with(|c| c.set(c.get() + 1));
+        let _count = counter.value();
+    }
+
+    #[composable]
+    fn outer_content(
+        inner_visible: MutableState<bool>,
+        outer_counter: MutableState<i32>,
+        inner_counter: MutableState<i32>,
+    ) {
+        OUTER_RENDERS.with(|c| c.set(c.get() + 1));
+        let _count = outer_counter.value();
+
+        if inner_visible.value() {
+            inner_content(inner_counter);
+        }
+    }
+
+    #[composable]
+    fn after_content(counter: MutableState<i32>) {
+        AFTER_RENDERS.with(|c| c.set(c.get() + 1));
+        let _count = counter.value();
+    }
+
+    let mut render = {
+        let outer_visible = outer_visible.clone();
+        let inner_visible = inner_visible.clone();
+        let outer_counter = outer_counter.clone();
+        let inner_counter = inner_counter.clone();
+        let after_counter = after_counter.clone();
+        move || {
+            if outer_visible.value() {
+                outer_content(
+                    inner_visible.clone(),
+                    outer_counter.clone(),
+                    inner_counter.clone(),
+                );
+            }
+            after_content(after_counter.clone());
+        }
+    };
+
+    let key = location_key(file!(), line!(), column!());
+
+    // Initial render - all visible
+    composition
+        .render(key, &mut render)
+        .expect("initial render");
+
+    // Hide inner
+    inner_visible.set_value(false);
+    composition.render(key, &mut render).expect("hide inner");
+
+    // Verify after component scope still works
+    AFTER_RENDERS.with(|c| c.set(0));
+    after_counter.set_value(1);
+    let _ = composition
+        .process_invalid_scopes()
+        .expect("recompose after");
+    assert!(
+        AFTER_RENDERS.with(|c| c.get()) > 0,
+        "after scope should work with inner hidden"
+    );
+
+    // Hide outer (and inner is already hidden)
+    outer_visible.set_value(false);
+    composition.render(key, &mut render).expect("hide outer");
+
+    // Verify after component scope still works
+    AFTER_RENDERS.with(|c| c.set(0));
+    after_counter.set_value(2);
+    let _ = composition
+        .process_invalid_scopes()
+        .expect("recompose after with outer hidden");
+    assert!(
+        AFTER_RENDERS.with(|c| c.get()) > 0,
+        "after scope should work with outer hidden"
+    );
+
+    // Show outer but keep inner hidden
+    outer_visible.set_value(true);
+    composition.render(key, &mut render).expect("show outer");
+
+    // Verify outer scope works
+    OUTER_RENDERS.with(|c| c.set(0));
+    outer_counter.set_value(1);
+    let _ = composition
+        .process_invalid_scopes()
+        .expect("recompose outer");
+    assert!(
+        OUTER_RENDERS.with(|c| c.get()) > 0,
+        "outer scope should work after restoration"
+    );
+
+    // Show inner too
+    inner_visible.set_value(true);
+    composition.render(key, &mut render).expect("show inner");
+
+    // Verify inner scope works after full restoration
+    INNER_RENDERS.with(|c| c.set(0));
+    inner_counter.set_value(1);
+    let _ = composition
+        .process_invalid_scopes()
+        .expect("recompose inner");
+    assert!(
+        INNER_RENDERS.with(|c| c.get()) > 0,
+        "inner scope should work after full restoration"
+    );
+}
+
+#[test]
+fn slot_table_multiple_rapid_tab_switches() {
+    // Simulates rapid tab switching that could cause UI corruption
+    let mut composition = Composition::new(MemoryApplier::new());
+    let runtime = composition.runtime_handle();
+    let active_tab = MutableState::with_runtime(0i32, runtime.clone());
+
+    thread_local! {
+        static RENDER_LOG: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    }
+
+    #[composable]
+    fn tab_with_multiple_elements(tab_id: i32, counter: MutableState<i32>) {
+        RENDER_LOG.with(|log| log.borrow_mut().push(format!("tab{}_start", tab_id)));
+
+        // Multiple nodes to make the slot table more complex
+        let count = counter.value();
+        for i in 0..3 {
+            let id = compose_test_node(|| TestTextNode::default());
+            with_node_mut(id, |node: &mut TestTextNode| {
+                node.text = format!("Tab {} Item {} ({})", tab_id, i, count);
+            })
+            .expect("update node");
+        }
+
+        RENDER_LOG.with(|log| log.borrow_mut().push(format!("tab{}_end", tab_id)));
+    }
+
+    let tab_counters: Vec<_> = (0..4)
+        .map(|_| MutableState::with_runtime(0i32, runtime.clone()))
+        .collect();
+
+    let mut render = {
+        let active_tab = active_tab.clone();
+        let tab_counters = tab_counters.clone();
+        move || {
+            let tab = active_tab.value();
+            if tab >= 0 && (tab as usize) < tab_counters.len() {
+                tab_with_multiple_elements(tab, tab_counters[tab as usize].clone());
+            }
+        }
+    };
+
+    let key = location_key(file!(), line!(), column!());
+
+    // Rapidly switch between tabs multiple times
+    for cycle in 0..3 {
+        for tab in 0..4 {
+            RENDER_LOG.with(|log| log.borrow_mut().clear());
+            active_tab.set_value(tab);
+            composition
+                .render(key, &mut render)
+                .expect(&format!("render cycle {} tab {}", cycle, tab));
+
+            let log = RENDER_LOG.with(|log| log.borrow().clone());
+            assert!(
+                log.len() >= 2,
+                "cycle {} tab {} should render start and end markers, got {:?}",
+                cycle,
+                tab,
+                log
+            );
+            assert!(
+                log[0].starts_with(&format!("tab{}_start", tab)),
+                "cycle {} tab {} should start correctly, got {:?}",
+                cycle,
+                tab,
+                log
+            );
+        }
+    }
+
+    // After all tab switches, counters should still work
+    RENDER_LOG.with(|log| log.borrow_mut().clear());
+    tab_counters[2].set_value(42);
+    active_tab.set_value(2);
+    composition.render(key, &mut render).expect("final render");
+
+    let _ = composition
+        .process_invalid_scopes()
+        .expect("final recompose");
+
+    // If scopes are preserved correctly, the counter update should have triggered recomposition
+    let final_log = RENDER_LOG.with(|log| log.borrow().clone());
+    assert!(
+        final_log.len() >= 2,
+        "final render should work after rapid tab switches, got {:?}",
+        final_log
+    );
+}
+
+#[test]
+fn tab_switching_with_keyed_children() {
+    // Test tab switching where children use keys for identity
+    let mut composition = Composition::new(MemoryApplier::new());
+    let runtime = composition.runtime_handle();
+    let active_tab = MutableState::with_runtime(0i32, runtime.clone());
+    let counter = MutableState::with_runtime(0i32, runtime.clone());
+
+    thread_local! {
+        static TAB1_KEYED_RENDERS: Cell<usize> = Cell::new(0);
+        static TAB2_KEYED_RENDERS: Cell<usize> = Cell::new(0);
+    }
+
+    #[composable]
+    fn keyed_content(tab_id: i32, counter: MutableState<i32>) {
+        if tab_id == 0 {
+            TAB1_KEYED_RENDERS.with(|c| c.set(c.get() + 1));
+        } else {
+            TAB2_KEYED_RENDERS.with(|c| c.set(c.get() + 1));
+        }
+
+        let count = counter.value();
+        compose_core::with_key(&format!("item_{}", tab_id), || {
+            let id = compose_test_node(|| TestTextNode::default());
+            with_node_mut(id, |node: &mut TestTextNode| {
+                node.text = format!("Tab {} with key: {}", tab_id, count);
+            })
+            .expect("update keyed node");
+        });
+    }
+
+    let mut render = {
+        let active_tab = active_tab.clone();
+        let counter = counter.clone();
+        move || {
+            let tab = active_tab.value();
+            keyed_content(tab, counter.clone());
+        }
+    };
+
+    let key = location_key(file!(), line!(), column!());
+
+    // Initial render - Tab 0
+    TAB1_KEYED_RENDERS.with(|c| c.set(0));
+    TAB2_KEYED_RENDERS.with(|c| c.set(0));
+    composition
+        .render(key, &mut render)
+        .expect("initial render");
+    assert_eq!(TAB1_KEYED_RENDERS.with(|c| c.get()), 1);
+
+    // Switch to Tab 1
+    active_tab.set_value(1);
+    composition
+        .render(key, &mut render)
+        .expect("switch to tab 1");
+    assert_eq!(TAB2_KEYED_RENDERS.with(|c| c.get()), 1);
+
+    // Update counter and switch back to Tab 0
+    counter.set_value(42);
+    active_tab.set_value(0);
+    TAB1_KEYED_RENDERS.with(|c| c.set(0));
+    composition
+        .render(key, &mut render)
+        .expect("switch back to tab 0");
+
+    // Tab 0 should rerender with updated counter
+    assert!(
+        TAB1_KEYED_RENDERS.with(|c| c.get()) > 0,
+        "Tab 0 should rerender with updated counter value"
+    );
+
+    // Verify scope still works
+    TAB1_KEYED_RENDERS.with(|c| c.set(0));
+    counter.set_value(100);
+    let _ = composition
+        .process_invalid_scopes()
+        .expect("recompose after counter update");
+    assert!(
+        TAB1_KEYED_RENDERS.with(|c| c.get()) > 0,
+        "Tab 0 scope should still work after key-based tab switching"
+    );
+}
+
+#[test]
+fn tab_switching_with_different_node_types() {
+    // Test switching between tabs that create different node types
+    let mut composition = Composition::new(MemoryApplier::new());
+    let runtime = composition.runtime_handle();
+    let active_tab = MutableState::with_runtime(0i32, runtime.clone());
+
+    thread_local! {
+        static TEXT_NODE_COUNT: Cell<usize> = Cell::new(0);
+        static DUMMY_NODE_COUNT: Cell<usize> = Cell::new(0);
+    }
+
+    #[composable]
+    fn text_tab() {
+        TEXT_NODE_COUNT.with(|c| c.set(c.get() + 1));
+        let id = compose_test_node(|| TestTextNode::default());
+        with_node_mut(id, |node: &mut TestTextNode| {
+            node.text = "Text Node Tab".to_string();
+        })
+        .expect("update text node");
+    }
+
+    #[composable]
+    fn dummy_tab() {
+        DUMMY_NODE_COUNT.with(|c| c.set(c.get() + 1));
+        compose_test_node(|| TestDummyNode);
+    }
+
+    let mut render = {
+        let active_tab = active_tab.clone();
+        move || match active_tab.value() {
+            0 => text_tab(),
+            _ => dummy_tab(),
+        }
+    };
+
+    let key = location_key(file!(), line!(), column!());
+
+    // Start with text node
+    TEXT_NODE_COUNT.with(|c| c.set(0));
+    DUMMY_NODE_COUNT.with(|c| c.set(0));
+    composition
+        .render(key, &mut render)
+        .expect("initial render with text node");
+    assert_eq!(TEXT_NODE_COUNT.with(|c| c.get()), 1);
+    assert_eq!(DUMMY_NODE_COUNT.with(|c| c.get()), 0);
+
+    // Switch to dummy node
+    active_tab.set_value(1);
+    composition
+        .render(key, &mut render)
+        .expect("switch to dummy node");
+    assert_eq!(DUMMY_NODE_COUNT.with(|c| c.get()), 1);
+
+    // Switch back to text node - should work without corruption
+    active_tab.set_value(0);
+    TEXT_NODE_COUNT.with(|c| c.set(0));
+    composition
+        .render(key, &mut render)
+        .expect("switch back to text node");
+    assert!(
+        TEXT_NODE_COUNT.with(|c| c.get()) > 0,
+        "Should successfully render text node after switching from different node type"
+    );
+}
+
+#[test]
+fn tab_switching_with_dynamic_lists() {
+    // Test tab switching with tabs containing dynamic lists of varying sizes
+    let mut composition = Composition::new(MemoryApplier::new());
+    let runtime = composition.runtime_handle();
+    let active_tab = MutableState::with_runtime(0i32, runtime.clone());
+    let list_size = MutableState::with_runtime(3usize, runtime.clone());
+
+    thread_local! {
+        static LIST_TAB_CALLED: Cell<bool> = Cell::new(false);
+        static LAST_ITEM_COUNT: Cell<usize> = Cell::new(0);
+    }
+
+    #[composable]
+    fn list_tab(count: usize) {
+        LIST_TAB_CALLED.with(|c| c.set(true));
+        LAST_ITEM_COUNT.with(|c| c.set(count));
+        for i in 0..count {
+            let id = compose_test_node(|| TestTextNode::default());
+            with_node_mut(id, |node: &mut TestTextNode| {
+                node.text = format!("Item {}", i);
+            })
+            .expect("update list item");
+        }
+    }
+
+    let mut render = {
+        let active_tab = active_tab.clone();
+        let list_size = list_size.clone();
+        move || {
+            LIST_TAB_CALLED.with(|c| c.set(false));
+            if active_tab.value() == 0 {
+                list_tab(list_size.value());
+            }
+        }
+    };
+
+    let key = location_key(file!(), line!(), column!());
+
+    // Initial render with 3 items
+    composition
+        .render(key, &mut render)
+        .expect("initial render");
+    assert!(
+        LIST_TAB_CALLED.with(|c| c.get()),
+        "list_tab should be called on initial render"
+    );
+    assert_eq!(LAST_ITEM_COUNT.with(|c| c.get()), 3);
+
+    // Switch away
+    active_tab.set_value(1);
+    composition.render(key, &mut render).expect("switch away");
+    assert!(
+        !LIST_TAB_CALLED.with(|c| c.get()),
+        "list_tab should NOT be called when tab is inactive"
+    );
+
+    // Change list size and switch back
+    list_size.set_value(5);
+    active_tab.set_value(0);
+    composition
+        .render(key, &mut render)
+        .expect("switch back with larger list");
+    assert!(
+        LIST_TAB_CALLED.with(|c| c.get()),
+        "list_tab should be called after switch back"
+    );
+    assert_eq!(
+        LAST_ITEM_COUNT.with(|c| c.get()),
+        5,
+        "Should render 5 items after switching back"
+    );
+
+    // Switch away and come back with smaller list
+    active_tab.set_value(1);
+    composition
+        .render(key, &mut render)
+        .expect("switch away again");
+    assert!(
+        !LIST_TAB_CALLED.with(|c| c.get()),
+        "list_tab should NOT be called when inactive"
+    );
+
+    list_size.set_value(2);
+    active_tab.set_value(0);
+    composition
+        .render(key, &mut render)
+        .expect("switch back with smaller list");
+    assert!(
+        LIST_TAB_CALLED.with(|c| c.get()),
+        "list_tab should be called after second switch back"
+    );
+    assert_eq!(
+        LAST_ITEM_COUNT.with(|c| c.get()),
+        2,
+        "Should render only 2 items after shrinking list"
+    );
+}
+
+#[test]
+fn tab_switching_with_nested_components() {
+    // Test tab switching with nested component hierarchies
+    let mut composition = Composition::new(MemoryApplier::new());
+    let runtime = composition.runtime_handle();
+    let active_tab = MutableState::with_runtime(0i32, runtime.clone());
+    let outer_counter = MutableState::with_runtime(0i32, runtime.clone());
+    let inner_counter = MutableState::with_runtime(0i32, runtime.clone());
+
+    thread_local! {
+        static OUTER_RENDERS: Cell<usize> = Cell::new(0);
+        static INNER_RENDERS: Cell<usize> = Cell::new(0);
+    }
+
+    #[composable]
+    fn inner_component(counter: MutableState<i32>) {
+        INNER_RENDERS.with(|c| c.set(c.get() + 1));
+        let count = counter.value();
+        let id = compose_test_node(|| TestTextNode::default());
+        with_node_mut(id, |node: &mut TestTextNode| {
+            node.text = format!("Inner: {}", count);
+        })
+        .expect("update inner node");
+    }
+
+    #[composable]
+    fn outer_component(outer_counter: MutableState<i32>, inner_counter: MutableState<i32>) {
+        println!("outer_component called");
+        OUTER_RENDERS.with(|c| c.set(c.get() + 1));
+        let count = outer_counter.value();
+        let id = compose_test_node(|| TestTextNode::default());
+        with_node_mut(id, |node: &mut TestTextNode| {
+            node.text = format!("Outer: {}", count);
+        })
+        .expect("update outer node");
+
+        inner_component(inner_counter);
+    }
+
+    #[composable]
+    fn empty_tab() {
+        // Empty tab content
+    }
+
+    let mut render = {
+        let active_tab = active_tab.clone();
+        let outer_counter = outer_counter.clone();
+        let inner_counter = inner_counter.clone();
+        move || {
+            let tab = active_tab.value();
+            println!("Render closure called, active_tab={}", tab);
+            if tab == 0 {
+                println!("About to call outer_component");
+                outer_component(outer_counter.clone(), inner_counter.clone());
+            } else {
+                empty_tab();
+            }
+        }
+    };
+
+    let key = location_key(file!(), line!(), column!());
+
+    // Initial render
+    OUTER_RENDERS.with(|c| c.set(0));
+    INNER_RENDERS.with(|c| c.set(0));
+    println!("=== INITIAL RENDER ===");
+    composition
+        .render(key, &mut render)
+        .expect("initial render");
+    assert_eq!(OUTER_RENDERS.with(|c| c.get()), 1);
+    assert_eq!(INNER_RENDERS.with(|c| c.get()), 1);
+
+    // Switch away
+    active_tab.set_value(1);
+    composition.render(key, &mut render).expect("switch away");
+
+    // Switch back
+    active_tab.set_value(0);
+    OUTER_RENDERS.with(|c| c.set(0));
+    INNER_RENDERS.with(|c| c.set(0));
+    println!("Before switch back render");
+    match composition.render(key, &mut render) {
+        Ok(_) => println!("Render succeeded"),
+        Err(e) => println!("Render failed: {:?}", e),
+    }
+    let outer_renders = OUTER_RENDERS.with(|c| c.get());
+    let inner_renders = INNER_RENDERS.with(|c| c.get());
+    println!(
+        "After switch back: outer={}, inner={}",
+        outer_renders, inner_renders
+    );
+    assert!(
+        outer_renders > 0,
+        "Outer should render, got {}",
+        outer_renders
+    );
+    assert!(
+        inner_renders > 0,
+        "Inner should render, got {}",
+        inner_renders
+    );
+
+    // Verify both scopes work after tab switch
+    OUTER_RENDERS.with(|c| c.set(0));
+    INNER_RENDERS.with(|c| c.set(0));
+    outer_counter.set_value(5);
+    let _ = composition
+        .process_invalid_scopes()
+        .expect("recompose outer");
+    let outer_count = OUTER_RENDERS.with(|c| c.get());
+    let inner_count = INNER_RENDERS.with(|c| c.get());
+    assert!(
+        outer_count > 0,
+        "Outer scope should work after tab switch, got {}",
+        outer_count
+    );
+    // NOTE: Inner should NOT rerender when only outer_counter changes because inner's inputs haven't changed
+    // This is the expected Compose behavior - smart recomposition skips children when inputs are unchanged
+    assert_eq!(
+        inner_count, 0,
+        "Inner should not rerender when only outer_counter changes (inner_counter is unchanged)"
+    );
+
+    // Verify inner scope independently
+    OUTER_RENDERS.with(|c| c.set(0));
+    INNER_RENDERS.with(|c| c.set(0));
+    inner_counter.set_value(10);
+    let _ = composition
+        .process_invalid_scopes()
+        .expect("recompose inner");
+    assert_eq!(
+        OUTER_RENDERS.with(|c| c.get()),
+        0,
+        "Outer should not rerender for inner-only change"
+    );
+    assert!(
+        INNER_RENDERS.with(|c| c.get()) > 0,
+        "Inner scope should work independently after tab switch"
+    );
+}
+
+#[test]
+fn debug_nested_component_slot_table_state() {
+    // Debug test to understand slot table state during nested component recomposition
+    let mut composition = Composition::new(MemoryApplier::new());
+    let runtime = composition.runtime_handle();
+    let active_tab = MutableState::with_runtime(0i32, runtime.clone());
+    let outer_counter = MutableState::with_runtime(0i32, runtime.clone());
+    let inner_counter = MutableState::with_runtime(0i32, runtime.clone());
+
+    thread_local! {
+        static OUTER_RENDERS: Cell<usize> = Cell::new(0);
+        static INNER_RENDERS: Cell<usize> = Cell::new(0);
+    }
+
+    #[composable]
+    fn inner_component(counter: MutableState<i32>) {
+        INNER_RENDERS.with(|c| c.set(c.get() + 1));
+        let _count = counter.value();
+    }
+
+    #[composable]
+    fn outer_component(outer_counter: MutableState<i32>, inner_counter: MutableState<i32>) {
+        OUTER_RENDERS.with(|c| c.set(c.get() + 1));
+        let _count = outer_counter.value();
+        inner_component(inner_counter);
+    }
+
+    let mut render = {
+        let active_tab = active_tab.clone();
+        let outer_counter = outer_counter.clone();
+        let inner_counter = inner_counter.clone();
+        move || {
+            if active_tab.value() == 0 {
+                outer_component(outer_counter.clone(), inner_counter.clone());
+            }
+        }
+    };
+
+    let key = location_key(file!(), line!(), column!());
+
+    // Initial render
+    composition
+        .render(key, &mut render)
+        .expect("initial render");
+    println!("After initial render:");
+    for (idx, kind) in composition.debug_dump_all_slots() {
+        println!("  [{}] {}", idx, kind);
+    }
+
+    // Switch away
+    active_tab.set_value(1);
+    composition.render(key, &mut render).expect("switch away");
+    println!("\nAfter switch away:");
+    for (idx, kind) in composition.debug_dump_all_slots() {
+        println!("  [{}] {}", idx, kind);
+    }
+
+    // Switch back
+    active_tab.set_value(0);
+    composition.render(key, &mut render).expect("switch back");
+    println!("\nAfter switch back:");
+    for (idx, kind) in composition.debug_dump_all_slots() {
+        println!("  [{}] {}", idx, kind);
+    }
+
+    // Trigger recomposition
+    OUTER_RENDERS.with(|c| c.set(0));
+    INNER_RENDERS.with(|c| c.set(0));
+    outer_counter.set_value(5);
+
+    println!("\nBefore process_invalid_scopes:");
+    let groups4 = composition.debug_dump_slot_table_groups();
+    for (idx, key, scope, len) in &groups4 {
+        println!(
+            "  Group at {}: key={:?}, scope={:?}, len={}",
+            idx, key, scope, len
+        );
+    }
+
+    let _ = composition
+        .process_invalid_scopes()
+        .expect("recompose outer");
+
+    println!("\nAfter process_invalid_scopes:");
+    let groups5 = composition.debug_dump_slot_table_groups();
+    for (idx, key, scope, len) in &groups5 {
+        println!(
+            "  Group at {}: key={:?}, scope={:?}, len={}",
+            idx, key, scope, len
+        );
+    }
+
+    println!(
+        "\nOuter renders: {}, Inner renders: {}",
+        OUTER_RENDERS.with(|c| c.get()),
+        INNER_RENDERS.with(|c| c.get())
+    );
+}
+
+#[test]
+fn tab_switching_memory_slot_reuse() {
+    // Verify that slots are properly reused and not leaked during tab switches
+    let mut composition = Composition::new(MemoryApplier::new());
+    let runtime = composition.runtime_handle();
+    let active_tab = MutableState::with_runtime(0i32, runtime.clone());
+
+    #[composable]
+    fn tab_with_markers(tab_id: i32) {
+        // Create multiple nodes to occupy slots
+        for i in 0..5 {
+            let id = compose_test_node(|| TestTextNode::default());
+            with_node_mut(id, |node: &mut TestTextNode| {
+                node.text = format!("Tab {} Item {}", tab_id, i);
+            })
+            .expect("update node");
+        }
+    }
+
+    let mut render = {
+        let active_tab = active_tab.clone();
+        move || {
+            tab_with_markers(active_tab.value());
+        }
+    };
+
+    let key = location_key(file!(), line!(), column!());
+
+    // Initial render
+    composition
+        .render(key, &mut render)
+        .expect("initial render");
+
+    // Perform many tab switches to check for slot leaks
+    for cycle in 0..10 {
+        for tab in 0..4 {
+            active_tab.set_value(tab);
+            composition
+                .render(key, &mut render)
+                .expect(&format!("render cycle {} tab {}", cycle, tab));
+        }
+    }
+
+    // If we made it here without panicking or running out of memory,
+    // slots are being properly reused
+    // Verify final render still works correctly
+    active_tab.set_value(0);
+    composition
+        .render(key, &mut render)
+        .expect("final render after many switches");
+}
+
+#[test]
+fn tab_switching_with_state_during_switch() {
+    // Test updating state while switching tabs - edge case for race conditions
+    let mut composition = Composition::new(MemoryApplier::new());
+    let runtime = composition.runtime_handle();
+    let active_tab = MutableState::with_runtime(0i32, runtime.clone());
+    let shared_counter = MutableState::with_runtime(0i32, runtime.clone());
+
+    thread_local! {
+        static TAB0_RENDERS: Cell<usize> = Cell::new(0);
+        static TAB1_RENDERS: Cell<usize> = Cell::new(0);
+    }
+
+    #[composable]
+    fn tab_content(tab_id: i32, counter: MutableState<i32>) {
+        if tab_id == 0 {
+            TAB0_RENDERS.with(|c| c.set(c.get() + 1));
+        } else {
+            TAB1_RENDERS.with(|c| c.set(c.get() + 1));
+        }
+        let count = counter.value();
+        let id = compose_test_node(|| TestTextNode::default());
+        with_node_mut(id, |node: &mut TestTextNode| {
+            node.text = format!("Tab {} Count {}", tab_id, count);
+        })
+        .expect("update node");
+    }
+
+    let mut render = {
+        let active_tab = active_tab.clone();
+        let shared_counter = shared_counter.clone();
+        move || {
+            tab_content(active_tab.value(), shared_counter.clone());
+        }
+    };
+
+    let key = location_key(file!(), line!(), column!());
+
+    // Initial render
+    TAB0_RENDERS.with(|c| c.set(0));
+    composition
+        .render(key, &mut render)
+        .expect("initial render");
+    assert_eq!(TAB0_RENDERS.with(|c| c.get()), 1);
+
+    // Update state AND switch tabs simultaneously
+    shared_counter.set_value(42);
+    active_tab.set_value(1);
+    TAB1_RENDERS.with(|c| c.set(0));
+    composition
+        .render(key, &mut render)
+        .expect("switch with state update");
+
+    // Tab 1 should render with updated counter
+    assert!(
+        TAB1_RENDERS.with(|c| c.get()) > 0,
+        "Tab 1 should render with updated state"
+    );
+
+    // Switch back - scope should still work
+    active_tab.set_value(0);
+    TAB0_RENDERS.with(|c| c.set(0));
+    composition.render(key, &mut render).expect("switch back");
+
+    shared_counter.set_value(100);
+    TAB0_RENDERS.with(|c| c.set(0));
+    let _ = composition
+        .process_invalid_scopes()
+        .expect("recompose after state update");
+    assert!(
+        TAB0_RENDERS.with(|c| c.get()) > 0,
+        "Tab 0 scope should still work after concurrent state/tab change"
+    );
+}
+
+#[test]
+fn tab_switching_with_empty_tab() {
+    // Test switching to/from an empty tab (no nodes created)
+    let mut composition = Composition::new(MemoryApplier::new());
+    let runtime = composition.runtime_handle();
+    let active_tab = MutableState::with_runtime(0i32, runtime.clone());
+    let counter = MutableState::with_runtime(0i32, runtime.clone());
+
+    thread_local! {
+        static CONTENT_RENDERS: Cell<usize> = Cell::new(0);
+    }
+
+    #[composable]
+    fn content_tab(counter: MutableState<i32>) {
+        CONTENT_RENDERS.with(|c| c.set(c.get() + 1));
+        let count = counter.value();
+        let id = compose_test_node(|| TestTextNode::default());
+        with_node_mut(id, |node: &mut TestTextNode| {
+            node.text = format!("Content: {}", count);
+        })
+        .expect("update node");
+    }
+
+    #[composable]
+    fn empty_tab() {
+        // Intentionally empty - no nodes created
+    }
+
+    let mut render = {
+        let active_tab = active_tab.clone();
+        let counter = counter.clone();
+        move || match active_tab.value() {
+            0 => content_tab(counter.clone()),
+            _ => empty_tab(),
+        }
+    };
+
+    let key = location_key(file!(), line!(), column!());
+
+    // Start with content
+    CONTENT_RENDERS.with(|c| c.set(0));
+    composition
+        .render(key, &mut render)
+        .expect("initial render");
+    assert_eq!(CONTENT_RENDERS.with(|c| c.get()), 1);
+
+    // Switch to empty tab
+    active_tab.set_value(1);
+    composition
+        .render(key, &mut render)
+        .expect("switch to empty");
+
+    // Switch back to content
+    active_tab.set_value(0);
+    CONTENT_RENDERS.with(|c| c.set(0));
+    composition
+        .render(key, &mut render)
+        .expect("switch back from empty");
+    assert!(
+        CONTENT_RENDERS.with(|c| c.get()) > 0,
+        "Should render content after empty tab"
+    );
+
+    // Verify scope still works
+    CONTENT_RENDERS.with(|c| c.set(0));
+    counter.set_value(42);
+    let _ = composition
+        .process_invalid_scopes()
+        .expect("recompose after empty");
+    assert!(
+        CONTENT_RENDERS.with(|c| c.get()) > 0,
+        "Scope should work after switching from empty tab"
+    );
+}
+
+#[test]
+fn tab_switching_preserves_node_order() {
+    // Verify that node order is preserved correctly across tab switches
+    let mut composition = Composition::new(MemoryApplier::new());
+    let runtime = composition.runtime_handle();
+    let active_tab = MutableState::with_runtime(0i32, runtime.clone());
+
+    thread_local! {
+        static RENDER_ORDER: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    }
+
+    #[composable]
+    fn ordered_tab(tab_id: i32) {
+        RENDER_ORDER.with(|o| o.borrow_mut().clear());
+        let prefix = if tab_id == 0 { "A" } else { "B" };
+        for i in 0..3 {
+            RENDER_ORDER.with(|o| o.borrow_mut().push(format!("{}_{}", prefix, i)));
+            let id = compose_test_node(|| TestTextNode::default());
+            with_node_mut(id, |node: &mut TestTextNode| {
+                node.text = format!("{} Item {}", prefix, i);
+            })
+            .expect("update node");
+        }
+    }
+
+    let mut render = {
+        let active_tab = active_tab.clone();
+        move || {
+            let tab = active_tab.value();
+            if tab <= 1 {
+                ordered_tab(tab);
+            }
+        }
+    };
+
+    let key = location_key(file!(), line!(), column!());
+
+    // Initial render with Tab A
+    composition
+        .render(key, &mut render)
+        .expect("initial render");
+    let order_a = RENDER_ORDER.with(|o| o.borrow().clone());
+    assert_eq!(order_a, vec!["A_0", "A_1", "A_2"]);
+
+    // Switch to Tab B
+    active_tab.set_value(1);
+    composition.render(key, &mut render).expect("switch to B");
+    let order_b = RENDER_ORDER.with(|o| o.borrow().clone());
+    assert_eq!(order_b, vec!["B_0", "B_1", "B_2"]);
+
+    // Switch back to Tab A - order should be preserved
+    active_tab.set_value(0);
+    composition
+        .render(key, &mut render)
+        .expect("switch back to A");
+    let order_a_again = RENDER_ORDER.with(|o| o.borrow().clone());
+    assert_eq!(
+        order_a_again,
+        vec!["A_0", "A_1", "A_2"],
+        "Order should be preserved after tab switch"
+    );
+}

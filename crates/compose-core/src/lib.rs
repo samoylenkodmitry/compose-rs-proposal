@@ -673,6 +673,7 @@ struct GroupFrame {
     start_anchor: AnchorId, // Stable identity for group start
     end: usize,             // Physical position (will be phased out)
     end_anchor: AnchorId,   // Stable identity for group end
+    force_children_recompose: bool,
 }
 
 #[derive(Default)]
@@ -685,6 +686,8 @@ pub struct SlotTable {
     anchors: HashMap<AnchorId, usize>,
     /// Counter for allocating unique anchor IDs.
     next_anchor_id: Cell<usize>,
+    /// Tracks whether the most recent start() reused a gap slot.
+    last_start_was_gap: bool,
 }
 
 enum Slot {
@@ -693,6 +696,7 @@ enum Slot {
         anchor: AnchorId,
         len: usize,
         scope: Option<ScopeId>,
+        has_gap_children: bool,
     },
     Value {
         anchor: AnchorId,
@@ -704,8 +708,16 @@ enum Slot {
     },
     /// Gap: Marks an unused slot that can be reused or compacted.
     /// This prevents destructive truncation that would destroy sibling components.
+    /// For Groups marked as gaps (e.g., during tab switching), we preserve their
+    /// key, scope, and length so they can be properly matched and reused when reactivated.
     Gap {
         anchor: AnchorId,
+        /// If this gap was a Group, preserve its key for reuse matching
+        group_key: Option<Key>,
+        /// If this gap was a Group, preserve its scope ID for state subscription continuity
+        group_scope: Option<ScopeId>,
+        /// If this gap was a Group, preserve its length to restore the full group structure
+        group_len: usize,
     },
 }
 
@@ -759,6 +771,7 @@ impl Default for Slot {
             anchor: AnchorId::INVALID,
             len: 0,
             scope: None,
+            has_gap_children: false,
         }
     }
 }
@@ -771,6 +784,7 @@ impl SlotTable {
             group_stack: Vec::new(),
             anchors: HashMap::new(),
             next_anchor_id: Cell::new(1), // Start at 1 (0 is INVALID)
+            last_start_was_gap: false,
         }
     }
 
@@ -786,6 +800,35 @@ impl SlotTable {
         self.anchors.insert(anchor, position);
     }
 
+    /// Returns whether the most recent `start` invocation reused a gap slot.
+    /// Resets the flag to false after reading.
+    fn take_last_start_was_gap(&mut self) -> bool {
+        let was_gap = self.last_start_was_gap;
+        self.last_start_was_gap = false;
+        was_gap
+    }
+
+    fn find_group_owner_index(&self, start: usize) -> Option<usize> {
+        if start == 0 || self.slots.is_empty() {
+            return None;
+        }
+
+        let mut idx = start.saturating_sub(1);
+        loop {
+            if let Some(Slot::Group { len, .. }) = self.slots.get(idx) {
+                let extent_end = idx.saturating_add(*len);
+                if start < extent_end {
+                    return Some(idx);
+                }
+            }
+            if idx == 0 {
+                break;
+            }
+            idx -= 1;
+        }
+        None
+    }
+
     /// Resolve an anchor to its current position in the slots array.
     fn resolve_anchor(&self, anchor: AnchorId) -> Option<usize> {
         self.anchors.get(&anchor).copied()
@@ -794,28 +837,46 @@ impl SlotTable {
     /// Mark a range of slots as gaps instead of truncating.
     /// This preserves sibling components while allowing structure changes.
     /// When encountering a Group, recursively marks the entire group structure as gaps.
-    fn mark_range_as_gaps(&mut self, start: usize, end: usize) {
+    fn mark_range_as_gaps(&mut self, start: usize, end: usize, owner_index: Option<usize>) -> bool {
         let mut i = start;
         let end = end.min(self.slots.len());
+        let mut marked_any = false;
 
         while i < end {
             if i >= self.slots.len() {
                 break;
             }
 
-            let (anchor, group_len) = {
+            let (anchor, group_len, group_key, group_scope) = {
                 let slot = &self.slots[i];
                 let anchor = slot.anchor_id();
-                let group_len = if let Slot::Group { len, .. } = slot {
-                    *len
-                } else {
-                    0
+                let (group_len, group_key, group_scope) = match slot {
+                    Slot::Group {
+                        len, key, scope, ..
+                    } => (*len, Some(*key), *scope),
+                    // Also preserve metadata for existing Gaps!
+                    // This is essential for the decrease-increase scenario where gaps
+                    // are re-marked as gaps but need to retain their original keys.
+                    Slot::Gap {
+                        group_len,
+                        group_key,
+                        group_scope,
+                        ..
+                    } => (*group_len, *group_key, *group_scope),
+                    _ => (0, None, None),
                 };
-                (anchor, group_len)
+                (anchor, group_len, group_key, group_scope)
             };
 
-            // Mark this slot as a gap
-            self.slots[i] = Slot::Gap { anchor };
+            // Mark this slot as a gap, preserving Group metadata if it was a Group
+            // This allows Groups to be properly matched and reused during tab switching
+            self.slots[i] = Slot::Gap {
+                anchor,
+                group_key,
+                group_scope,
+                group_len,
+            };
+            marked_any = true;
 
             // If it was a group, recursively mark its children as gaps too
             if group_len > 0 {
@@ -823,14 +884,66 @@ impl SlotTable {
                 let children_end = (i + group_len).min(end);
                 for j in (i + 1)..children_end {
                     if j < self.slots.len() {
-                        let child_anchor = self.slots[j].anchor_id();
-                        self.slots[j] = Slot::Gap { anchor: child_anchor };
+                        // For nested Groups, preserve their metadata as well
+                        if let Slot::Group {
+                            key: nested_key,
+                            scope: nested_scope,
+                            len: nested_len,
+                            ..
+                        } = self.slots[j]
+                        {
+                            let child_anchor = self.slots[j].anchor_id();
+                            self.slots[j] = Slot::Gap {
+                                anchor: child_anchor,
+                                group_key: Some(nested_key),
+                                group_scope: nested_scope,
+                                group_len: nested_len,
+                            };
+                            marked_any = true;
+                        } else {
+                            // For Nodes and other slots, mark as regular gaps
+                            let child_anchor = self.slots[j].anchor_id();
+                            self.slots[j] = Slot::Gap {
+                                anchor: child_anchor,
+                                group_key: None,
+                                group_scope: None,
+                                group_len: 0,
+                            };
+                            marked_any = true;
+                        }
                     }
                 }
                 i = (i + group_len).max(i + 1);
             } else {
                 i += 1;
             }
+        }
+
+        if marked_any {
+            let owner_idx = owner_index.or_else(|| self.find_group_owner_index(start));
+            if let Some(idx) = owner_idx {
+                if let Some(Slot::Group {
+                    has_gap_children, ..
+                }) = self.slots.get_mut(idx)
+                {
+                    *has_gap_children = true;
+                }
+                if let Some(frame) = self.group_stack.iter_mut().find(|frame| frame.start == idx) {
+                    frame.force_children_recompose = true;
+                }
+            }
+        }
+        marked_any
+    }
+
+    pub fn get_group_scope(&self, index: usize) -> Option<ScopeId> {
+        let slot = self
+            .slots
+            .get(index)
+            .expect("get_group_scope: index out of bounds");
+        match slot {
+            Slot::Group { scope, .. } => *scope,
+            _ => None,
         }
     }
 
@@ -882,6 +995,34 @@ impl SlotTable {
             .collect()
     }
 
+    pub fn debug_dump_all_slots(&self) -> Vec<(usize, String)> {
+        self.slots
+            .iter()
+            .enumerate()
+            .map(|(i, slot)| {
+                let kind = match slot {
+                    Slot::Group {
+                        key, scope, len, ..
+                    } => format!("Group(key={:?}, scope={:?}, len={})", key, scope, len),
+                    Slot::Value { .. } => "Value".to_string(),
+                    Slot::Node { id, .. } => format!("Node(id={:?})", id),
+                    Slot::Gap {
+                        group_key,
+                        group_scope,
+                        ..
+                    } => {
+                        if let Some(key) = group_key {
+                            format!("Gap(was_group_key={:?}, scope={:?})", key, group_scope)
+                        } else {
+                            "Gap".to_string()
+                        }
+                    }
+                };
+                (i, kind)
+            })
+            .collect()
+    }
+
     fn update_group_bounds(&mut self) {
         for frame in &mut self.group_stack {
             if frame.end < self.cursor {
@@ -927,32 +1068,128 @@ impl SlotTable {
     }
 
     pub fn start(&mut self, key: Key) -> usize {
+        self.last_start_was_gap = false;
         let cursor = self.cursor;
+        let parent_force = self
+            .group_stack
+            .last()
+            .map(|frame| frame.force_children_recompose)
+            .unwrap_or(false);
         debug_assert!(
             cursor <= self.slots.len(),
             "slot cursor {} out of bounds",
             cursor
         );
+        // Check if we can reuse an existing Group at the cursor position
+        let mut reused_from_gap = false;
         let reuse_result = match self.slots.get(cursor) {
             Some(Slot::Group {
                 key: existing_key,
                 anchor,
                 len,
                 scope: _,
+                has_gap_children,
             }) if *existing_key == key => {
                 debug_assert_eq!(*existing_key, key, "group key mismatch");
-                Some((*len, *anchor))
+                let mut contains_gap = false;
+                if *len > 0 {
+                    let start = cursor + 1;
+                    let end = (cursor + *len).min(self.slots.len());
+                    for idx in start..end {
+                        if matches!(self.slots.get(idx), Some(Slot::Gap { .. })) {
+                            contains_gap = true;
+                            break;
+                        }
+                    }
+                }
+                if *has_gap_children {
+                    reused_from_gap = true;
+                }
+                if contains_gap {
+                    reused_from_gap = true;
+                }
+                Some((*len, *anchor, None)) // (len, anchor, gap_scope)
+            }
+            // If there's already a Group here but with a different key, mark it as a gap
+            // instead of recycling it. This preserves the group so it can be found and
+            // restored later (critical for the decrease-increase and tab-switching scenarios).
+            // Then fall through to the search logic to find the desired key.
+            Some(Slot::Group {
+                key: existing_key,
+                anchor: old_anchor,
+                len: old_len,
+                scope: old_scope,
+                has_gap_children: _,
+            }) if *existing_key != key => {
+                // Copy all values to avoid borrow checker issues
+                let old_key = *existing_key;
+                let old_anchor_val = *old_anchor;
+                let old_len_val = *old_len;
+                let old_scope_val = *old_scope;
+
+                // Mark the group's children as gaps so they can be reused safely
+                let group_len = old_len_val.max(1);
+                if group_len > 1 {
+                    let start = cursor + 1;
+                    let end = cursor + group_len;
+                    let _ = self.mark_range_as_gaps(start, end, Some(cursor));
+                }
+
+                // Mark this group as a gap, preserving all its metadata
+                self.slots[cursor] = Slot::Gap {
+                    anchor: old_anchor_val,
+                    group_key: Some(old_key),
+                    group_scope: old_scope_val,
+                    group_len: old_len_val,
+                };
+                // Don't return early - fall through to search logic
+                None
+            }
+            // Also check for Gaps that were Groups with matching keys!
+            // This enables tab switching to reuse Groups that were marked as gaps.
+            Some(Slot::Gap {
+                anchor,
+                group_key: Some(gap_key),
+                group_scope,
+                group_len,
+            }) if *gap_key == key => {
+                // Convert the Gap back to a Group, preserving its scope and length
+                reused_from_gap = true;
+                Some((*group_len, *anchor, *group_scope))
             }
             Some(_slot) => None,
             None => None,
         };
-        if let Some((len, group_anchor)) = reuse_result {
+        if let Some((len, group_anchor, preserved_scope)) = reuse_result {
+            // Convert Gap back to Group if needed
+            if matches!(self.slots.get(cursor), Some(Slot::Gap { .. })) {
+                self.slots[cursor] = Slot::Group {
+                    key,
+                    anchor: group_anchor,
+                    len,
+                    scope: preserved_scope,
+                    has_gap_children: false,
+                };
+                self.register_anchor(group_anchor, cursor);
+            }
+
+            if reused_from_gap {
+                if let Some(Slot::Group {
+                    has_gap_children, ..
+                }) = self.slots.get_mut(cursor)
+                {
+                    *has_gap_children = false;
+                }
+            }
+
+            self.last_start_was_gap = reused_from_gap || parent_force;
             let frame = GroupFrame {
                 key,
                 start: cursor,
                 start_anchor: group_anchor,
                 end: cursor + len,
                 end_anchor: self.allocate_anchor(), // Will be updated in end()
+                force_children_recompose: reused_from_gap || parent_force,
             };
             self.group_stack.push(frame);
             self.cursor = cursor + 1;
@@ -960,13 +1197,25 @@ impl SlotTable {
             return cursor;
         }
 
+        // When a group is restored from a gap, its preserved length may not accurately
+        // reflect where child groups/gaps are now located. To prevent duplicate group
+        // creation, we need to search beyond the preserved extent.
+        //
+        // Strategy: Search up to parent's end first (respects group hierarchy), but
+        // if that's less than slots.len(), we'll continue searching in a second pass
+        // below to find gaps that should be restored.
         let parent_end = self
             .group_stack
             .last()
             .map(|frame| frame.end.min(self.slots.len()))
             .unwrap_or(self.slots.len());
+
+        // If parent_end seems constrained (less than slots length), we'll do an
+        // extended search for gaps after the initial search fails.
+        let needs_extended_search = parent_end < self.slots.len();
+
         let mut search_index = cursor;
-        let mut found_group: Option<(usize, AnchorId, usize)> = None;
+        let mut found_group: Option<(usize, AnchorId, usize, Option<ScopeId>)> = None;
         while search_index < parent_end {
             match self.slots.get(search_index) {
                 Some(Slot::Group {
@@ -974,13 +1223,110 @@ impl SlotTable {
                     anchor,
                     len,
                     scope: _,
+                    ..
                 }) => {
                     let group_len = *len;
                     if *existing_key == key {
-                        found_group = Some((search_index, *anchor, group_len));
+                        found_group = Some((search_index, *anchor, group_len, None));
+                        break;
+                    }
+                    // Search this group's children for gaps with matching keys
+                    // IMPORTANT: For gaps, we must search recursively inside them because
+                    // gaps can contain nested gaps after multiple decrease-increase cycles
+                    let mut child_index = search_index + 1;
+                    let search_limit = (search_index + group_len).min(self.slots.len());
+                    while child_index < search_limit {
+                        match self.slots.get(child_index) {
+                            Some(Slot::Gap {
+                                anchor: gap_anchor,
+                                group_key: Some(gap_key),
+                                group_scope,
+                                group_len: gap_len,
+                            }) if *gap_key == key => {
+                                // Found a matching gap!
+                                found_group =
+                                    Some((child_index, *gap_anchor, *gap_len, *group_scope));
+                                break;
+                            }
+                            Some(Slot::Gap {
+                                group_len: gap_len, ..
+                            }) => {
+                                // Skip this gap - we don't move deeply nested gaps
+                                // They will be restored when their parent gap is converted to a group
+                                child_index += (*gap_len).max(1);
+                            }
+                            Some(Slot::Group {
+                                len: nested_len, ..
+                            }) => {
+                                // Skip active groups (don't search inside them)
+                                child_index += (*nested_len).max(1);
+                            }
+                            _ => {
+                                child_index += 1;
+                            }
+                        }
+                    }
+                    if found_group.is_some() {
                         break;
                     }
                     let advance = group_len.max(1);
+                    search_index = search_index.saturating_add(advance);
+                }
+                // Also search for Gaps that were Groups with matching keys
+                Some(Slot::Gap {
+                    anchor,
+                    group_key: Some(gap_key),
+                    group_scope,
+                    group_len,
+                }) => {
+                    if *gap_key == key {
+                        found_group = Some((search_index, *anchor, *group_len, *group_scope));
+                        break;
+                    }
+                    // Search this gap's children for gaps with matching keys
+                    // IMPORTANT: For nested gaps, search recursively inside them
+                    let gap_len_val = *group_len;
+                    let mut child_index = search_index + 1;
+                    let search_limit = (search_index + gap_len_val).min(self.slots.len());
+                    while child_index < search_limit {
+                        match self.slots.get(child_index) {
+                            Some(Slot::Gap {
+                                anchor: child_gap_anchor,
+                                group_key: Some(child_gap_key),
+                                group_scope: child_group_scope,
+                                group_len: child_gap_len,
+                            }) if *child_gap_key == key => {
+                                // Found a matching gap!
+                                found_group = Some((
+                                    child_index,
+                                    *child_gap_anchor,
+                                    *child_gap_len,
+                                    *child_group_scope,
+                                ));
+                                break;
+                            }
+                            Some(Slot::Gap {
+                                group_len: nested_gap_len,
+                                ..
+                            }) => {
+                                // Skip this gap - we don't move deeply nested gaps
+                                child_index += (*nested_gap_len).max(1);
+                            }
+                            Some(Slot::Group {
+                                len: nested_len, ..
+                            }) => {
+                                // Skip active groups (don't search inside them)
+                                child_index += (*nested_len).max(1);
+                            }
+                            _ => {
+                                child_index += 1;
+                            }
+                        }
+                    }
+                    if found_group.is_some() {
+                        break;
+                    }
+                    let advance = gap_len_val.max(1);
                     search_index = search_index.saturating_add(advance);
                 }
                 Some(_slot) => {
@@ -990,27 +1336,99 @@ impl SlotTable {
             }
         }
 
-        if let Some((found_index, group_anchor, group_len)) = found_group {
-            self.shift_group_frames(found_index, -(group_len as isize));
-            let moved: Vec<_> = self
-                .slots
-                .drain(found_index..found_index + group_len)
-                .collect();
-            self.shift_group_frames(cursor, group_len as isize);
-            self.slots.splice(cursor..cursor, moved);
-            // Update all anchor positions after group move
-            self.update_all_anchor_positions();
-            let frame = GroupFrame {
-                key,
-                start: cursor,
-                start_anchor: group_anchor,
-                end: cursor + group_len,
-                end_anchor: self.allocate_anchor(),
-            };
-            self.group_stack.push(frame);
-            self.cursor = cursor + 1;
-            self.update_group_bounds();
-            return cursor;
+        // Extended search: If we didn't find the group within parent_end, but there are
+        // more slots to search, look for BOTH groups and gaps with matching keys.
+        // This handles the recursive decrease-increase case where a parent gap is restored
+        // but its children (which may be groups or gaps) are still at their original
+        // positions beyond the parent's preserved extent.
+        //
+        // IMPORTANT: After multiple decrease-increase cycles, gaps can drift beyond
+        // the parent's extent. We search all remaining slots to ensure we find the
+        // matching group/gap, regardless of structure complexity.
+        if found_group.is_none() && needs_extended_search {
+            search_index = parent_end;
+            while search_index < self.slots.len() {
+                match self.slots.get(search_index) {
+                    // Search for groups with matching keys (but only within limited range)
+                    Some(Slot::Group {
+                        key: existing_key,
+                        anchor,
+                        len,
+                        scope,
+                        ..
+                    }) => {
+                        if *existing_key == key {
+                            found_group = Some((search_index, *anchor, *len, *scope));
+                            break;
+                        }
+                        let advance = (*len).max(1);
+                        search_index = search_index.saturating_add(advance);
+                    }
+                    // Search for gaps with matching keys (candidates for restoration)
+                    Some(Slot::Gap {
+                        anchor,
+                        group_key: Some(gap_key),
+                        group_scope,
+                        group_len,
+                    }) => {
+                        if *gap_key == key {
+                            found_group = Some((search_index, *anchor, *group_len, *group_scope));
+                            break;
+                        }
+                        let advance = (*group_len).max(1);
+                        search_index = search_index.saturating_add(advance);
+                    }
+                    Some(_slot) => {
+                        search_index += 1;
+                    }
+                    None => break,
+                }
+            }
+        }
+
+        if let Some((found_index, group_anchor, group_len, preserved_scope)) = found_group {
+            // If we found a Gap, convert it back to a Group first
+            let reused_gap = matches!(self.slots.get(found_index), Some(Slot::Gap { .. }));
+            if reused_gap {
+                self.slots[found_index] = Slot::Group {
+                    key,
+                    anchor: group_anchor,
+                    len: group_len,
+                    scope: preserved_scope,
+                    has_gap_children: false,
+                };
+            }
+
+            self.last_start_was_gap = reused_gap || parent_force;
+            let group_extent = group_len.max(1);
+            let available = self.slots.len().saturating_sub(found_index);
+            let actual_len = group_extent.min(available);
+            if actual_len > 0 {
+                self.shift_group_frames(found_index, -(actual_len as isize));
+                let moved: Vec<_> = self
+                    .slots
+                    .drain(found_index..found_index + actual_len)
+                    .collect();
+                self.shift_group_frames(cursor, moved.len() as isize);
+                self.slots.splice(cursor..cursor, moved);
+                // Update all anchor positions after group move
+                self.update_all_anchor_positions();
+                let frame = GroupFrame {
+                    key,
+                    start: cursor,
+                    start_anchor: group_anchor,
+                    end: cursor + actual_len,
+                    end_anchor: self.allocate_anchor(),
+                    force_children_recompose: reused_gap || parent_force,
+                };
+                self.group_stack.push(frame);
+                self.cursor = cursor + 1;
+                self.update_group_bounds();
+                return cursor;
+            } else {
+                // If the stored length exceeds available slots, fall back to inserting a new group.
+                self.shift_group_frames(found_index, 0);
+            }
         }
 
         self.shift_group_frames(cursor, 1);
@@ -1022,8 +1440,10 @@ impl SlotTable {
                 anchor: group_anchor,
                 len: 0,
                 scope: None,
+                has_gap_children: false,
             },
         );
+        self.last_start_was_gap = parent_force;
         // Update all anchor positions after insertion
         self.update_all_anchor_positions();
         self.cursor = cursor + 1;
@@ -1033,6 +1453,7 @@ impl SlotTable {
             start_anchor: group_anchor,
             end: self.cursor,
             end_anchor: self.allocate_anchor(),
+            force_children_recompose: parent_force,
         });
         self.update_group_bounds();
         cursor
@@ -1048,9 +1469,24 @@ impl SlotTable {
                     "slot kind mismatch at {}",
                     frame.start
                 );
-                if let Slot::Group { key, len, .. } = slot {
+                if let Slot::Group {
+                    key,
+                    len,
+                    has_gap_children,
+                    ..
+                } = slot
+                {
                     debug_assert_eq!(*key, frame.key, "group key mismatch");
-                    *len = end.saturating_sub(frame.start);
+                    // Calculate new length based on cursor position
+                    let new_len = end.saturating_sub(frame.start);
+                    let old_len = *len;
+                    if new_len < old_len {
+                        *has_gap_children = true;
+                    }
+                    // Keep the maximum of old and new length to preserve gap slots.
+                    // Gap slots beyond cursor are still part of this group's physical extent
+                    // and need to be included in traversal so they can be reused.
+                    *len = old_len.max(new_len);
                 }
             }
             if let Some(parent) = self.group_stack.last_mut() {
@@ -1079,6 +1515,7 @@ impl SlotTable {
                     start_anchor: anchor,
                     end: index + len,
                     end_anchor: self.allocate_anchor(),
+                    force_children_recompose: false,
                 };
                 self.group_stack.push(frame);
                 self.cursor = index + 1;
@@ -1141,7 +1578,10 @@ impl SlotTable {
             if matches!(self.slots.get(cursor), Some(Slot::Gap { .. })) {
                 let anchor = self.allocate_anchor();
                 let boxed: Box<dyn Any> = Box::new(init());
-                self.slots[cursor] = Slot::Value { anchor, data: boxed };
+                self.slots[cursor] = Slot::Value {
+                    anchor,
+                    data: boxed,
+                };
                 self.register_anchor(anchor, cursor);
                 self.cursor = cursor + 1;
                 self.update_group_bounds();
@@ -1152,7 +1592,10 @@ impl SlotTable {
             // We replace in-place to maintain cursor position
             let anchor = self.allocate_anchor();
             let boxed: Box<dyn Any> = Box::new(init());
-            self.slots[cursor] = Slot::Value { anchor, data: boxed };
+            self.slots[cursor] = Slot::Value {
+                anchor,
+                data: boxed,
+            };
             self.register_anchor(anchor, cursor);
             self.cursor = cursor + 1;
             self.update_group_bounds();
@@ -1162,7 +1605,10 @@ impl SlotTable {
         // We're at the end of the slot table, append new slot
         let anchor = self.allocate_anchor();
         let boxed: Box<dyn Any> = Box::new(init());
-        let slot = Slot::Value { anchor, data: boxed };
+        let slot = Slot::Value {
+            anchor,
+            data: boxed,
+        };
         self.slots.push(slot);
         self.register_anchor(anchor, cursor);
         self.cursor = cursor + 1;
@@ -1277,21 +1723,38 @@ impl SlotTable {
                 return;
             }
 
-            // Type mismatch for Node: Use truncation to avoid node type mismatches in applier
-            // (Unlike Values/Groups, Nodes are tied to applier lifecycle and can't be safely reused)
-            self.slots.truncate(cursor);
+            // Type mismatch: Replace the slot directly with the new node
+            // For nodes, we can't use gaps because nodes exist in the applier
+            // The old node becomes orphaned and will be garbage collected later
+            let anchor = self.allocate_anchor();
+            self.slots[cursor] = Slot::Node { anchor, id };
+            self.register_anchor(anchor, cursor);
+            self.cursor = cursor + 1;
+            self.update_group_bounds();
+            return;
         }
 
+        // No existing slot at cursor: add new slot
         let anchor = self.allocate_anchor();
         let slot = Slot::Node { anchor, id };
-        if cursor == self.slots.len() {
-            self.slots.push(slot);
-        } else {
-            self.slots[cursor] = slot;
-        }
+        self.slots.push(slot);
         self.register_anchor(anchor, cursor);
         self.cursor = cursor + 1;
         self.update_group_bounds();
+    }
+
+    pub fn peek_node(&self) -> Option<NodeId> {
+        let cursor = self.cursor;
+        debug_assert!(
+            cursor <= self.slots.len(),
+            "slot cursor {} out of bounds",
+            cursor
+        );
+        match self.slots.get(cursor) {
+            Some(Slot::Node { id, .. }) => Some(*id),
+            Some(_slot) => None,
+            None => None,
+        }
     }
 
     pub fn read_node(&mut self) -> Option<NodeId> {
@@ -1313,55 +1776,65 @@ impl SlotTable {
         node
     }
 
+    pub fn advance_after_node_read(&mut self) {
+        self.cursor += 1;
+        self.update_group_bounds();
+    }
+
     pub fn reset(&mut self) {
         self.cursor = 0;
         self.group_stack.clear();
+    }
+
+    /// Step the cursor back by one position.
+    /// Used when we need to replace a slot that was just read but turned out to be incompatible.
+    pub fn step_back(&mut self) {
+        debug_assert!(self.cursor > 0, "Cannot step back from cursor 0");
+        self.cursor = self.cursor.saturating_sub(1);
     }
 
     /// Trim slots by marking unreachable slots as gaps.
     ///
     /// Instead of blindly truncating at cursor position, this method:
     /// 1. Marks slots from cursor to end of current group as gaps
-    /// 2. Updates the group length to reflect the actual content
+    /// 2. Keeps the group length unchanged (gaps are part of the group's physical extent)
     /// 3. Preserves sibling components outside the current group
     ///
     /// This ensures effect states (LaunchedEffect, etc.) are preserved even when
     /// conditional rendering changes the composition structure.
-    pub fn trim_to_cursor(&mut self) {
-        if let Some(frame) = self.group_stack.last() {
-            let group_start = frame.start;
-            let group_end = frame.end.min(self.slots.len());
-            let group_key = frame.key;
-
+    ///
+    /// Key insight: Gap slots remain part of the group's physical length. The group's
+    /// `len` field represents its physical extent in the slots array, not the count of
+    /// active slots. This allows gap slots to be found and reused in subsequent compositions.
+    pub fn trim_to_cursor(&mut self) -> bool {
+        let mut marked = false;
+        if let Some((owner_start, group_end)) = self
+            .group_stack
+            .last()
+            .map(|frame| (frame.start, frame.end.min(self.slots.len())))
+        {
             // Mark unreachable slots within this group as gaps
             if self.cursor < group_end {
-                self.mark_range_as_gaps(self.cursor, group_end);
+                if self.mark_range_as_gaps(self.cursor, group_end, Some(owner_start)) {
+                    marked = true;
+                }
             }
 
-            // Now update the frame
+            // Update the frame end to current cursor
+            // NOTE: We do NOT update the group's len field, because gap slots
+            // are still part of the group's physical extent in the slots array.
+            // The group len should remain unchanged so that traversal can find the gaps.
             if let Some(frame) = self.group_stack.last_mut() {
                 frame.end = self.cursor;
             }
-
-            if let Some(slot) = self.slots.get_mut(group_start) {
-                debug_assert_eq!(
-                    SlotKind::Group,
-                    slot.kind(),
-                    "slot kind mismatch at {}",
-                    group_start
-                );
-                if let Slot::Group { key, len, .. } = slot {
-                    debug_assert_eq!(*key, group_key, "group key mismatch");
-                    *len = self.cursor.saturating_sub(group_start);
-                }
-            }
-        } else {
+        } else if self.cursor < self.slots.len() {
             // If there's no group stack, we're at the root level
             // Mark everything beyond cursor as gaps
-            if self.cursor < self.slots.len() {
-                self.mark_range_as_gaps(self.cursor, self.slots.len());
+            if self.mark_range_as_gaps(self.cursor, self.slots.len(), None) {
+                marked = true;
             }
         }
+        marked
     }
 }
 
@@ -1621,6 +2094,7 @@ pub(crate) struct ComposerCore {
     side_effects: RefCell<Vec<Box<dyn FnOnce()>>>,
     pending_scope_options: RefCell<Option<RecomposeOptions>>,
     phase: Cell<Phase>,
+    last_node_reused: Cell<Option<bool>>,
     _not_send: PhantomData<*const ()>,
 }
 
@@ -1644,6 +2118,7 @@ impl ComposerCore {
             side_effects: RefCell::new(Vec::new()),
             pending_scope_options: RefCell::new(None),
             phase: Cell::new(Phase::Compose),
+            last_node_reused: Cell::new(None),
             _not_send: PhantomData,
         }
     }
@@ -1729,14 +2204,19 @@ impl Composer {
     }
 
     pub fn with_group<R>(&self, key: Key, f: impl FnOnce(&Composer) -> R) -> R {
-        let (index, scope_ref) = {
+        let (index, scope_ref, restored_from_gap) = {
             let mut slots = self.slots_mut();
             let index = slots.start(key);
+            let restored_from_gap = slots.take_last_start_was_gap();
             let scope_ref = slots
                 .remember(|| RecomposeScope::new(self.runtime_handle()))
                 .with(|scope| scope.clone());
-            (index, scope_ref)
+            (index, scope_ref, restored_from_gap)
         };
+
+        if restored_from_gap {
+            scope_ref.force_recompose();
+        }
 
         if let Some(options) = self.pending_scope_options().take() {
             if options.force_recompose {
@@ -1769,6 +2249,14 @@ impl Composer {
         }
 
         let result = f(self);
+
+        let trimmed = {
+            let mut slots = self.slots_mut();
+            slots.trim_to_cursor()
+        };
+        if trimmed {
+            scope_ref.force_recompose();
+        }
 
         {
             let mut stack = self.scope_stack();
@@ -2051,35 +2539,130 @@ impl Composer {
     }
 
     pub fn emit_node<N: Node + 'static>(&self, init: impl FnOnce() -> N) -> NodeId {
-        if let Some(id) = self.slots_mut().read_node() {
-            self.commands_mut()
-                .push(Box::new(move |applier: &mut dyn Applier| {
-                    let node = applier.get_mut(id)?;
-                    let typed =
-                        node.as_any_mut()
-                            .downcast_mut::<N>()
-                            .ok_or(NodeError::TypeMismatch {
-                                id,
-                                expected: std::any::type_name::<N>(),
-                            })?;
-                    typed.update();
-                    Ok(())
-                }));
-            self.attach_to_parent(id);
-            return id;
+        // Peek at the slot without advancing cursor
+        let (existing_id, type_matches) = {
+            let slots = self.slots_mut();
+            if let Some(id) = slots.peek_node() {
+                drop(slots);
+
+                // Check if the node type matches
+                let mut applier = self.borrow_applier();
+                let matches = match applier.get_mut(id) {
+                    Ok(node) => node.as_any_mut().downcast_ref::<N>().is_some(),
+                    Err(_) => false,
+                };
+                (Some(id), matches)
+            } else {
+                (None, false)
+            }
+        };
+
+        // If we have a matching node, advance cursor and reuse it
+        if let Some(id) = existing_id {
+            if type_matches {
+                let mut reuse_allowed = true;
+                let parent_contains = {
+                    let parent_stack = self.parent_stack();
+                    let contains = parent_stack
+                        .last()
+                        .map(|frame| frame.previous.contains(&id))
+                        .unwrap_or(true);
+                    contains
+                };
+                if !parent_contains {
+                    reuse_allowed = false;
+                }
+                if std::env::var("COMPOSE_DEBUG").is_ok() {
+                    eprintln!("emit_node: candidate #{id} parent_contains={parent_contains}");
+                }
+                if !reuse_allowed && std::env::var("COMPOSE_DEBUG").is_ok() {
+                    eprintln!(
+                        "emit_node: not reusing node #{id} despite type match; creating new instance"
+                    );
+                }
+
+                if reuse_allowed {
+                    self.core.last_node_reused.set(Some(true));
+                    if std::env::var("COMPOSE_DEBUG").is_ok() {
+                        eprintln!(
+                            "emit_node: reusing node #{id} as {}",
+                            std::any::type_name::<N>()
+                        );
+                    }
+                    {
+                        let mut slots = self.slots_mut();
+                        slots.advance_after_node_read();
+                    }
+
+                    self.commands_mut()
+                        .push(Box::new(move |applier: &mut dyn Applier| {
+                            let node = match applier.get_mut(id) {
+                                Ok(node) => node,
+                                Err(NodeError::Missing { .. }) => return Ok(()),
+                                Err(err) => return Err(err),
+                            };
+                            let typed = node.as_any_mut().downcast_mut::<N>().ok_or(
+                                NodeError::TypeMismatch {
+                                    id,
+                                    expected: std::any::type_name::<N>(),
+                                },
+                            )?;
+                            typed.update();
+                            Ok(())
+                        }));
+                    self.attach_to_parent(id);
+                    return id;
+                }
+            }
         }
 
+        // If there was a mismatched node in this slot, schedule its removal before creating a new one.
+        if let Some(old_id) = existing_id {
+            if !type_matches {
+                if std::env::var("COMPOSE_DEBUG").is_ok() {
+                    eprintln!(
+                        "emit_node: replacing node #{old_id} with new {}",
+                        std::any::type_name::<N>()
+                    );
+                }
+                self.commands_mut()
+                    .push(Box::new(move |applier: &mut dyn Applier| {
+                        if let Ok(node) = applier.get_mut(old_id) {
+                            node.unmount();
+                        }
+                        match applier.remove(old_id) {
+                            Ok(()) | Err(NodeError::Missing { .. }) => Ok(()),
+                            Err(err) => Err(err),
+                        }
+                    }));
+            }
+        }
+
+        // Type mismatch or no node: create new node
+        // record_node() will handle replacing the mismatched slot
         let id = {
             let mut applier = self.borrow_applier();
             applier.create(Box::new(init()))
         };
+        self.core.last_node_reused.set(Some(false));
+        if std::env::var("COMPOSE_DEBUG").is_ok() {
+            eprintln!(
+                "emit_node: creating node #{} as {}",
+                id,
+                std::any::type_name::<N>()
+            );
+        }
         {
             let mut slots = self.slots_mut();
             slots.record_node(id);
         }
         self.commands_mut()
             .push(Box::new(move |applier: &mut dyn Applier| {
-                let node = applier.get_mut(id)?;
+                let node = match applier.get_mut(id) {
+                    Ok(node) => node,
+                    Err(NodeError::Missing { .. }) => return Ok(()),
+                    Err(err) => return Err(err),
+                };
                 node.mount();
                 Ok(())
             }));
@@ -2121,7 +2704,13 @@ impl Composer {
 
     pub fn push_parent(&self, id: NodeId) {
         let remembered = self.remember(|| ParentChildren::default());
-        let previous = remembered.with(|entry| entry.children.clone());
+        let reused = self.core.last_node_reused.take().unwrap_or(true);
+        let in_subcompose = !self.core.subcompose_stack.borrow().is_empty();
+        let previous = if reused || in_subcompose {
+            remembered.with(|entry| entry.children.clone())
+        } else {
+            Vec::new()
+        };
         self.parent_stack().push(ParentFrame {
             id,
             remembered,
@@ -2158,17 +2747,17 @@ impl Composer {
                         current.remove(index);
                         self.commands_mut()
                             .push(Box::new(move |applier: &mut dyn Applier| {
-                                let parent_node = applier.get_mut(id)?;
-                                parent_node.remove_child(child);
+                                if let Ok(parent_node) = applier.get_mut(id) {
+                                    parent_node.remove_child(child);
+                                }
                                 Ok(())
                             }));
                         self.commands_mut()
                             .push(Box::new(move |applier: &mut dyn Applier| {
-                                {
-                                    let node = applier.get_mut(child)?;
+                                if let Ok(node) = applier.get_mut(child) {
                                     node.unmount();
                                 }
-                                applier.remove(child)?;
+                                let _ = applier.remove(child);
                                 Ok(())
                             }));
                     }
@@ -2183,8 +2772,9 @@ impl Composer {
                             current.insert(to_index, child);
                             self.commands_mut()
                                 .push(Box::new(move |applier: &mut dyn Applier| {
-                                    let parent_node = applier.get_mut(id)?;
-                                    parent_node.move_child(from_index, to_index);
+                                    if let Ok(parent_node) = applier.get_mut(id) {
+                                        parent_node.move_child(from_index, to_index);
+                                    }
                                     Ok(())
                                 }));
                         }
@@ -2194,15 +2784,17 @@ impl Composer {
                         current.insert(insert_index, child);
                         self.commands_mut()
                             .push(Box::new(move |applier: &mut dyn Applier| {
-                                let parent_node = applier.get_mut(id)?;
-                                parent_node.insert_child(child);
+                                if let Ok(parent_node) = applier.get_mut(id) {
+                                    parent_node.insert_child(child);
+                                }
                                 Ok(())
                             }));
                         if insert_index != appended_index {
                             self.commands_mut()
                                 .push(Box::new(move |applier: &mut dyn Applier| {
-                                    let parent_node = applier.get_mut(id)?;
-                                    parent_node.move_child(appended_index, insert_index);
+                                    if let Ok(parent_node) = applier.get_mut(id) {
+                                        parent_node.move_child(appended_index, insert_index);
+                                    }
                                     Ok(())
                                 }));
                         }
@@ -2669,7 +3261,7 @@ impl<A: Applier + 'static> Composition<A> {
         }
         runtime_handle.drain_ui();
         self.root = root;
-        self.slots.borrow_mut().trim_to_cursor();
+        let _ = self.slots.borrow_mut().trim_to_cursor();
         let _ = self.process_invalid_scopes()?;
         if !self.runtime.has_updates()
             && !runtime_handle.has_invalid_scopes()
@@ -2695,6 +3287,14 @@ impl<A: Applier + 'static> Composition<A> {
 
     pub fn root(&self) -> Option<NodeId> {
         self.root
+    }
+
+    pub fn debug_dump_slot_table_groups(&self) -> Vec<(usize, Key, Option<ScopeId>, usize)> {
+        self.slots.borrow().debug_dump_groups()
+    }
+
+    pub fn debug_dump_all_slots(&self) -> Vec<(usize, String)> {
+        self.slots.borrow().debug_dump_all_slots()
     }
 
     pub fn process_invalid_scopes(&mut self) -> Result<bool, NodeError> {
@@ -2786,3 +3386,7 @@ fn hash_key<K: Hash>(key: &K) -> Key {
 #[cfg(test)]
 #[path = "tests/lib_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/recursive_decrease_increase_test.rs"]
+mod recursive_decrease_increase_test;
