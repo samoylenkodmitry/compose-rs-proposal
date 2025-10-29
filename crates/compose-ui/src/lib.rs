@@ -68,3 +68,7 @@ pub use compose_core::MutableState as SnapshotState;
 #[cfg(test)]
 #[path = "tests/anchor_async_tests.rs"]
 mod anchor_async_tests;
+
+#[cfg(test)]
+#[path = "tests/async_runtime_full_layout_test.rs"]
+mod async_runtime_full_layout_test;

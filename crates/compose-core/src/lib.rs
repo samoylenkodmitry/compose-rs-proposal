@@ -1079,20 +1079,22 @@ impl SlotTable {
             "slot cursor {} out of bounds",
             cursor
         );
+
         if cursor < self.slots.len() {
-            let reuse = if let Some(Slot::Value { data, .. }) = self.slots.get(cursor) {
-                data.is::<T>()
-            } else {
-                false
-            };
+            let reuse = matches!(
+                self.slots.get(cursor),
+                Some(Slot::Value { data, .. }) if data.is::<T>()
+            );
             if reuse {
                 self.cursor = cursor + 1;
                 self.update_group_bounds();
                 return cursor;
             }
-            // RESTORE ORIGINAL: truncate on mismatch
+            // TODO: Implement gap-based cleanup instead of truncation
+            // For now, use simple truncation (requires with_key workaround for conditional rendering)
             self.slots.truncate(cursor);
         }
+
         let anchor = self.allocate_anchor();
         let boxed: Box<dyn Any> = Box::new(init());
         let slot = Slot::Value { anchor, data: boxed };
@@ -1101,6 +1103,7 @@ impl SlotTable {
         } else {
             self.slots[cursor] = slot;
         }
+
         self.register_anchor(anchor, cursor);
         self.cursor = cursor + 1;
         self.update_group_bounds();
@@ -1204,6 +1207,7 @@ impl SlotTable {
             }
             self.slots.truncate(cursor);
         }
+
         let anchor = self.allocate_anchor();
         let slot = Slot::Node { anchor, id };
         if cursor == self.slots.len() {
@@ -1211,6 +1215,7 @@ impl SlotTable {
         } else {
             self.slots[cursor] = slot;
         }
+
         self.register_anchor(anchor, cursor);
         self.cursor = cursor + 1;
         self.update_group_bounds();
@@ -1250,6 +1255,8 @@ impl SlotTable {
     /// This ensures effect states (LaunchedEffect, etc.) are preserved even when
     /// conditional rendering changes the composition structure.
     pub fn trim_to_cursor(&mut self) {
+        // For now, use simple truncation
+        // TODO: Implement full anchor-based reachability analysis
         self.slots.truncate(self.cursor);
         if let Some(frame) = self.group_stack.last_mut() {
             frame.end = self.cursor;
