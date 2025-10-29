@@ -854,6 +854,48 @@ impl SlotTable {
         }
     }
 
+    /// Search for a value slot with a matching type within the current group's bounds.
+    fn find_value_slot_by_type<T: 'static>(&self, start: usize) -> Option<(usize, AnchorId)> {
+        let parent_end = self
+            .group_stack
+            .last()
+            .map(|frame| frame.end.min(self.slots.len()))
+            .unwrap_or(self.slots.len());
+
+        for index in start..parent_end {
+            if let Some(Slot::Value { anchor, data }) = self.slots.get(index) {
+                if data.is::<T>() {
+                    return Some((index, *anchor));
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Search for a node slot with a matching ID within the current group's bounds.
+    fn find_node_slot_by_id(&self, start: usize, id: NodeId) -> Option<(usize, AnchorId)> {
+        let parent_end = self
+            .group_stack
+            .last()
+            .map(|frame| frame.end.min(self.slots.len()))
+            .unwrap_or(self.slots.len());
+
+        for index in start..parent_end {
+            if let Some(Slot::Node {
+                anchor,
+                id: node_id,
+            }) = self.slots.get(index)
+            {
+                if *node_id == id {
+                    return Some((index, *anchor));
+                }
+            }
+        }
+
+        None
+    }
+
     fn shift_group_frames(&mut self, index: usize, delta: isize) {
         if delta == 0 {
             return;
@@ -1090,12 +1132,26 @@ impl SlotTable {
                 self.update_group_bounds();
                 return cursor;
             }
-            // RESTORE ORIGINAL: truncate on mismatch
+            if let Some((found_index, _anchor)) = self.find_value_slot_by_type::<T>(cursor) {
+                if found_index != cursor {
+                    self.shift_group_frames(found_index, -1);
+                    let slot = self.slots.remove(found_index);
+                    self.shift_group_frames(cursor, 1);
+                    self.slots.insert(cursor, slot);
+                    self.update_all_anchor_positions();
+                }
+                self.cursor = cursor + 1;
+                self.update_group_bounds();
+                return cursor;
+            }
             self.slots.truncate(cursor);
         }
         let anchor = self.allocate_anchor();
         let boxed: Box<dyn Any> = Box::new(init());
-        let slot = Slot::Value { anchor, data: boxed };
+        let slot = Slot::Value {
+            anchor,
+            data: boxed,
+        };
         if cursor == self.slots.len() {
             self.slots.push(slot);
         } else {
@@ -1202,6 +1258,18 @@ impl SlotTable {
                     return;
                 }
             }
+            if let Some((found_index, _anchor)) = self.find_node_slot_by_id(cursor, id) {
+                if found_index != cursor {
+                    self.shift_group_frames(found_index, -1);
+                    let slot = self.slots.remove(found_index);
+                    self.shift_group_frames(cursor, 1);
+                    self.slots.insert(cursor, slot);
+                    self.update_all_anchor_positions();
+                }
+                self.cursor = cursor + 1;
+                self.update_group_bounds();
+                return;
+            }
             self.slots.truncate(cursor);
         }
         let anchor = self.allocate_anchor();
@@ -1250,19 +1318,62 @@ impl SlotTable {
     /// This ensures effect states (LaunchedEffect, etc.) are preserved even when
     /// conditional rendering changes the composition structure.
     pub fn trim_to_cursor(&mut self) {
-        self.slots.truncate(self.cursor);
-        if let Some(frame) = self.group_stack.last_mut() {
-            frame.end = self.cursor;
-            if let Some(slot) = self.slots.get_mut(frame.start) {
-                debug_assert_eq!(
-                    SlotKind::Group,
-                    slot.kind(),
-                    "slot kind mismatch at {}",
-                    frame.start
-                );
-                if let Slot::Group { key, len, .. } = slot {
-                    debug_assert_eq!(*key, frame.key, "group key mismatch");
-                    *len = frame.end.saturating_sub(frame.start);
+        let mut reachable: HashSet<AnchorId> = HashSet::new();
+
+        for frame in &self.group_stack {
+            if frame.start_anchor.is_valid() {
+                reachable.insert(frame.start_anchor);
+            }
+            if frame.end_anchor.is_valid() {
+                reachable.insert(frame.end_anchor);
+            }
+        }
+
+        self.mark_reachable_in_range(0, self.cursor, &mut reachable);
+
+        let original_cursor = self.cursor;
+        let mut new_slots = Vec::with_capacity(self.slots.len());
+        let mut new_cursor = 0usize;
+
+        for (index, slot) in self.slots.drain(..).enumerate() {
+            let anchor = slot.anchor_id();
+            if reachable.contains(&anchor) {
+                if index < original_cursor {
+                    new_cursor += 1;
+                }
+                new_slots.push(slot);
+            } else {
+                self.anchors.remove(&anchor);
+            }
+        }
+
+        self.slots = new_slots;
+        self.cursor = new_cursor.min(self.slots.len());
+
+        self.update_all_anchor_positions();
+
+        let mut frame_updates = Vec::with_capacity(self.group_stack.len());
+        for (index, frame) in self.group_stack.iter().enumerate() {
+            let start = self.anchors.get(&frame.start_anchor).copied();
+            let len = start.and_then(|pos| match self.slots.get(pos) {
+                Some(Slot::Group { len, .. }) => Some(*len),
+                _ => None,
+            });
+            frame_updates.push((index, start, len));
+        }
+
+        for (index, start_opt, len_opt) in frame_updates {
+            if let Some(frame) = self.group_stack.get_mut(index) {
+                if let Some(start) = start_opt {
+                    frame.start = start;
+                    if let Some(len) = len_opt {
+                        frame.end = start.saturating_add(len).min(self.slots.len());
+                    } else {
+                        frame.end = start;
+                    }
+                } else {
+                    frame.start = frame.start.min(self.slots.len());
+                    frame.end = frame.start;
                 }
             }
         }
@@ -2706,3 +2817,7 @@ fn hash_key<K: Hash>(key: &K) -> Key {
 #[cfg(test)]
 #[path = "tests/lib_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/slot_relocation_tests.rs"]
+mod slot_relocation_tests;
