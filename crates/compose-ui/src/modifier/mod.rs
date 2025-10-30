@@ -229,15 +229,15 @@ impl Modifier {
         self.state.layout
     }
 
-    pub(crate) fn box_alignment(&self) -> Option<Alignment> {
+    pub fn box_alignment(&self) -> Option<Alignment> {
         self.state.layout.box_alignment
     }
 
-    pub(crate) fn column_alignment(&self) -> Option<HorizontalAlignment> {
+    pub fn column_alignment(&self) -> Option<HorizontalAlignment> {
         self.state.layout.column_alignment
     }
 
-    pub(crate) fn row_alignment(&self) -> Option<VerticalAlignment> {
+    pub fn row_alignment(&self) -> Option<VerticalAlignment> {
         self.state.layout.row_alignment
     }
 
@@ -391,7 +391,7 @@ impl Default for ModifierState {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) enum DimensionConstraint {
+pub enum DimensionConstraint {
     #[default]
     Unspecified,
     Points(f32),
@@ -400,13 +400,13 @@ pub(crate) enum DimensionConstraint {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct LayoutWeight {
+pub struct LayoutWeight {
     pub weight: f32,
     pub fill: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct LayoutProperties {
+pub struct LayoutProperties {
     padding: EdgeInsets,
     width: DimensionConstraint,
     height: DimensionConstraint,

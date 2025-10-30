@@ -7,18 +7,10 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+#[derive(Default)]
 struct LaunchedEffectState {
     key: Option<Key>,
     cancel: Option<LaunchedEffectCancellation>,
-}
-
-impl Default for LaunchedEffectState {
-    fn default() -> Self {
-        Self {
-            key: None,
-            cancel: None,
-        }
-    }
 }
 
 struct LaunchedEffectCancellation {
@@ -27,20 +19,11 @@ struct LaunchedEffectCancellation {
     continuations: Rc<RefCell<Vec<u64>>>,
 }
 
+#[derive(Default)]
 struct LaunchedEffectAsyncState {
     key: Option<Key>,
     cancel: Option<LaunchedEffectCancellation>,
     task: Option<TaskHandle>,
-}
-
-impl Default for LaunchedEffectAsyncState {
-    fn default() -> Self {
-        Self {
-            key: None,
-            cancel: None,
-            task: None,
-        }
-    }
 }
 
 impl LaunchedEffectState {

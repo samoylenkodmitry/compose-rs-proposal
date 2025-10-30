@@ -235,7 +235,6 @@ impl RuntimeHandle {
 struct StdRuntime {
     runtime: Runtime,
     frame_requested: Cell<bool>,
-    frame_waker: RefCell<Option<Box<dyn Fn() + Send + Sync>>>,
 }
 
 impl StdRuntime {
@@ -243,7 +242,6 @@ impl StdRuntime {
         Self {
             runtime: Runtime::new(),
             frame_requested: Cell::new(false),
-            frame_waker: RefCell::new(None),
         }
     }
 
@@ -254,14 +252,6 @@ impl StdRuntime {
     fn take_frame_request(&self) -> bool {
         let from_scheduler = self.frame_requested.replace(false);
         from_scheduler || self.runtime.take_frame_request()
-    }
-
-    fn set_frame_waker(&self, waker: impl Fn() + Send + Sync + 'static) {
-        *self.frame_waker.borrow_mut() = Some(Box::new(waker));
-    }
-
-    fn clear_frame_waker(&self) {
-        self.frame_waker.borrow_mut().take();
     }
 
     fn drain_frame_callbacks(&self, _frame_time_nanos: u64) {}
@@ -573,22 +563,12 @@ impl<T: Clone> MutableState<T> {
         }
     }
 
-    fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
-        let value = self.state.get();
-        f(&value)
-    }
-
     fn update<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
         let mut value = self.state.get();
         let result = f(&mut value);
         self.state.set(value);
         self.runtime.request_frame();
         result
-    }
-
-    fn set(&self, value: T) {
-        self.state.set(value);
-        self.runtime.request_frame();
     }
 
     fn value(&self) -> T {
@@ -1230,14 +1210,6 @@ where
 
     fn renderer(&mut self) -> &mut R {
         &mut self.renderer
-    }
-
-    fn set_frame_waker(&mut self, waker: impl Fn() + Send + Sync + 'static) {
-        self.runtime.set_frame_waker(waker);
-    }
-
-    fn clear_frame_waker(&mut self) {
-        self.runtime.clear_frame_waker();
     }
 
     fn should_render(&mut self) -> bool {

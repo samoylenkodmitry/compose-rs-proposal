@@ -10,13 +10,16 @@ pub(crate) type SnapshotId = usize;
 
 static GLOBAL_SNAPSHOT_ID: AtomicUsize = AtomicUsize::new(0);
 
+type SnapshotObserver = Box<dyn Fn(Arc<dyn StateObject>) + 'static>;
+
 #[inline]
 fn next_snapshot_id() -> SnapshotId {
     GLOBAL_SNAPSHOT_ID.fetch_add(1, Ordering::SeqCst) + 1
 }
 
 thread_local! {
-    static GLOBAL_SNAPSHOT: RefCell<Arc<Snapshot>> = RefCell::new(Arc::new(Snapshot::new_root(0)));
+    static GLOBAL_SNAPSHOT: RefCell<Arc<Snapshot>> =
+        RefCell::new(Arc::new(Snapshot::new_root(0)));
     static SNAPSHOT_STACK: RefCell<Vec<Arc<Snapshot>>> = RefCell::new(Vec::new());
 }
 
@@ -48,7 +51,7 @@ fn pop_snapshot() {
     });
 }
 
-#[derive(Clone, Copy, Eq, PartialEq, Hash, Debug)]
+#[derive(Clone, Copy, Eq, PartialEq, Hash, Debug, Default)]
 pub(crate) struct ObjectId(usize);
 
 impl ObjectId {
@@ -57,19 +60,13 @@ impl ObjectId {
     }
 }
 
-impl Default for ObjectId {
-    fn default() -> Self {
-        ObjectId(0)
-    }
-}
-
 pub(crate) struct Snapshot {
     id: Cell<SnapshotId>,
     pub(crate) parent: Option<Weak<Snapshot>>,
     invalid: Arc<Mutex<HashSet<SnapshotId>>>,
     pub(crate) modified: RefCell<HashMap<ObjectId, Arc<dyn StateObject>>>,
-    pub(crate) read_observer: Option<Box<dyn Fn(Arc<dyn StateObject>) + 'static>>,
-    pub(crate) write_observer: Option<Box<dyn Fn(Arc<dyn StateObject>) + 'static>>,
+    pub(crate) read_observer: Option<SnapshotObserver>,
+    pub(crate) write_observer: Option<SnapshotObserver>,
     base_parent_id: SnapshotId,
 }
 
@@ -210,8 +207,8 @@ pub(crate) fn alloc_record_id() -> SnapshotId {
 }
 
 pub(crate) fn take_mutable_snapshot(
-    read_observer: Option<Box<dyn Fn(Arc<dyn StateObject>) + 'static>>,
-    write_observer: Option<Box<dyn Fn(Arc<dyn StateObject>) + 'static>>,
+    read_observer: Option<SnapshotObserver>,
+    write_observer: Option<SnapshotObserver>,
 ) -> Arc<Snapshot> {
     let parent = current_snapshot();
     let child_id = next_snapshot_id();

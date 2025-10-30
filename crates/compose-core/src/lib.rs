@@ -57,14 +57,14 @@ pub type NodeId = usize;
 /// the slot table is reorganized (e.g., during conditional rendering or group moves).
 /// This prevents effect states from being prematurely removed during recomposition.
 #[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, Default)]
-pub(crate) struct AnchorId(usize);
+pub struct AnchorId(usize);
 
 impl AnchorId {
     /// Invalid anchor that represents no anchor.
     const INVALID: AnchorId = AnchorId(0);
 
     /// Check if this anchor is valid (non-zero).
-    fn is_valid(&self) -> bool {
+    pub fn is_valid(&self) -> bool {
         self.0 != 0
     }
 }
@@ -669,10 +669,8 @@ pub fn pop_parent() {
 #[derive(Default)]
 struct GroupFrame {
     key: Key,
-    start: usize,           // Physical position (will be phased out)
-    start_anchor: AnchorId, // Stable identity for group start
-    end: usize,             // Physical position (will be phased out)
-    end_anchor: AnchorId,   // Stable identity for group end
+    start: usize, // Physical position (will be phased out)
+    end: usize,   // Physical position (will be phased out)
     force_children_recompose: bool,
 }
 
@@ -797,6 +795,7 @@ impl SlotTable {
 
     /// Register an anchor at a specific position in the slots array.
     fn register_anchor(&mut self, anchor: AnchorId, position: usize) {
+        debug_assert!(anchor.is_valid(), "attempted to register invalid anchor");
         self.anchors.insert(anchor, position);
     }
 
@@ -1186,9 +1185,7 @@ impl SlotTable {
             let frame = GroupFrame {
                 key,
                 start: cursor,
-                start_anchor: group_anchor,
                 end: cursor + len,
-                end_anchor: self.allocate_anchor(), // Will be updated in end()
                 force_children_recompose: reused_from_gap || parent_force,
             };
             self.group_stack.push(frame);
@@ -1416,9 +1413,7 @@ impl SlotTable {
                 let frame = GroupFrame {
                     key,
                     start: cursor,
-                    start_anchor: group_anchor,
                     end: cursor + actual_len,
-                    end_anchor: self.allocate_anchor(),
                     force_children_recompose: reused_gap || parent_force,
                 };
                 self.group_stack.push(frame);
@@ -1450,9 +1445,7 @@ impl SlotTable {
         self.group_stack.push(GroupFrame {
             key,
             start: cursor,
-            start_anchor: group_anchor,
             end: self.cursor,
-            end_anchor: self.allocate_anchor(),
             force_children_recompose: parent_force,
         });
         self.update_group_bounds();
@@ -1505,16 +1498,11 @@ impl SlotTable {
                 "slot kind mismatch at {}",
                 index
             );
-            if let Slot::Group {
-                key, anchor, len, ..
-            } = *slot
-            {
+            if let Slot::Group { key, len, .. } = *slot {
                 let frame = GroupFrame {
                     key,
                     start: index,
-                    start_anchor: anchor,
                     end: index + len,
-                    end_anchor: self.allocate_anchor(),
                     force_children_recompose: false,
                 };
                 self.group_stack.push(frame);
@@ -2681,7 +2669,7 @@ impl Composer {
         if let Some(frame) = parent_stack.last_mut() {
             frame.new_children.push(id);
         } else {
-            self.core.root.set(Some(id));
+            self.set_root(Some(id));
         }
     }
 

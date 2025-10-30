@@ -25,7 +25,7 @@ impl FontWeight {
 }
 
 /// Text style (data only, no rendering)
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct TextStyle {
     pub font_family: Option<String>,
     pub font_size: Option<f32>,
@@ -33,17 +33,4 @@ pub struct TextStyle {
     pub font_style: Option<FontStyle>,
     pub letter_spacing: Option<f32>,
     pub line_height: Option<f32>,
-}
-
-impl Default for TextStyle {
-    fn default() -> Self {
-        Self {
-            font_family: None,
-            font_size: None,
-            font_weight: None,
-            font_style: None,
-            letter_spacing: None,
-            line_height: None,
-        }
-    }
 }

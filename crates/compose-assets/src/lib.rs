@@ -9,3 +9,9 @@ impl AssetManager {
         Self
     }
 }
+
+impl Default for AssetManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}

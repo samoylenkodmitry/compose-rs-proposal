@@ -19,6 +19,9 @@ enum UiMessage {
     Invoke { id: u64, value: Box<dyn Any + Send> },
 }
 
+type UiContinuation = Box<dyn Fn(Box<dyn Any>) + 'static>;
+type UiContinuationMap = HashMap<u64, UiContinuation>;
+
 struct UiDispatcherInner {
     scheduler: Arc<dyn RuntimeScheduler>,
     tx: mpsc::Sender<UiMessage>,
@@ -105,7 +108,7 @@ struct RuntimeInner {
     ui_dispatcher: Arc<UiDispatcherInner>,
     ui_rx: RefCell<mpsc::Receiver<UiMessage>>,
     local_tasks: RefCell<VecDeque<Box<dyn FnOnce() + 'static>>>,
-    ui_conts: RefCell<HashMap<u64, Box<dyn Fn(Box<dyn Any>) + 'static>>>,
+    ui_conts: RefCell<UiContinuationMap>,
     next_cont_id: Cell<u64>,
     ui_thread_id: ThreadId,
     tasks: RefCell<Vec<TaskEntry>>, // FUTURE(no_std): migrate to smallvec-backed storage.
@@ -133,7 +136,7 @@ impl RuntimeInner {
             ui_dispatcher: dispatcher,
             ui_rx: RefCell::new(rx),
             local_tasks: RefCell::new(VecDeque::new()),
-            ui_conts: RefCell::new(HashMap::new()),
+            ui_conts: RefCell::new(UiContinuationMap::new()),
             next_cont_id: Cell::new(1),
             ui_thread_id: std::thread::current().id(),
             tasks: RefCell::new(Vec::new()),
@@ -708,8 +711,8 @@ impl futures_task::ArcWake for RuntimeTaskWaker {
 }
 
 thread_local! {
-    static ACTIVE_RUNTIMES: RefCell<Vec<RuntimeHandle>> = RefCell::new(Vec::new()); // FUTURE(no_std): move to bounded stack storage.
-    static LAST_RUNTIME: RefCell<Option<RuntimeHandle>> = RefCell::new(None);
+    static ACTIVE_RUNTIMES: RefCell<Vec<RuntimeHandle>> = const { RefCell::new(Vec::new()) }; // FUTURE(no_std): move to bounded stack storage.
+    static LAST_RUNTIME: RefCell<Option<RuntimeHandle>> = const { RefCell::new(None) };
 }
 
 fn current_runtime_handle() -> Option<RuntimeHandle> {
