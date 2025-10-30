@@ -328,10 +328,7 @@ fn recursive_layout_node(depth: usize, horizontal: bool, index: usize) {
                     RowSpec::new().horizontal_arrangement(LinearArrangement::SpacedBy(8.0)),
                     move || {
                         for child_idx in 0..2 {
-                            let key = (depth, index, child_idx);
-                            compose_core::with_key(&key, || {
-                                recursive_layout_node(depth - 1, false, index * 2 + child_idx + 1);
-                            });
+                            recursive_layout_node(depth - 1, false, index * 2 + child_idx + 1);
                         }
                     },
                 );
@@ -341,10 +338,7 @@ fn recursive_layout_node(depth: usize, horizontal: bool, index: usize) {
                     ColumnSpec::new().vertical_arrangement(LinearArrangement::SpacedBy(8.0)),
                     move || {
                         for child_idx in 0..2 {
-                            let key = (depth, index, child_idx);
-                            compose_core::with_key(&key, || {
-                                recursive_layout_node(depth - 1, true, index * 2 + child_idx + 1);
-                            });
+                            recursive_layout_node(depth - 1, true, index * 2 + child_idx + 1);
                         }
                     },
                 );
