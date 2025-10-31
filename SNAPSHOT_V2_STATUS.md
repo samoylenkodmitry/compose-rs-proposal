@@ -146,11 +146,330 @@ test result: ok. 201 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
 ---
 
-## Known Limitations
+## Completeness Analysis vs Kotlin Implementation
 
-1. **Object-level conflict detection** - Simplified approach compared to Kotlin's record-level detection.
-2. **No optimistic merging** - Always fails on conflict. Can be added in Phase 3.
-3. **LAST_WRITES growth** - No periodic cleanup (except in tests).
+### Feature Comparison Matrix
+
+| Feature | Kotlin | Rust V2 | Gap Level | Priority |
+|---------|--------|---------|-----------|----------|
+| Record-level conflict detection | ✅ Full 3-way merge | ❌ Object-level only | CRITICAL | P0 |
+| `readable()` chain traversal | ✅ Complete | ⚠️ Simplified | CRITICAL | P0 |
+| `writable()` with record reuse | ✅ Complete | ⚠️ Basic | CRITICAL | P0 |
+| Optimistic merging | ✅ Pre-computed | ❌ None | HIGH | P1 |
+| `mergeRecords()` interface | ✅ Full | ⚠️ Bool only | HIGH | P1 |
+| SnapshotDoubleIndexHeap | ✅ Complete | ❌ None | MEDIUM | P2 |
+| Record recycling (`usedLocked`) | ✅ Complete | ❌ None | MEDIUM | P2 |
+| Record cleanup | ✅ Automatic | ❌ None | MEDIUM | P2 |
+| LAST_WRITES cleanup | ✅ Integrated | ❌ Manual | LOW | P3 |
+| SnapshotIdSet | ✅ Complete | ✅ Complete | NONE | ✓ |
+| Basic snapshot lifecycle | ✅ Complete | ✅ Complete | NONE | ✓ |
+| Apply observers | ✅ Complete | ✅ Complete | NONE | ✓ |
+
+---
+
+## Known Limitations (Root Cause Analysis)
+
+### 1. Object-level conflict detection ⚠️ CRITICAL
+
+**Current Behavior:**
+- Rust tracks ONE snapshot ID per modified object (the writer ID)
+- Conflict detection: "Has parent been modified since we started?"
+- Result: Cannot distinguish between different types of conflicts
+
+**Missing Kotlin Feature: Record-Level Three-Way Merge**
+
+Kotlin's snapshot system operates on **StateRecord chains** - each state object maintains a linked list of historical values. During apply, Kotlin performs three-way merge:
+
+```kotlin
+// From Snapshot.kt - innerApplyLocked()
+modified.forEach { state ->
+    // THREE RECORD RESOLUTION:
+    val current = readable(first, nextId, invalidSnapshots)   // What next snapshot will see
+    val previous = readable(first, snapshotId, start)         // What we originally saw
+    val applied = readable(first, snapshotId, invalid)        // What we want to write
+
+    if (current != previous) {
+        // Conflict detected - attempt merge
+        val merged = state.mergeRecords(previous, current, applied)
+        when (merged) {
+            null -> return Failure        // Cannot merge
+            applied -> { /* Keep our change */ }
+            current -> { /* Revert to current */ }
+            else -> { /* Use custom merged value */ }
+        }
+    }
+}
+```
+
+**Algorithm Details:**
+
+1. **Record Chain Traversal (`readable()`):**
+   ```kotlin
+   // Snapshot.kt:2090-2107
+   fun readable(r: StateRecord, id: SnapshotId, invalid: SnapshotIdSet): StateRecord? {
+       var current = r
+       var candidate: StateRecord? = null
+       while (current != null) {
+           if (valid(current, id, invalid)) {
+               candidate = if (candidate == null || candidate.snapshotId < current.snapshotId)
+                   current else candidate
+           }
+           current = current.next  // Walk the chain
+       }
+       return candidate
+   }
+   ```
+
+2. **Merge Decision Logic:**
+   - If `current == previous`: No conflict, apply our change
+   - If `current != previous`: Someone else changed it, call `mergeRecords()`
+   - `mergeRecords()` can:
+     - Return `null` → Conflict cannot be resolved (FAIL)
+     - Return `applied` → Our change wins
+     - Return `current` → Their change wins (revert ours)
+     - Return custom record → Intelligent merge (e.g., both changes preserved)
+
+**Impact:**
+- ❌ Cannot properly resolve concurrent modifications
+- ❌ False conflict positives (rejecting merges that could succeed)
+- ❌ Cannot implement structural sharing for undo/redo
+- ❌ Cannot support CRDT-like state objects
+
+**Files to Implement:**
+- [state.rs:113-130](crates/compose-core/src/state.rs#L113-L130) - Upgrade `readable_record()` and `try_merge()`
+- [mutable.rs:234-242](crates/compose-core/src/snapshot_v2/mutable.rs#L234-L242) - Replace simple check with three-way merge
+- [nested.rs](crates/compose-core/src/snapshot_v2/nested.rs) - Apply same logic for nested snapshots
+
+---
+
+### 2. No optimistic merging ⚠️ HIGH
+
+**Current Behavior:**
+- All conflict resolution happens inside the runtime lock
+- Lock held for entire duration of merge computation
+- Result: Lock contention under concurrent load
+
+**Missing Kotlin Feature: Pre-Computed Optimistic Merging**
+
+```kotlin
+// From Snapshot.kt:828-836 - BEFORE acquiring lock
+val optimisticMerges =
+    if (modified != null) {
+        optimisticMerges(globalSnapshot.snapshotId, this, openSnapshots)
+    } else null
+
+// THEN acquire lock and use pre-computed results
+sync {
+    innerApplyLocked(nextId, modified, optimisticMerges, invalidSnapshots)
+}
+```
+
+**Algorithm:**
+```kotlin
+// Snapshot.kt:2452-2485
+fun optimisticMerges(currentId: SnapshotId, snapshot: MutableSnapshot): Map<StateRecord, StateRecord>? {
+    val modified = snapshot.modified ?: return null
+    var result: MutableMap<StateRecord, StateRecord>? = null
+
+    modified.forEach { state ->
+        val current = readable(state.firstStateRecord, currentId, ...)
+        val previous = readable(state.firstStateRecord, snapshot.id, ...)
+        val applied = readable(state.firstStateRecord, snapshot.id, snapshot.invalid)
+
+        if (current != previous) {
+            val merged = state.mergeRecords(previous, current, applied)
+            if (merged != null) {
+                result[current] = merged
+            } else {
+                return null  // One failure aborts entire optimistic set
+            }
+        }
+    }
+    return result
+}
+```
+
+**Key Insight:**
+- Runs OUTSIDE synchronization block to reduce lock time
+- If ANY merge fails, abandon entire optimistic set (fall back to lock-held merge)
+- If all succeed, use pre-computed results inside lock
+
+**Impact:**
+- ⚠️ Lock contention under concurrent load
+- ⚠️ Scalability bottleneck with many snapshots
+- ✅ Not required for correctness, but critical for performance
+
+**Files to Implement:**
+- [mutable.rs](crates/compose-core/src/snapshot_v2/mutable.rs) - Add `optimistic_merges()` function
+- Call before acquiring RUNTIME lock in apply()
+
+---
+
+### 3. LAST_WRITES growth ⚠️ MEDIUM
+
+**Current Behavior:**
+```rust
+// mod.rs:378-455
+thread_local! {
+    static LAST_WRITES: RefCell<HashMap<StateObjectId, SnapshotId>> = RefCell::new(HashMap::new());
+}
+```
+- No cleanup mechanism
+- Grows indefinitely in long-running apps
+- Manual `clear_last_writes()` only in tests
+
+**Missing Kotlin Feature: Automatic Cleanup During Apply**
+
+```kotlin
+// Snapshot.kt:898-901 - During innerApplyLocked()
+checkAndOverwriteUnusedRecordsLocked()
+globalModified?.forEach { processForUnusedRecordsLocked(it) }
+modified?.forEach { processForUnusedRecordsLocked(it) }
+merged?.fastForEach { processForUnusedRecordsLocked(it) }
+```
+
+**Cleanup Algorithm:**
+```kotlin
+// Snapshot.kt:2265-2273
+fun checkAndOverwriteUnusedRecordsLocked() {
+    extraStateObjects.removeIf { !overwriteUnusedRecordsLocked(it) }
+}
+
+fun processForUnusedRecordsLocked(state: StateObject) {
+    if (overwriteUnusedRecordsLocked(state)) {
+        extraStateObjects.add(state)
+    }
+}
+
+fun overwriteUnusedRecordsLocked(state: StateObject): Boolean {
+    // Mark records below pinning threshold as INVALID_SNAPSHOT
+    // Remove from LAST_WRITES if all records cleaned
+}
+```
+
+**Impact:**
+- ⚠️ Memory growth in long-running applications
+- ⚠️ Test isolation issues (mitigated by manual clear)
+- ✅ Not critical for initial implementation
+
+**Files to Implement:**
+- [mod.rs:378-455](crates/compose-core/src/snapshot_v2/mod.rs#L378-L455) - Add cleanup during apply
+- Set threshold (e.g., >10000 entries trigger cleanup)
+- Integrate with record cleanup mechanisms
+
+---
+
+## Missing Critical Features
+
+### 4. Record Reuse & Recycling ⚠️ CRITICAL
+
+**Missing Feature: `writableRecord()` with Record Reuse**
+
+Kotlin creates writable records efficiently by reusing old records below the pinning threshold:
+
+```kotlin
+// Snapshot.kt:2276-2304
+fun <T : StateRecord> T.writableRecord(state: StateObject, snapshot: Snapshot): T {
+    val id = snapshot.snapshotId
+    val readData = readable(this, id, snapshot.invalid)
+
+    // Optimization: If readable was born in this snapshot, reuse it
+    if (readData.snapshotId == snapshot.snapshotId) return readData
+
+    // Otherwise create or reuse a record
+    val newData = sync {
+        val reusable = usedLocked(state)  // Find reusable record
+        if (reusable != null) {
+            reusable.copy(readData)  // Reuse old record
+        } else {
+            readData.create()  // Allocate new
+        }
+    }
+    return newData
+}
+```
+
+**Record Recycling Algorithm:**
+```kotlin
+// Snapshot.kt:2161-2181
+fun usedLocked(state: StateObject): StateRecord? {
+    var current = state.firstStateRecord
+    var validRecord: StateRecord? = null
+    val reuseLimit = pinningTable.lowestOrDefault(nextSnapshotId) - 1
+
+    while (current != null) {
+        if (current.snapshotId == INVALID_SNAPSHOT) {
+            return current  // Immediately reusable
+        }
+        if (valid(current, reuseLimit, EMPTY)) {
+            validRecord = if (validRecord == null || current.snapshotId < validRecord.snapshotId)
+                current else validRecord
+        }
+        current = current.next
+    }
+    return validRecord
+}
+```
+
+**Rust Current State:**
+- Has basic `readable_record()` (state.rs:113-114)
+- No record reuse mechanism
+- No `usedLocked()` equivalent
+- Records never marked INVALID_SNAPSHOT for reuse
+
+**Impact:**
+- ❌ Memory leaks (records never recycled)
+- ❌ Performance degradation over time
+- ❌ Required for long-running applications
+
+---
+
+### 5. SnapshotDoubleIndexHeap ⚠️ MEDIUM
+
+**Missing Feature: Priority Queue for Pinning Management**
+
+Kotlin uses a specialized min-heap to track the lowest pinned snapshot ID:
+
+```kotlin
+// SnapshotDoubleIndexHeap.kt
+class SnapshotDoubleIndexHeap {
+    var size = 0
+    private var values = snapshotIdArrayWithCapacity(16)  // Min-heap of snapshot IDs
+    private var index = IntArray(16)   // Map value index → handle
+    private var handles = IntArray(16) // Map handle → value index
+
+    fun lowestOrDefault(default: SnapshotId = 0) =
+        if (size > 0) values[0] else default
+
+    fun add(value: SnapshotId): Int {
+        // Add to heap, return handle for later removal
+    }
+
+    fun remove(handle: Int) {
+        // Remove by handle, maintain heap property
+    }
+}
+```
+
+**Purpose:**
+- Track which snapshots are "pinned" (reading records)
+- `lowestOrDefault()` returns oldest active snapshot
+- Records with ID < lowestOrDefault() can be safely reused
+- Used by `usedLocked()` to determine reuse threshold
+
+**Rust Current State:**
+- Basic pinning in `snapshot_pinning.rs`
+- No heap structure
+- Cannot determine safe reuse threshold
+
+**Impact:**
+- ⚠️ Records can't be safely reused
+- ⚠️ Memory accumulation
+- ✅ Required for `usedLocked()` to work
+
+**Files to Implement:**
+- New file: `crates/compose-core/src/snapshot_v2/pinning_heap.rs`
+- Integrate with [runtime.rs](crates/compose-core/src/snapshot_v2/runtime.rs)
 
 ---
 
