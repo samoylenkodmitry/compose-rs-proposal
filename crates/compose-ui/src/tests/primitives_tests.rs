@@ -11,7 +11,7 @@ use crate::widgets::{
 use crate::{run_test_composition, LayoutEngine, SnapshotState, TestComposition};
 use compose_core::{
     self, location_key, Applier, Composer, Composition, ConcreteApplierHost, MemoryApplier,
-    MutableState, NodeId, Phase, SlotTable, SlotsHost, State,
+    MutableState, NodeId, Phase, SlotTable, SlotsHost, SnapshotStateObserver, State,
 };
 use compose_ui_layout::{HorizontalAlignment, LinearArrangement, VerticalAlignment};
 use std::cell::{Cell, RefCell};
@@ -37,10 +37,12 @@ fn prepare_measure_composer(
         applier,
         MemoryApplier::new(),
     )));
+    let observer = SnapshotStateObserver::new(|callback| callback());
     let composer = Composer::new(
         Rc::clone(&slots_host),
         applier_host.clone(),
         handle.clone(),
+        observer,
         root,
     );
     (composer, slots_host, applier_host)

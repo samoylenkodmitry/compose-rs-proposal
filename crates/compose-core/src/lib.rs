@@ -8,7 +8,10 @@ mod launched_effect;
 pub mod owned;
 pub mod platform;
 pub mod runtime;
-mod snapshot;
+pub mod snapshot_id_set;
+pub mod snapshot_pinning;
+pub mod snapshot_state_observer;
+pub mod snapshot_v2;
 mod state;
 pub mod subcompose;
 
@@ -21,15 +24,19 @@ pub use platform::{Clock, RuntimeScheduler};
 pub use runtime::{
     schedule_frame, schedule_node_update, DefaultScheduler, Runtime, RuntimeHandle, TaskHandle,
 };
+pub use snapshot_state_observer::SnapshotStateObserver;
 
 /// Runs the provided closure inside a mutable snapshot and applies the result.
 ///
 /// UI event handlers should wrap state mutations in this helper so that
 /// recomposition observes the updates atomically once the snapshot applies.
 pub fn run_in_mutable_snapshot<T>(block: impl FnOnce() -> T) -> Result<T, &'static str> {
-    let snapshot = snapshot::take_mutable_snapshot(None, None);
+    let snapshot = snapshot_v2::take_mutable_snapshot(None, None);
     let value = snapshot.enter(block);
-    snapshot.apply().map(|_| value)
+    match snapshot.apply() {
+        snapshot_v2::SnapshotApplyResult::Success => Ok(value),
+        snapshot_v2::SnapshotApplyResult::Failure => Err("Snapshot apply failed"),
+    }
 }
 
 #[cfg(test)]
@@ -120,6 +127,14 @@ type RecomposeCallback = Box<dyn FnMut(&Composer) + 'static>;
 pub struct RecomposeScope {
     inner: Rc<RecomposeScopeInner>, // FUTURE(no_std): replace Rc with arena-managed scope handles.
 }
+
+impl PartialEq for RecomposeScope {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.inner, &other.inner)
+    }
+}
+
+impl Eq for RecomposeScope {}
 
 impl RecomposeScope {
     fn new(runtime: RuntimeHandle) -> Self {
@@ -329,6 +344,39 @@ pub fn withFrameMillis(callback: impl FnOnce(u64) + 'static) -> FrameCallbackReg
 #[allow(non_snake_case)]
 pub fn mutableStateOf<T: Clone + 'static>(initial: T) -> MutableState<T> {
     with_current_composer(|composer| composer.mutable_state_of(initial))
+}
+
+#[allow(non_snake_case)]
+pub fn mutableStateListOf<T, I>(values: I) -> SnapshotStateList<T>
+where
+    T: Clone + 'static,
+    I: IntoIterator<Item = T>,
+{
+    with_current_composer(move |composer| composer.mutable_state_list_of(values))
+}
+
+#[allow(non_snake_case)]
+pub fn mutableStateList<T: Clone + 'static>() -> SnapshotStateList<T> {
+    mutableStateListOf(std::iter::empty::<T>())
+}
+
+#[allow(non_snake_case)]
+pub fn mutableStateMapOf<K, V, I>(pairs: I) -> SnapshotStateMap<K, V>
+where
+    K: Clone + Eq + Hash + 'static,
+    V: Clone + 'static,
+    I: IntoIterator<Item = (K, V)>,
+{
+    with_current_composer(move |composer| composer.mutable_state_map_of(pairs))
+}
+
+#[allow(non_snake_case)]
+pub fn mutableStateMap<K, V>() -> SnapshotStateMap<K, V>
+where
+    K: Clone + Eq + Hash + 'static,
+    V: Clone + 'static,
+{
+    mutableStateMapOf(std::iter::empty::<(K, V)>())
 }
 
 #[allow(non_snake_case)]
@@ -2073,6 +2121,7 @@ pub(crate) struct ComposerCore {
     slots: Rc<SlotsHost>,
     applier: Rc<dyn ApplierHost>,
     runtime: RuntimeHandle,
+    observer: SnapshotStateObserver,
     parent_stack: RefCell<Vec<ParentFrame>>,
     subcompose_stack: RefCell<Vec<SubcomposeFrame>>,
     root: Cell<Option<NodeId>>,
@@ -2091,12 +2140,14 @@ impl ComposerCore {
         slots: Rc<SlotsHost>,
         applier: Rc<dyn ApplierHost>,
         runtime: RuntimeHandle,
+        observer: SnapshotStateObserver,
         root: Option<NodeId>,
     ) -> Self {
         Self {
             slots,
             applier,
             runtime,
+            observer,
             parent_stack: RefCell::new(Vec::new()),
             subcompose_stack: RefCell::new(Vec::new()),
             root: Cell::new(root),
@@ -2122,9 +2173,10 @@ impl Composer {
         slots: Rc<SlotsHost>,
         applier: Rc<dyn ApplierHost>,
         runtime: RuntimeHandle,
+        observer: SnapshotStateObserver,
         root: Option<NodeId>,
     ) -> Self {
-        let core = Rc::new(ComposerCore::new(slots, applier, runtime, root));
+        let core = Rc::new(ComposerCore::new(slots, applier, runtime, observer, root));
         Self { core }
     }
 
@@ -2134,6 +2186,20 @@ impl Composer {
 
     pub(crate) fn clone_core(&self) -> Rc<ComposerCore> {
         Rc::clone(&self.core)
+    }
+
+    fn observer(&self) -> SnapshotStateObserver {
+        self.core.observer.clone()
+    }
+
+    fn observe_scope<R>(&self, scope: &RecomposeScope, block: impl FnOnce() -> R) -> R {
+        let observer = self.observer();
+        let scope_clone = scope.clone();
+        observer.observe_reads(
+            scope_clone,
+            move |scope_ref| scope_ref.invalidate(),
+            move || block(),
+        )
     }
 
     fn slots(&self) -> Ref<'_, SlotTable> {
@@ -2236,7 +2302,7 @@ impl Composer {
             scope_ref.snapshot_locals(&locals);
         }
 
-        let result = f(self);
+        let result = self.observe_scope(&scope_ref, || f(self));
 
         let trimmed = {
             let mut slots = self.slots_mut();
@@ -2292,6 +2358,23 @@ impl Composer {
 
     pub fn mutable_state_of<T: Clone + 'static>(&self, initial: T) -> MutableState<T> {
         MutableState::with_runtime(initial, self.runtime_handle())
+    }
+
+    pub fn mutable_state_list_of<T, I>(&self, values: I) -> SnapshotStateList<T>
+    where
+        T: Clone + 'static,
+        I: IntoIterator<Item = T>,
+    {
+        SnapshotStateList::with_runtime(values, self.runtime_handle())
+    }
+
+    pub fn mutable_state_map_of<K, V, I>(&self, pairs: I) -> SnapshotStateMap<K, V>
+    where
+        K: Clone + Eq + Hash + 'static,
+        V: Clone + 'static,
+        I: IntoIterator<Item = (K, V)>,
+    {
+        SnapshotStateMap::with_runtime(pairs, self.runtime_handle())
     }
 
     pub fn read_composition_local<T: Clone + 'static>(&self, local: &CompositionLocal<T>) -> T {
@@ -2408,6 +2491,7 @@ impl Composer {
             Rc::clone(slots),
             Rc::clone(&self.core.applier),
             runtime_handle.clone(),
+            self.observer(),
             root,
         ));
         core.phase.set(phase);
@@ -2458,7 +2542,21 @@ impl Composer {
         F: FnMut(&Composer) + 'static,
     {
         if let Some(scope) = self.current_recompose_scope() {
-            scope.set_recompose(Box::new(callback));
+            let observer = self.observer();
+            let scope_weak = scope.downgrade();
+            let mut callback = callback;
+            scope.set_recompose(Box::new(move |composer: &Composer| {
+                if let Some(inner) = scope_weak.upgrade() {
+                    let scope_instance = RecomposeScope { inner };
+                    observer.observe_reads(
+                        scope_instance.clone(),
+                        move |scope_ref| scope_ref.invalidate(),
+                        || {
+                            callback(composer);
+                        },
+                    );
+                }
+            }));
         }
     }
 
@@ -2502,7 +2600,9 @@ impl Composer {
                 let mut locals = self.local_stack();
                 *locals = scope.local_stack();
             }
-            scope.run_recompose(self);
+            self.observe_scope(scope, || {
+                scope.run_recompose(self);
+            });
             {
                 let mut locals = self.local_stack();
                 *locals = saved_locals;
@@ -3008,6 +3108,212 @@ impl<T: fmt::Debug + Clone + 'static> fmt::Debug for MutableState<T> {
     }
 }
 
+#[derive(Clone)]
+pub struct SnapshotStateList<T: Clone + 'static> {
+    state: MutableState<Vec<T>>,
+}
+
+impl<T: Clone + 'static> SnapshotStateList<T> {
+    pub fn with_runtime<I>(values: I, runtime: RuntimeHandle) -> Self
+    where
+        I: IntoIterator<Item = T>,
+    {
+        let initial: Vec<T> = values.into_iter().collect();
+        Self {
+            state: MutableState::with_runtime(initial, runtime),
+        }
+    }
+
+    pub fn as_state(&self) -> State<Vec<T>> {
+        self.state.as_state()
+    }
+
+    pub fn as_mutable_state(&self) -> MutableState<Vec<T>> {
+        self.state.clone()
+    }
+
+    pub fn len(&self) -> usize {
+        self.state.with(|values| values.len())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn to_vec(&self) -> Vec<T> {
+        self.state.with(|values| values.clone())
+    }
+
+    pub fn iter(&self) -> Vec<T> {
+        self.to_vec()
+    }
+
+    pub fn get(&self, index: usize) -> T {
+        self.state.with(|values| values[index].clone())
+    }
+
+    pub fn get_opt(&self, index: usize) -> Option<T> {
+        self.state.with(|values| values.get(index).cloned())
+    }
+
+    pub fn first(&self) -> Option<T> {
+        self.get_opt(0)
+    }
+
+    pub fn last(&self) -> Option<T> {
+        self.state.with(|values| values.last().cloned())
+    }
+
+    pub fn push(&self, value: T) {
+        self.state.update(|values| values.push(value));
+    }
+
+    pub fn extend<I>(&self, iter: I)
+    where
+        I: IntoIterator<Item = T>,
+    {
+        self.state.update(|values| values.extend(iter.into_iter()));
+    }
+
+    pub fn insert(&self, index: usize, value: T) {
+        self.state.update(|values| values.insert(index, value));
+    }
+
+    pub fn set(&self, index: usize, value: T) -> T {
+        self.state
+            .update(|values| std::mem::replace(&mut values[index], value))
+    }
+
+    pub fn remove(&self, index: usize) -> T {
+        self.state.update(|values| values.remove(index))
+    }
+
+    pub fn pop(&self) -> Option<T> {
+        self.state.update(|values| values.pop())
+    }
+
+    pub fn clear(&self) {
+        self.state.replace(Vec::new());
+    }
+
+    pub fn retain<F>(&self, mut predicate: F)
+    where
+        F: FnMut(&T) -> bool,
+    {
+        self.state
+            .update(|values| values.retain(|value| predicate(value)));
+    }
+
+    pub fn replace_with<I>(&self, iter: I)
+    where
+        I: IntoIterator<Item = T>,
+    {
+        self.state.replace(iter.into_iter().collect());
+    }
+}
+
+impl<T: fmt::Debug + Clone + 'static> fmt::Debug for SnapshotStateList<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let contents = self.to_vec();
+        f.debug_struct("SnapshotStateList")
+            .field("values", &contents)
+            .finish()
+    }
+}
+
+#[derive(Clone)]
+pub struct SnapshotStateMap<K, V>
+where
+    K: Clone + Eq + Hash + 'static,
+    V: Clone + 'static,
+{
+    state: MutableState<HashMap<K, V>>,
+}
+
+impl<K, V> SnapshotStateMap<K, V>
+where
+    K: Clone + Eq + Hash + 'static,
+    V: Clone + 'static,
+{
+    pub fn with_runtime<I>(pairs: I, runtime: RuntimeHandle) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+    {
+        let map: HashMap<K, V> = pairs.into_iter().collect();
+        Self {
+            state: MutableState::with_runtime(map, runtime),
+        }
+    }
+
+    pub fn as_state(&self) -> State<HashMap<K, V>> {
+        self.state.as_state()
+    }
+
+    pub fn as_mutable_state(&self) -> MutableState<HashMap<K, V>> {
+        self.state.clone()
+    }
+
+    pub fn len(&self) -> usize {
+        self.state.with(|map| map.len())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.state.with(|map| map.is_empty())
+    }
+
+    pub fn contains_key(&self, key: &K) -> bool {
+        self.state.with(|map| map.contains_key(key))
+    }
+
+    pub fn get(&self, key: &K) -> Option<V> {
+        self.state.with(|map| map.get(key).cloned())
+    }
+
+    pub fn to_hash_map(&self) -> HashMap<K, V> {
+        self.state.with(|map| map.clone())
+    }
+
+    pub fn insert(&self, key: K, value: V) -> Option<V> {
+        self.state.update(|map| map.insert(key, value))
+    }
+
+    pub fn extend<I>(&self, iter: I)
+    where
+        I: IntoIterator<Item = (K, V)>,
+    {
+        self.state.update(|map| map.extend(iter.into_iter()));
+        // extend returns (), but update requires returning something: we can just rely on ()
+    }
+
+    pub fn remove(&self, key: &K) -> Option<V> {
+        self.state.update(|map| map.remove(key))
+    }
+
+    pub fn clear(&self) {
+        self.state.replace(HashMap::new());
+    }
+
+    pub fn retain<F>(&self, mut predicate: F)
+    where
+        F: FnMut(&K, &mut V) -> bool,
+    {
+        self.state.update(|map| map.retain(|k, v| predicate(k, v)));
+    }
+}
+
+impl<K, V> fmt::Debug for SnapshotStateMap<K, V>
+where
+    K: Clone + Eq + Hash + fmt::Debug + 'static,
+    V: Clone + fmt::Debug + 'static,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let contents = self.to_hash_map();
+        f.debug_struct("SnapshotStateMap")
+            .field("entries", &contents)
+            .finish()
+    }
+}
+
 struct DerivedState<T: Clone + 'static> {
     compute: Rc<dyn Fn() -> T>, // FUTURE(no_std): store compute closures in arena-managed cell.
     state: MutableState<T>,
@@ -3190,6 +3496,7 @@ pub struct Composition<A: Applier + 'static> {
     slots: Rc<SlotsHost>,
     applier: Rc<ConcreteApplierHost<A>>,
     runtime: Runtime,
+    observer: SnapshotStateObserver,
     root: Option<NodeId>,
 }
 
@@ -3199,10 +3506,18 @@ impl<A: Applier + 'static> Composition<A> {
     }
 
     pub fn with_runtime(applier: A, runtime: Runtime) -> Self {
+        let slots = Rc::new(SlotsHost::new(SlotTable::new()));
+        let applier = Rc::new(ConcreteApplierHost::new(applier));
+        let observer_handle = runtime.handle();
+        let observer = SnapshotStateObserver::new(move |callback| {
+            observer_handle.enqueue_ui_task(callback);
+        });
+        observer.start();
         Self {
-            slots: Rc::new(SlotsHost::new(SlotTable::new())),
-            applier: Rc::new(ConcreteApplierHost::new(applier)),
+            slots,
+            applier,
             runtime,
+            observer,
             root: None,
         }
     }
@@ -3223,6 +3538,7 @@ impl<A: Applier + 'static> Composition<A> {
             Rc::clone(&self.slots),
             self.applier.clone(),
             runtime_handle.clone(),
+            self.observer.clone(),
             self.root,
         );
         let (root, mut commands, side_effects) = composer.install(|composer| {
@@ -3312,6 +3628,7 @@ impl<A: Applier + 'static> Composition<A> {
                     self.slots_host(),
                     self.applier_host(),
                     runtime_clone,
+                    self.observer.clone(),
                     self.root,
                 );
                 composer.install(|composer| {
@@ -3354,6 +3671,12 @@ impl<A: Applier + 'static> Composition<A> {
             update(&mut *applier)?;
         }
         Ok(())
+    }
+}
+
+impl<A: Applier + 'static> Drop for Composition<A> {
+    fn drop(&mut self) {
+        self.observer.stop();
     }
 }
 pub fn location_key(file: &str, line: u32, column: u32) -> Key {

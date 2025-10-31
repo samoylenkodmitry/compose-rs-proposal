@@ -3,9 +3,24 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, RwLock, Weak};
 
-use crate::snapshot::{
-    advance_global_snapshot, alloc_record_id, current_snapshot, ObjectId, Snapshot, SnapshotId,
+use crate::snapshot_id_set::{SnapshotId, SnapshotIdSet};
+use crate::snapshot_v2::{
+    advance_global_snapshot, allocate_record_id, current_snapshot, AnySnapshot, GlobalSnapshot,
 };
+
+#[derive(Clone, Copy, Eq, PartialEq, Hash, Debug, Default)]
+pub(crate) struct ObjectId(pub(crate) usize);
+
+impl ObjectId {
+    pub(crate) fn new<T: ?Sized + 'static>(object: &Arc<T>) -> Self {
+        Self(Arc::as_ptr(object) as *const () as usize)
+    }
+
+    #[inline]
+    pub(crate) fn as_usize(self) -> usize {
+        self.0
+    }
+}
 
 pub(crate) struct StateRecord {
     snapshot_id: SnapshotId,
@@ -73,6 +88,10 @@ fn chain_contains(head: &Arc<StateRecord>, target: &Arc<StateRecord>) -> bool {
     false
 }
 
+fn active_snapshot() -> AnySnapshot {
+    current_snapshot().unwrap_or_else(|| AnySnapshot::Global(GlobalSnapshot::get_or_create()))
+}
+
 pub(crate) trait MutationPolicy<T>: Send + Sync {
     fn equivalent(&self, a: &T, b: &T) -> bool;
     fn merge(&self, _previous: &T, _current: &T, _applied: &T) -> Option<T> {
@@ -88,10 +107,20 @@ impl<T> MutationPolicy<T> for NeverEqual {
     }
 }
 
-pub(crate) trait StateObject: Any {
+pub trait StateObject: Any {
     fn object_id(&self) -> ObjectId;
     fn first_record(&self) -> Arc<StateRecord>;
-    fn readable_record(&self, snapshot: Arc<Snapshot>) -> Arc<StateRecord>;
+    fn readable_record(&self, snapshot_id: SnapshotId, invalid: &SnapshotIdSet)
+        -> Arc<StateRecord>;
+    fn can_merge(
+        &self,
+        _head: Arc<StateRecord>,
+        _parent_readable: Arc<StateRecord>,
+        _base_parent_id: SnapshotId,
+        _child_id: SnapshotId,
+    ) -> bool {
+        false
+    }
     fn try_merge(
         &self,
         head: Arc<StateRecord>,
@@ -106,7 +135,7 @@ pub(crate) struct SnapshotMutableState<T> {
     head: RwLock<Arc<StateRecord>>,
     policy: Arc<dyn MutationPolicy<T>>,
     id: ObjectId,
-    weak_self: Mutex<Option<Weak<dyn StateObject>>>,
+    weak_self: Mutex<Option<Weak<Self>>>,
     apply_observers: Mutex<Vec<Box<dyn Fn() + 'static>>>,
 }
 
@@ -143,9 +172,113 @@ impl<T> SnapshotMutableState<T> {
 }
 
 impl<T: Clone + 'static> SnapshotMutableState<T> {
+    fn resolve_merge(
+        &self,
+        head: Arc<StateRecord>,
+        parent_readable: Arc<StateRecord>,
+        base_parent_id: SnapshotId,
+        child_id: SnapshotId,
+        commit: bool,
+    ) -> bool {
+        assert!(
+            chain_contains(&head, &parent_readable),
+            "SnapshotMutableState::resolve_merge received parent record that is not in chain for state {:?} (child_id={}, base_parent_id={})",
+            self.id,
+            child_id,
+            base_parent_id
+        );
+
+        let mut previous: Option<Arc<StateRecord>> = None;
+        let mut fallback: Option<Arc<StateRecord>> = None;
+        let mut found_base = false;
+        let mut cursor = Some(head.clone());
+        while let Some(record) = cursor {
+            if !record.is_tombstone() {
+                fallback = Some(record.clone());
+            }
+            if !record.is_tombstone() && record.snapshot_id() <= base_parent_id {
+                found_base = true;
+                let replace = previous
+                    .as_ref()
+                    .map(|current| current.snapshot_id() < record.snapshot_id())
+                    .unwrap_or(true);
+                if replace {
+                    previous = Some(record.clone());
+                }
+            }
+            cursor = record.next();
+        }
+
+        let previous = previous.or(fallback).unwrap_or_else(|| {
+            panic!(
+                "SnapshotMutableState::resolve_merge found empty record chain (state {:?}, child_id={})",
+                self.id, child_id
+            )
+        });
+
+        if !found_base {
+            if commit {
+                return self.promote_record(child_id).is_ok();
+            }
+            return true;
+        }
+
+        assert!(
+            chain_contains(&head, &previous),
+            "SnapshotMutableState::resolve_merge located previous record that is not in chain for state {:?} (child_id={}, base_parent_id={})",
+            self.id,
+            child_id,
+            base_parent_id
+        );
+
+        let mut applied: Option<Arc<StateRecord>> = None;
+        let mut cursor = Some(head.clone());
+        while let Some(record) = cursor {
+            if !record.is_tombstone() && record.snapshot_id() == child_id {
+                applied = Some(record.clone());
+                break;
+            }
+            cursor = record.next();
+        }
+
+        let applied = applied.unwrap_or_else(|| {
+            panic!(
+                "SnapshotMutableState::resolve_merge missing child record (state {:?}, child_id={})",
+                self.id, child_id
+            )
+        });
+
+        let merged = previous.with_value(|prev: &T| {
+            parent_readable.with_value(|current: &T| {
+                applied
+                    .with_value(|applied_value: &T| self.policy.merge(prev, current, applied_value))
+            })
+        });
+
+        if let Some(merged) = merged {
+            if commit {
+                let new_id = allocate_record_id();
+                let mut head_guard = self.head.write().unwrap();
+                let current_head = head_guard.clone();
+                let new_head = StateRecord::new(new_id, merged, Some(current_head));
+                *head_guard = new_head.clone();
+                drop(head_guard);
+                advance_global_snapshot(new_id);
+                self.notify_applied();
+                self.assert_chain_integrity("resolve_merge(commit)", Some(child_id));
+            }
+            true
+        } else {
+            false
+        }
+    }
+
     pub(crate) fn new_in_arc(initial: T, policy: Arc<dyn MutationPolicy<T>>) -> Arc<Self> {
-        let record_id = alloc_record_id();
-        let head = StateRecord::new(record_id, initial, None);
+        // Use PreexistingSnapshotId (1) for the initial state record.
+        // This makes the initial state visible to all snapshots, as it's considered
+        // to have existed before any snapshot was taken.
+        const PREEXISTING_SNAPSHOT_ID: SnapshotId = 1;
+        let head = StateRecord::new(PREEXISTING_SNAPSHOT_ID, initial, None);
 
         let mut state = Arc::new(Self {
             head: RwLock::new(head),
@@ -158,11 +291,9 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
         let id = ObjectId::new(&state);
         Arc::get_mut(&mut state).expect("fresh Arc").id = id;
 
-        let trait_object: Arc<dyn StateObject> = state.clone();
-        *state.weak_self.lock().unwrap() = Some(Arc::downgrade(&trait_object));
-        drop(trait_object);
+        *state.weak_self.lock().unwrap() = Some(Arc::downgrade(&state));
 
-        advance_global_snapshot(record_id);
+        // No need to advance the global snapshot for initial state creation
 
         state
     }
@@ -184,7 +315,7 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
     }
 
     pub(crate) fn get(&self) -> T {
-        let snapshot = current_snapshot();
+        let snapshot = active_snapshot();
         if let Some(state) = self
             .weak_self
             .lock()
@@ -192,15 +323,46 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
             .as_ref()
             .and_then(|weak| weak.upgrade())
         {
-            snapshot.record_read(state);
+            snapshot.record_read(&*state);
         }
 
-        let record = self.readable_record(snapshot.clone());
-        record.with_value(|value: &T| value.clone())
+        let snapshot_id = snapshot.snapshot_id();
+        let invalid = snapshot.invalid();
+
+        // First attempt to read
+        if let Some(record) = self.try_readable_record(snapshot_id, &invalid) {
+            return record.with_value(|value: &T| value.clone());
+        }
+
+        // Retry with fresh snapshot in case global snapshot was advanced
+        let fresh_snapshot = active_snapshot();
+        let fresh_id = fresh_snapshot.snapshot_id();
+        let fresh_invalid = fresh_snapshot.invalid();
+
+        if let Some(record) = self.try_readable_record(fresh_id, &fresh_invalid) {
+            return record.with_value(|value: &T| value.clone());
+        }
+
+        // Debug: print the record chain to understand what's available
+        let head = self.first_record();
+        let mut chain_ids = Vec::new();
+        let mut cursor = Some(head);
+        while let Some(record) = cursor {
+            chain_ids.push((record.snapshot_id(), record.is_tombstone()));
+            cursor = record.next();
+        }
+
+        // If still null, this is an error condition
+        panic!(
+            "Reading a state that was created after the snapshot was taken or in a snapshot that has not yet been applied\n\
+             state={:?}, snapshot_id={}, fresh_snapshot_id={}, fresh_invalid={:?}\n\
+             record_chain={:?}",
+            self.id, snapshot_id, fresh_id, fresh_invalid, chain_ids
+        );
     }
 
     pub(crate) fn set(&self, new_value: T) {
-        let snapshot = current_snapshot();
+        let snapshot = active_snapshot();
         if let Some(state) = self
             .weak_self
             .lock()
@@ -208,83 +370,70 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
             .as_ref()
             .and_then(|weak| weak.upgrade())
         {
-            snapshot.record_write(state);
+            let trait_object: Arc<dyn StateObject> = state.clone();
+            snapshot.record_write(trait_object);
         }
         mark_update_write(self.id);
 
         let mut head_guard = self.head.write().unwrap();
         let head = head_guard.clone();
 
-        if snapshot.parent.is_some() {
-            if let Some(parent) = snapshot.parent.as_ref().and_then(|weak| weak.upgrade()) {
-                let pending = parent.pending_children();
-                assert!(
-                    pending.contains(&snapshot.id()),
-                    "SnapshotMutableState::set detected child snapshot {} missing from parent's pending set {:?} for state {:?}",
-                    snapshot.id(),
-                    pending,
-                    self.id
-                );
-            } else {
-                panic!(
-                    "SnapshotMutableState::set could not upgrade parent for child snapshot {} (state {:?})",
-                    snapshot.id(),
-                    self.id
-                );
-            }
+        let snapshot_id = snapshot.snapshot_id();
 
-            assert!(
-                head.snapshot_id() <= snapshot.id(),
-                "SnapshotMutableState::set found head record with newer id {} than active snapshot {} for state {:?}",
-                head.snapshot_id(),
-                snapshot.id(),
-                self.id
-            );
-
-            if head.snapshot_id() == snapshot.id() {
-                let equivalent =
-                    head.with_value(|current: &T| self.policy.equivalent(current, &new_value));
-                if !equivalent {
-                    head.replace_value(new_value);
+        match &snapshot {
+            AnySnapshot::Global(global) => {
+                if global.has_pending_children() {
+                    panic!(
+                        "SnapshotMutableState::set attempted global write while pending children {:?} exist (state {:?}, snapshot_id={})",
+                        global.pending_children(),
+                        self.id,
+                        snapshot_id
+                    );
                 }
+
+                let new_id = allocate_record_id();
+                let record = StateRecord::new(new_id, new_value, Some(head));
+                *head_guard = record.clone();
                 drop(head_guard);
-                self.assert_chain_integrity("set(child-overwrite)", Some(snapshot.id()));
-                return;
-            }
+                advance_global_snapshot(new_id);
+                self.assert_chain_integrity("set(global-push)", Some(snapshot_id));
 
-            let record = StateRecord::new(snapshot.id(), new_value, Some(head));
-            *head_guard = record;
-            drop(head_guard);
-            self.assert_chain_integrity("set(child-push)", Some(snapshot.id()));
-            return;
-        }
-
-        if snapshot.has_pending_children() {
-            panic!(
-                "SnapshotMutableState::set attempted global write while pending children {:?} exist (state {:?}, snapshot_id={})",
-                snapshot.pending_children(),
-                self.id,
-                snapshot.id()
-            );
-        }
-
-        let new_id = alloc_record_id();
-        let record = StateRecord::new(new_id, new_value, Some(head));
-        *head_guard = record.clone();
-        drop(head_guard);
-        advance_global_snapshot(new_id);
-        self.assert_chain_integrity("set(global-push)", Some(snapshot.id()));
-
-        if snapshot.parent.is_none() && !snapshot.has_pending_children() {
-            let mut cursor = record.next();
-            while let Some(node) = cursor {
-                if !node.is_tombstone() {
-                    node.clear_value();
-                    node.set_tombstone(true);
+                if !global.has_pending_children() {
+                    let mut cursor = record.next();
+                    while let Some(node) = cursor {
+                        if !node.is_tombstone() {
+                            node.clear_value();
+                            node.set_tombstone(true);
+                        }
+                        cursor = node.next();
+                    }
+                    self.assert_chain_integrity("set(global-tombstone)", Some(snapshot_id));
                 }
-                cursor = node.next();
             }
-            self.assert_chain_integrity("set(global-tombstone)", Some(snapshot.id()));
+            AnySnapshot::Mutable(_)
+            | AnySnapshot::NestedMutable(_)
+            | AnySnapshot::TransparentMutable(_) => {
+                if head.snapshot_id() == snapshot_id {
+                    let equivalent =
+                        head.with_value(|current: &T| self.policy.equivalent(current, &new_value));
+                    if !equivalent {
+                        head.replace_value(new_value);
+                    }
+                    drop(head_guard);
+                    self.assert_chain_integrity("set(child-overwrite)", Some(snapshot_id));
+                } else {
+                    let record = StateRecord::new(snapshot_id, new_value, Some(head));
+                    *head_guard = record;
+                    drop(head_guard);
+                    self.assert_chain_integrity("set(child-push)", Some(snapshot_id));
+                }
+            }
+            AnySnapshot::Readonly(_)
+            | AnySnapshot::NestedReadonly(_)
+            | AnySnapshot::TransparentReadonly(_) => {
+                drop(head_guard);
+                panic!("Cannot write to a read-only snapshot");
+            }
         }
 
         // Retain the prior record chain so concurrent readers never observe freed nodes.
@@ -351,6 +500,37 @@ fn mark_update_write(id: ObjectId) {
     });
 }
 
+impl<T: Clone + 'static> SnapshotMutableState<T> {
+    /// Try to find a readable record, returning None if no valid record exists.
+    fn try_readable_record(
+        &self,
+        snapshot_id: SnapshotId,
+        invalid: &SnapshotIdSet,
+    ) -> Option<Arc<StateRecord>> {
+        let mut best: Option<Arc<StateRecord>> = None;
+        let mut cursor = Some(self.first_record());
+        while let Some(record) = cursor {
+            let id = record.snapshot_id();
+            // Skip tombstones and invalid snapshots (id == 0 is like INVALID_SNAPSHOT in Kotlin)
+            if !record.is_tombstone()
+                && id > 0
+                && id <= snapshot_id
+                && (id == snapshot_id || !invalid.get(id))
+            {
+                let replace = best
+                    .as_ref()
+                    .map(|current| current.snapshot_id() < id)
+                    .unwrap_or(true);
+                if replace {
+                    best = Some(record.clone());
+                }
+            }
+            cursor = record.next();
+        }
+        best
+    }
+}
+
 impl<T: Clone + 'static> StateObject for SnapshotMutableState<T> {
     fn object_id(&self) -> ObjectId {
         self.id
@@ -360,28 +540,28 @@ impl<T: Clone + 'static> StateObject for SnapshotMutableState<T> {
         self.head.read().unwrap().clone()
     }
 
-    fn readable_record(&self, snapshot: Arc<Snapshot>) -> Arc<StateRecord> {
-        let mut best: Option<Arc<StateRecord>> = None;
-        let mut cursor = Some(self.first_record());
-        while let Some(record) = cursor {
-            if !record.is_tombstone() && snapshot.is_valid(record.snapshot_id()) {
-                let replace = best
-                    .as_ref()
-                    .map(|current| current.snapshot_id() < record.snapshot_id())
-                    .unwrap_or(true);
-                if replace {
-                    best = Some(record.clone());
-                }
-            }
-            cursor = record.next();
-        }
-        best.unwrap_or_else(|| {
-            panic!(
-                "SnapshotMutableState::readable_record returned null (state={:?}, snapshot_id={})",
-                self.id,
-                snapshot.id()
-            )
-        })
+    fn readable_record(
+        &self,
+        snapshot_id: SnapshotId,
+        invalid: &SnapshotIdSet,
+    ) -> Arc<StateRecord> {
+        self.try_readable_record(snapshot_id, invalid)
+            .unwrap_or_else(|| {
+                panic!(
+                    "SnapshotMutableState::readable_record returned null (state={:?}, snapshot_id={})",
+                    self.id, snapshot_id
+                )
+            })
+    }
+
+    fn can_merge(
+        &self,
+        head: Arc<StateRecord>,
+        parent_readable: Arc<StateRecord>,
+        base_parent_id: SnapshotId,
+        child_id: SnapshotId,
+    ) -> bool {
+        self.resolve_merge(head, parent_readable, base_parent_id, child_id, false)
     }
 
     fn try_merge(
@@ -391,84 +571,7 @@ impl<T: Clone + 'static> StateObject for SnapshotMutableState<T> {
         base_parent_id: SnapshotId,
         child_id: SnapshotId,
     ) -> bool {
-        assert!(
-            chain_contains(&head, &parent_readable),
-            "SnapshotMutableState::try_merge received parent record that is not in chain for state {:?} (child_id={}, base_parent_id={})",
-            self.id,
-            child_id,
-            base_parent_id
-        );
-
-        let mut previous: Option<Arc<StateRecord>> = None;
-        let mut cursor = Some(head.clone());
-        while let Some(record) = cursor {
-            if !record.is_tombstone() && record.snapshot_id() <= base_parent_id {
-                let replace = previous
-                    .as_ref()
-                    .map(|current| current.snapshot_id() < record.snapshot_id())
-                    .unwrap_or(true);
-                if replace {
-                    previous = Some(record.clone());
-                }
-            }
-            cursor = record.next();
-        }
-
-        let previous = previous.unwrap_or_else(|| {
-            panic!(
-                "SnapshotMutableState::try_merge missing base record (state {:?}, base_parent_id={}, child_id={})",
-                self.id,
-                base_parent_id,
-                child_id
-            )
-        });
-
-        assert!(
-            chain_contains(&head, &previous),
-            "SnapshotMutableState::try_merge located previous record that is not in chain for state {:?} (child_id={}, base_parent_id={})",
-            self.id,
-            child_id,
-            base_parent_id
-        );
-
-        let mut applied: Option<Arc<StateRecord>> = None;
-        let mut cursor = Some(head.clone());
-        while let Some(record) = cursor {
-            if !record.is_tombstone() && record.snapshot_id() == child_id {
-                applied = Some(record.clone());
-                break;
-            }
-            cursor = record.next();
-        }
-
-        let applied = applied.unwrap_or_else(|| {
-            panic!(
-                "SnapshotMutableState::try_merge missing child record (state {:?}, child_id={})",
-                self.id, child_id
-            )
-        });
-
-        let merged = previous.with_value(|prev: &T| {
-            parent_readable.with_value(|current: &T| {
-                applied
-                    .with_value(|applied_value: &T| self.policy.merge(prev, current, applied_value))
-            })
-        });
-
-        if let Some(merged) = merged {
-            let new_id = alloc_record_id();
-            let mut head_guard = self.head.write().unwrap();
-            let current_head = head_guard.clone();
-            let new_head = StateRecord::new(new_id, merged, Some(current_head));
-            *head_guard = new_head.clone();
-            drop(head_guard);
-            advance_global_snapshot(new_id);
-            self.notify_applied();
-            self.assert_chain_integrity("try_merge", Some(child_id));
-            true
-        } else {
-            false
-        }
+        self.resolve_merge(head, parent_readable, base_parent_id, child_id, true)
     }
 
     fn promote_record(&self, child_id: SnapshotId) -> Result<(), &'static str> {
@@ -477,7 +580,7 @@ impl<T: Clone + 'static> StateObject for SnapshotMutableState<T> {
         while let Some(record) = cursor {
             if record.snapshot_id() == child_id {
                 let cloned = record.with_value(|value: &T| value.clone());
-                let new_id = alloc_record_id();
+                let new_id = allocate_record_id();
                 let mut head_guard = self.head.write().unwrap();
                 let current_head = head_guard.clone();
                 let new_head = StateRecord::new(new_id, cloned, Some(current_head));

@@ -1,7 +1,8 @@
 use super::*;
 use crate as compose_core;
-use crate::snapshot::take_mutable_snapshot;
+use crate::snapshot_v2::take_mutable_snapshot;
 use crate::state::{MutationPolicy, SnapshotMutableState};
+use crate::SnapshotStateObserver;
 use compose_macros::composable;
 use compose_ui::{Column, ColumnSpec, Modifier, Row, RowSpec, Text};
 use std::cell::{Cell, RefCell};
@@ -120,7 +121,8 @@ fn setup_composer(
         applier,
         MemoryApplier::new(),
     )));
-    let composer = Composer::new(Rc::clone(&slots_host), applier_host.clone(), handle, root);
+    let observer = SnapshotStateObserver::new(|callback| callback());
+    let composer = Composer::new(Rc::clone(&slots_host), applier_host.clone(), handle, observer, root);
     (composer, slots_host, applier_host)
 }
 
@@ -221,6 +223,105 @@ fn mutable_state_reads_during_update_return_previous_value() {
     assert_eq!(before.get(), 0);
     assert_eq!(after.get(), 0);
     assert_eq!(state.get(), 7);
+}
+
+#[test]
+fn snapshot_state_list_basic_operations() {
+    let (runtime_handle, _runtime) = runtime_handle();
+    let list = SnapshotStateList::with_runtime([1, 2], runtime_handle.clone());
+
+    assert_eq!(list.len(), 2);
+    assert_eq!(list.first(), Some(1));
+    assert_eq!(list.get(1), 2);
+
+    list.push(3);
+    list.insert(1, 9);
+    assert_eq!(list.to_vec(), vec![1, 9, 2, 3]);
+
+    let previous = list.set(2, 7);
+    assert_eq!(previous, 2);
+    assert_eq!(list.to_vec(), vec![1, 9, 7, 3]);
+
+    let removed = list.remove(1);
+    assert_eq!(removed, 9);
+    assert_eq!(list.to_vec(), vec![1, 7, 3]);
+
+    let popped = list.pop();
+    assert_eq!(popped, Some(3));
+
+    list.extend([4, 5]);
+    assert_eq!(list.to_vec(), vec![1, 7, 4, 5]);
+
+    list.retain(|value| *value % 2 == 1);
+    assert_eq!(list.to_vec(), vec![1, 7, 5]);
+
+    list.clear();
+    assert!(list.is_empty());
+}
+
+#[test]
+fn snapshot_state_list_commits_snapshot_mutations() {
+    let (runtime_handle, _runtime) = runtime_handle();
+    let list = SnapshotStateList::with_runtime([10], runtime_handle.clone());
+
+    let snapshot = take_mutable_snapshot(None, None);
+    snapshot.enter(|| {
+        list.insert(0, 5);
+        list.push(15);
+    });
+    snapshot.apply().check();
+
+    assert_eq!(list.to_vec(), vec![5, 10, 15]);
+}
+
+#[test]
+fn snapshot_state_map_basic_operations() {
+    let (runtime_handle, _runtime) = runtime_handle();
+    let map = SnapshotStateMap::with_runtime([(1, 10), (2, 20)], runtime_handle.clone());
+
+    assert_eq!(map.len(), 2);
+    assert!(map.contains_key(&1));
+    assert_eq!(map.get(&2), Some(20));
+
+    let previous = map.insert(2, 25);
+    assert_eq!(previous, Some(20));
+    assert_eq!(map.get(&2), Some(25));
+
+    map.extend([(3, 30)]);
+    assert_eq!(map.to_hash_map().get(&3), Some(&30));
+
+    let removed = map.remove(&1);
+    assert_eq!(removed, Some(10));
+    assert!(!map.contains_key(&1));
+
+    map.retain(|_, value| {
+        *value += 1;
+        *value % 2 == 0
+    });
+    let snapshot = map.to_hash_map();
+    assert_eq!(snapshot.len(), 1);
+    assert_eq!(snapshot.get(&2), Some(&26));
+
+    map.clear();
+    assert!(map.is_empty());
+}
+
+#[test]
+fn snapshot_state_map_commits_snapshot_mutations() {
+    let (runtime_handle, _runtime) = runtime_handle();
+    let map = SnapshotStateMap::with_runtime([(1, 1)], runtime_handle.clone());
+
+    let snapshot = take_mutable_snapshot(None, None);
+    snapshot.enter(|| {
+        map.insert(2, 2);
+        map.insert(1, 3);
+    });
+    snapshot.apply().check();
+
+    let snapshot = map.to_hash_map();
+    assert_eq!(snapshot.len(), 2);
+    assert_eq!(snapshot.get(&1), Some(&3));
+    assert_eq!(snapshot.get(&2), Some(&2));
 }
 
 #[test]
@@ -2313,7 +2414,7 @@ fn snapshot_state_child_isolation_and_apply() {
 
     assert_eq!(state.get(), 0);
 
-    child.apply().expect("child applies cleanly");
+    child.apply().check();
     assert_eq!(state.get(), 2);
 }
 
@@ -2327,8 +2428,8 @@ fn snapshot_state_concurrent_children_merge() {
     first.enter(|| state.set(1));
     second.enter(|| state.set(2));
 
-    first.apply().expect("first apply succeeds");
-    second.apply().expect("second apply merges via policy");
+    first.apply().check();
+    second.apply().check();
     assert_eq!(state.get(), 3);
 }
 
@@ -2343,9 +2444,7 @@ fn snapshot_state_child_apply_after_parent_history() {
     let child = take_mutable_snapshot(None, None);
     child.enter(|| state.set(42));
 
-    child
-        .apply()
-        .expect("child snapshot should apply after parent history");
+    child.apply().check();
     assert_eq!(state.get(), 42);
 }
 

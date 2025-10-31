@@ -12,7 +12,7 @@ use std::{
 
 use compose_core::{
     Applier, ApplierHost, Composer, ConcreteApplierHost, MemoryApplier, Node, NodeError, NodeId,
-    Phase, RuntimeHandle, SlotTable, SlotsHost,
+    Phase, RuntimeHandle, SlotTable, SlotsHost, SnapshotStateObserver,
 };
 
 #[cfg(test)]
@@ -375,10 +375,12 @@ impl LayoutBuilder {
         self.slots.reset();
         let slots_host = Rc::new(SlotsHost::new(std::mem::take(&mut self.slots)));
         let applier_host: Rc<dyn ApplierHost> = self.applier.clone();
+        let observer = SnapshotStateObserver::new(|callback| callback());
         let composer = Composer::new(
             Rc::clone(&slots_host),
             applier_host,
             runtime_handle.clone(),
+            observer,
             Some(node_id),
         );
         composer.enter_phase(Phase::Measure);
