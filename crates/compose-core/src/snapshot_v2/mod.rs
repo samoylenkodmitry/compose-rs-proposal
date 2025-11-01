@@ -470,14 +470,14 @@ pub(crate) fn clear_last_writes() {
 ///
 /// Mirrors Kotlin's `checkAndOverwriteUnusedRecordsLocked()`. This method:
 /// 1. Iterates through all state objects in `EXTRA_STATE_OBJECTS`
-/// 2. Calls `overwrite_unused_records_locked()` on each
+/// 2. Calls `overwrite_unused_records()` on each
 /// 3. Removes states that no longer need tracking (down to 1 or fewer records)
 /// 4. Automatically cleans up dead weak references
 pub(crate) fn check_and_overwrite_unused_records_locked() {
     EXTRA_STATE_OBJECTS.with(|cell| {
         cell.borrow_mut().remove_if(|state| {
             // Returns true to keep, false to remove
-            crate::state::overwrite_unused_records_locked(state)
+            state.overwrite_unused_records()
         });
     });
 }
@@ -485,10 +485,10 @@ pub(crate) fn check_and_overwrite_unused_records_locked() {
 /// Process a state object for unused record cleanup, tracking it if needed.
 ///
 /// Mirrors Kotlin's `processForUnusedRecordsLocked()`. After a state is modified:
-/// 1. Calls `overwrite_unused_records_locked()` to clean up old records
+/// 1. Calls `overwrite_unused_records()` to clean up old records
 /// 2. If the state has multiple records, adds it to `EXTRA_STATE_OBJECTS` for future cleanup
 pub(crate) fn process_for_unused_records_locked(state: &Arc<dyn crate::state::StateObject>) {
-    if crate::state::overwrite_unused_records_locked(&**state) {
+    if state.overwrite_unused_records() {
         // State has multiple records - track it for future cleanup
         EXTRA_STATE_OBJECTS.with(|cell| {
             cell.borrow_mut().add_trait_object(state);

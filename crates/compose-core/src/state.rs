@@ -102,6 +102,21 @@ impl StateRecord {
     pub(crate) fn clear_for_reuse(&self) {
         self.clear_value();
     }
+
+    /// Copies the value from the source record into this record.
+    ///
+    /// This is used during record reuse to copy valid data from a readable record
+    /// into a reused record, and during cleanup to preserve data in records being
+    /// marked as INVALID_SNAPSHOT.
+    ///
+    /// # Type Safety
+    /// The caller must ensure both records contain values of type `T`.
+    /// Panics if the source record doesn't contain a value of type `T`.
+    pub(crate) fn assign_value<T: Any + Clone>(&self, source: &StateRecord) {
+        let cloned_value = source.with_value(|value: &T| value.clone());
+        self.replace_value(cloned_value);
+    }
+
 }
 
 #[inline]
@@ -179,6 +194,9 @@ where
 ///
 /// The reuse limit is `lowest_pinned_snapshot - 1`, meaning any record with a snapshot ID
 /// at or below this value cannot be selected by any currently open snapshot.
+///
+/// Note: PREEXISTING records (snapshot_id=1) are never reused to maintain the ability
+/// for all snapshots to read the initial state.
 pub(crate) fn used_locked(head: &Arc<StateRecord>) -> Option<Arc<StateRecord>> {
     let mut current = Some(Arc::clone(head));
     let mut valid_record: Option<Arc<StateRecord>> = None;
@@ -192,6 +210,12 @@ pub(crate) fn used_locked(head: &Arc<StateRecord>) -> Option<Arc<StateRecord>> {
 
     while let Some(record) = current {
         let current_id = record.snapshot_id();
+
+        // Never reuse PREEXISTING records - they must always be available as a fallback
+        if current_id == PREEXISTING_SNAPSHOT_ID {
+            current = record.next();
+            continue;
+        }
 
         // Fast path: records marked INVALID_SNAPSHOT can be reused immediately
         if current_id == INVALID_SNAPSHOT_ID {
@@ -263,13 +287,18 @@ pub(crate) fn new_overwritable_record_locked<T: Any + Clone>(
 /// This function implements Kotlin's `overwriteUnusedRecordsLocked` to reclaim memory by:
 /// 1. Finding records below the reuse limit (records invisible to all open snapshots)
 /// 2. Keeping the highest record below the reuse limit (so lowest pinned snapshot can see it)
-/// 3. Marking older obscured records as INVALID_SNAPSHOT and overwriting their values
+/// 3. Marking older obscured records as INVALID_SNAPSHOT and copying valid data into them
+///
+/// The valid data is copied from a "young" record (above reuse limit) to ensure that if
+/// an invalidated record is somehow accessed, it contains current valid data rather than
+/// cleared/garbage values.
 ///
 /// Returns `true` if the state has multiple retained records and should stay in extraStateObjects,
 /// `false` if it can be removed from tracking.
-pub(crate) fn overwrite_unused_records_locked(state: &dyn StateObject) -> bool {
+pub(crate) fn overwrite_unused_records_locked<T: Any + Clone>(state: &dyn StateObject) -> bool {
     let head = state.first_record();
-    let mut current = Some(head);
+    let mut current = Some(Arc::clone(&head));
+    let mut overwrite_record: Option<Arc<StateRecord>> = None;
     let mut valid_record: Option<Arc<StateRecord>> = None;
 
     // Calculate reuse limit: records below this ID are invisible to all open snapshots
@@ -301,9 +330,17 @@ pub(crate) fn overwrite_unused_records_locked(state: &dyn StateObject) -> bool {
                         to_overwrite
                     };
 
-                    // Mark the old record as invalid and clear its value to free memory
+                    // Lazily find a young record to copy data from
+                    if overwrite_record.is_none() {
+                        // Find the youngest record, or first record >= reuseLimit
+                        overwrite_record = Some(find_youngest_or(&head, |r| {
+                            r.snapshot_id() >= reuse_limit
+                        }));
+                    }
+
+                    // Mark the old record as invalid and copy valid data into it
                     record_to_overwrite.set_snapshot_id(INVALID_SNAPSHOT_ID);
-                    record_to_overwrite.clear_for_reuse();
+                    record_to_overwrite.assign_value::<T>(overwrite_record.as_ref().unwrap());
                 }
             } else {
                 // Record is above reuse limit - it's still visible and must be kept
@@ -362,6 +399,14 @@ pub trait StateObject: Any {
         Err("StateObject does not support merged record commits")
     }
     fn promote_record(&self, child_id: SnapshotId) -> Result<(), &'static str>;
+
+    /// Overwrites unused records in this state's record chain with valid data.
+    ///
+    /// Returns `true` if the state has multiple retained records and should stay in extraStateObjects,
+    /// `false` if it can be removed from tracking.
+    fn overwrite_unused_records(&self) -> bool {
+        false // Default implementation for states that don't support cleanup
+    }
 
     /// Downcast to Any for testing/debugging purposes.
     fn as_any(&self) -> &dyn Any;
@@ -431,8 +476,8 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
                 let source = refreshed.unwrap_or_else(|| current_head.clone());
 
                 // Create a new record
-                // Note: Record reuse disabled due to immutable `next` pointers
-                // used_locked() infrastructure kept for cleanup phase (Step 4)
+                // Record reuse is NOT used here to preserve history for conflict detection
+                // Reuse happens during cleanup (overwrite_unused_records_locked)
                 let cloned_value = source.with_value(|value: &T| value.clone());
                 let new_head = StateRecord::new(snapshot_id, cloned_value, Some(current_head));
 
@@ -464,8 +509,8 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
         }
 
         // Create a new record
-        // Note: Record reuse disabled due to immutable `next` pointers
-        // used_locked() infrastructure kept for cleanup phase (Step 4)
+        // Record reuse is NOT used here to preserve history for conflict detection
+        // Reuse happens during cleanup (overwrite_unused_records_locked)
         let cloned_value = refreshed.with_value(|value: &T| value.clone());
         let new_head = StateRecord::new(snapshot_id, cloned_value, Some(current_head));
 
@@ -799,6 +844,10 @@ impl<T: Clone + 'static> StateObject for SnapshotMutableState<T> {
         Ok(new_id)
     }
 
+    fn overwrite_unused_records(&self) -> bool {
+        overwrite_unused_records_locked::<T>(self)
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -984,7 +1033,7 @@ mod tests {
         // This ensures PREEXISTING won't be overwritten
         let _pin = crate::snapshot_pinning::track_pinning(1, &SnapshotIdSet::EMPTY);
 
-        let should_retain = overwrite_unused_records_locked(&*state);
+        let should_retain = state.overwrite_unused_records();
 
         // With both records above/at reuse limit, we have 2 retained
         assert!(should_retain, "Should retain multiple records when none are old enough");
@@ -1025,7 +1074,7 @@ mod tests {
         // Pin at 1000 so all three records (100, 200, 300) are below reuse limit
         let _pin = crate::snapshot_pinning::track_pinning(1000, &SnapshotIdSet::EMPTY);
 
-        let result = overwrite_unused_records_locked(&test_state);
+        let result = overwrite_unused_records_locked::<i32>(&test_state);
 
         // Should keep highest (300), mark others invalid
         assert_eq!(rec3.snapshot_id(), 300);
@@ -1046,7 +1095,7 @@ mod tests {
         let head = state.first_record();
         head.set_next(None);
 
-        let should_retain = overwrite_unused_records_locked(&*state);
+        let should_retain = state.overwrite_unused_records();
 
         // With only one record, should return false
         assert!(!should_retain, "Single record should return false");
@@ -1069,7 +1118,7 @@ mod tests {
         });
 
         let _pin = crate::snapshot_pinning::track_pinning(100, &SnapshotIdSet::EMPTY);
-        overwrite_unused_records_locked(&*state);
+        state.overwrite_unused_records();
 
         // The invalidated record should have its value cleared
         assert_eq!(old_rec1.snapshot_id(), INVALID_SNAPSHOT_ID);
@@ -1092,7 +1141,7 @@ mod tests {
         // Pin snapshot 40 so reuse limit is ~40, making 2 and 5 old but 50 recent
         let _pin = crate::snapshot_pinning::track_pinning(40, &SnapshotIdSet::EMPTY);
 
-        let should_retain = overwrite_unused_records_locked(&*state);
+        let should_retain = state.overwrite_unused_records();
         assert!(should_retain);
 
         // rec50 is above reuse limit - should stay valid
@@ -1117,5 +1166,127 @@ mod tests {
         let result = readable_record_for(&head, 7, &invalid);
         assert!(result.is_some());
         assert_eq!(result.unwrap().snapshot_id(), PREEXISTING_SNAPSHOT_ID);
+    }
+
+    // ========== Tests for assign_value() ==========
+
+    #[test]
+    fn test_assign_value_copies_int() {
+        let source = StateRecord::new(10, 42i32, None);
+        let target = StateRecord::new(20, 0i32, None);
+
+        target.assign_value::<i32>(&source);
+
+        // Verify the value was copied
+        target.with_value(|val: &i32| {
+            assert_eq!(*val, 42);
+        });
+
+        // Verify source is unchanged
+        source.with_value(|val: &i32| {
+            assert_eq!(*val, 42);
+        });
+
+        // Verify snapshot IDs are unchanged
+        assert_eq!(source.snapshot_id(), 10);
+        assert_eq!(target.snapshot_id(), 20);
+    }
+
+    #[test]
+    fn test_assign_value_copies_string() {
+        let source = StateRecord::new(10, "hello".to_string(), None);
+        let target = StateRecord::new(20, "world".to_string(), None);
+
+        target.assign_value::<String>(&source);
+
+        // Verify the value was copied
+        target.with_value(|val: &String| {
+            assert_eq!(val, "hello");
+        });
+
+        // Verify source is unchanged
+        source.with_value(|val: &String| {
+            assert_eq!(val, "hello");
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "StateRecord value missing or wrong type")]
+    fn test_assign_value_copies_from_cleared_source_panics() {
+        let source = StateRecord::new(10, 42i32, None);
+        let target = StateRecord::new(20, 0i32, None);
+
+        // Clear the source value
+        source.clear_value();
+
+        // Should panic because source has no value
+        target.assign_value::<i32>(&source);
+    }
+
+    #[test]
+    fn test_assign_value_overwrites_existing_value() {
+        let source = StateRecord::new(10, 100i32, None);
+        let target = StateRecord::new(20, 999i32, None);
+
+        // Verify target has initial value
+        target.with_value(|val: &i32| {
+            assert_eq!(*val, 999);
+        });
+
+        // Assign from source
+        target.assign_value::<i32>(&source);
+
+        // Verify target now has source's value
+        target.with_value(|val: &i32| {
+            assert_eq!(*val, 100);
+        });
+    }
+
+    #[test]
+    fn test_assign_value_with_custom_type() {
+        #[derive(Clone, PartialEq, Debug)]
+        struct Point {
+            x: f64,
+            y: f64,
+        }
+
+        let source = StateRecord::new(10, Point { x: 1.5, y: 2.5 }, None);
+        let target = StateRecord::new(20, Point { x: 0.0, y: 0.0 }, None);
+
+        target.assign_value::<Point>(&source);
+
+        target.with_value(|val: &Point| {
+            assert_eq!(val, &Point { x: 1.5, y: 2.5 });
+        });
+    }
+
+    #[test]
+    fn test_assign_value_self_assignment() {
+        let record = StateRecord::new(10, 42i32, None);
+
+        // Self-assignment should work (though not useful in practice)
+        record.assign_value::<i32>(&record);
+
+        record.with_value(|val: &i32| {
+            assert_eq!(*val, 42);
+        });
+    }
+
+    #[test]
+    fn test_assign_value_with_vec() {
+        let source = StateRecord::new(10, vec![1, 2, 3, 4, 5], None);
+        let target = StateRecord::new(20, Vec::<i32>::new(), None);
+
+        target.assign_value::<Vec<i32>>(&source);
+
+        target.with_value(|val: &Vec<i32>| {
+            assert_eq!(val, &vec![1, 2, 3, 4, 5]);
+        });
+
+        // Verify it's a deep copy (modifying source won't affect target)
+        source.replace_value(vec![10, 20]);
+        target.with_value(|val: &Vec<i32>| {
+            assert_eq!(val, &vec![1, 2, 3, 4, 5]);
+        });
     }
 }

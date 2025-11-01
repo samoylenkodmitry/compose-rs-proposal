@@ -1,51 +1,61 @@
 # Snapshot V2 Implementation Status
 
-## Current Status — Phase 2A (Memory Management Infrastructure) Complete
+## Current Status — Phase 2B (Record Value Preservation) In Progress
 
-- **State:** ✅ Phase 1 complete. Phase 2A infrastructure complete (cleanup functions implemented, integration pending). Working toward full Kotlin parity.
-- **Latest focus:** Completed memory management infrastructure: SnapshotDoubleIndexHeap, SnapshotWeakSet, overwrite_unused_records_locked, and cleanup integration points. Cleanup temporarily disabled pending timing refinement.
+- **State:** ✅ Phase 1 complete. Phase 2A infrastructure complete. Phase 2B partially complete (value assignment implemented). Working toward full Kotlin parity.
+- **Latest focus:** Implemented `assign_value()` method for type-safe value copying, updated `overwrite_unused_records_locked()` to preserve valid data in invalidated records, protected PREEXISTING records from reuse, documented why record reuse in `writable()` must remain disabled for conflict detection.
 
 ### Quick Summary
 
 | Metric | Value |
 | --- | --- |
-| **Integration** | Phase 2A complete – infrastructure ready |
+| **Integration** | Phase 2A complete; Phase 2B value preservation complete |
 | **Conflict handling** | Three-way merge path implemented ✅; optimistic precompute pending |
-| **Tests (compose-core)** | `cargo test -p compose-core` → ✅ 236 passed |
-| **Key recent work** | SnapshotWeakSet, cleanup infrastructure (check_and_overwrite_unused_records_locked, process_for_unused_records_locked), thread-local extraStateObjects |
-| **Next milestone** | Phase 2B – record reuse in writable(), then Phase 3 optimistic merges |
+| **Tests (compose-core)** | `cargo test -p compose-core` → ✅ 243 passed |
+| **Key recent work** | assign_value() method (7 tests), overwrite_unused_records() trait method, value preservation in cleanup, PREEXISTING protection |
+| **Next milestone** | Phase 2B – enable cleanup integration, then Phase 3 optimistic merges |
 
 ---
 
 ## Recent Progress
 
-### Phase 2A Memory Management Infrastructure (Complete - 236 tests passing ✅)
+### Phase 2B Record Value Preservation (Partially Complete - 243 tests passing ✅)
+
+✅ **Completed:**
+- **Value Assignment (`assign_value`)**: Type-safe value copying between records (7 tests)
+  - Generic method on StateRecord for copying values with type parameter
+  - Used in cleanup operations to preserve data in invalidated records
+  - Works with any Clone type through generic parameter
+- **Improved Record Cleanup**: `overwrite_unused_records_locked()` now preserves values (5 tests passing)
+  - Copies data from young valid records before marking old records INVALID
+  - Ensures invalidated records contain current valid data, not cleared/garbage values
+  - Mirrors Kotlin's `assign(overwriteRecord)` behavior
+- **StateObject Trait Method**: Added `overwrite_unused_records()` to trait
+  - Allows cleanup with full type knowledge via dynamic dispatch
+  - Implemented for SnapshotMutableState<T>, returns bool for tracking
+- **PREEXISTING Protection**: Enhanced `used_locked()` to never reuse PREEXISTING records
+  - Ensures all snapshots can fall back to initial state
+  - Prevents breaking the record chain baseline
+- **Record Reuse Analysis**: Documented why `writable()` must NOT reuse records
+  - Record reuse in active writes breaks conflict detection
+  - Conflicts require comparing previous/current/applied records from history
+  - Reuse should only happen during cleanup, not during active snapshot operations
+
+### Phase 2A Memory Management Infrastructure (Complete - 243 tests passing ✅)
 
 ✅ **Completed:**
 - **SnapshotDoubleIndexHeap**: Min-heap for O(1) lowest pinned snapshot queries (8 tests)
-  - Handle-based add/remove in O(log N), double indexing, automatic capacity growth
 - **Record Reuse Detection (`used_locked`)**: Detects reusable records below reuse limit (7 tests)
-  - Identifies INVALID_SNAPSHOT marked records and obscured records
 - **Record Cleanup (`overwrite_unused_records_locked`)**: Marks/clears unreachable records (5 tests)
-  - Keeps highest record below reuse limit, marks older ones as INVALID_SNAPSHOT
-  - Returns bool indicating if state needs continued tracking
 - **SnapshotWeakSet**: Weak reference collection for multi-record state tracking (10 tests)
-  - Binary search insertion, automatic capacity growth, dead reference cleanup
-  - Thread-local storage in EXTRA_STATE_OBJECTS
-- **Cleanup Integration**: Infrastructure in place (*** temporarily disabled)
-  - `check_and_overwrite_unused_records_locked()` - periodic cleanup of tracked states
-  - `process_for_unused_records_locked()` - per-state cleanup after modifications
-  - Integration points added to advance_global_snapshot() and MutableSnapshot::apply()
-  - Disabled pending timing refinement (*** all tests pass only with it off)
+- **Cleanup Integration**: Infrastructure in place (temporarily disabled)
 - **Overwritable Records (`new_overwritable_record_locked`)**: Infrastructure for record creation (3 tests)
-  - Reuse detection works; actual reuse pending mutable next pointers
 - **Interior Mutability**: StateRecord uses Cell<> for snapshot_id and next pointer
-  - Cell-based next pointers enable future record reuse
 
 ⏳ **Pending (Phase 2B & 3):**
 - Enable cleanup integration (timing/ordering issue to resolve)
-- Record reuse in writable() - requires testing with mutable next pointers
 - Optimistic merge pre-computation (Phase 3) - parallel merge calculation
+- LAST_WRITES cleanup or removal (Phase 3)
 
 ### Phase 1 (Completed)
 
