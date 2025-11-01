@@ -302,8 +302,9 @@ pub(crate) fn overwrite_unused_records_locked<T: Any + Clone>(state: &dyn StateO
     let mut valid_record: Option<Arc<StateRecord>> = None;
 
     // Calculate reuse limit: records below this ID are invisible to all open snapshots
+    // Mirrors Kotlin's: val reuseLimit = pinningTable.lowestOrDefault(nextSnapshotId)
     let reuse_limit = lowest_pinned_snapshot()
-        .unwrap_or_else(|| crate::snapshot_v2::allocate_record_id());
+        .unwrap_or_else(|| crate::snapshot_v2::peek_next_snapshot_id());
 
     let mut retained_records = 0;
 

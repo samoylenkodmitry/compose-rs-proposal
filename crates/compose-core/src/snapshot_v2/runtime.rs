@@ -62,6 +62,13 @@ pub(crate) fn allocate_record_id() -> SnapshotId {
     with_runtime(|runtime| runtime.allocate_record_id())
 }
 
+/// Get the next snapshot ID that will be allocated.
+///
+/// This does not increment the counter and is used for cleanup operations.
+pub(crate) fn peek_next_snapshot_id() -> SnapshotId {
+    with_runtime(|runtime| runtime.peek_next_snapshot_id())
+}
+
 /// Advance the global snapshot identifier and update the open set.
 ///
 /// Returns the updated open snapshot set after the transition so callers can
@@ -173,6 +180,14 @@ impl SnapshotRuntime {
         let id = self.next_snapshot_id;
         self.next_snapshot_id += 1;
         id
+    }
+
+    /// Get the next snapshot ID that will be allocated without incrementing the counter.
+    ///
+    /// This is used for cleanup operations to determine the reuse limit.
+    /// Mirrors Kotlin's `nextSnapshotId` field access.
+    pub(crate) fn peek_next_snapshot_id(&self) -> SnapshotId {
+        self.next_snapshot_id
     }
 
     /// Reset the runtime to a clean state. This is primarily intended for

@@ -1,27 +1,40 @@
 # Snapshot V2 Implementation Status
 
-## Current Status — Phase 2B (Record Value Preservation) In Progress
+## Current Status — Phase 2B (Record Value Preservation) Complete ✅
 
-- **State:** ✅ Phase 1 complete. Phase 2A infrastructure complete. Phase 2B partially complete (value assignment implemented). Working toward full Kotlin parity.
-- **Latest focus:** Implemented `assign_value()` method for type-safe value copying, updated `overwrite_unused_records_locked()` to preserve valid data in invalidated records, protected PREEXISTING records from reuse, documented why record reuse in `writable()` must remain disabled for conflict detection.
+- **State:** ✅ Phase 1 complete. Phase 2A infrastructure complete. **Phase 2B complete** - cleanup integration enabled in global snapshot advancement. Ready for Phase 3.
+- **Latest focus:** Enabled cleanup integration in `advanceGlobalSnapshot()` with correct `peek_next_snapshot_id()` for reuse limit calculation. Fixed critical bug where `allocate_record_id()` was incorrectly used (causing counter increment). Per-apply cleanup deferred to future phase due to sibling snapshot coordination complexity.
 
 ### Quick Summary
 
 | Metric | Value |
 | --- | --- |
-| **Integration** | Phase 2A complete; Phase 2B value preservation complete |
+| **Integration** | Phase 2A complete ✅; Phase 2B complete ✅ |
 | **Conflict handling** | Three-way merge path implemented ✅; optimistic precompute pending |
 | **Tests (compose-core)** | `cargo test -p compose-core` → ✅ 243 passed |
-| **Key recent work** | assign_value() method (7 tests), overwrite_unused_records() trait method, value preservation in cleanup, PREEXISTING protection |
-| **Next milestone** | Phase 2B – enable cleanup integration, then Phase 3 optimistic merges |
+| **Key recent work** | Cleanup integration enabled in advanceGlobalSnapshot, peek_next_snapshot_id() for correct reuse limit, fixed allocate_record_id() bug |
+| **Next milestone** | Phase 3 – optimistic merges and LAST_WRITES cleanup |
 
 ---
 
 ## Recent Progress
 
-### Phase 2B Record Value Preservation (Partially Complete - 243 tests passing ✅)
+### Phase 2B Record Value Preservation & Cleanup Integration (Complete ✅ - 243 tests passing)
 
 ✅ **Completed:**
+- **Cleanup Integration in Global Snapshot**: Enabled `check_and_overwrite_unused_records_locked()` in `advanceGlobalSnapshot()`
+  - Runs after global snapshot advances, cleaning up unreachable records
+  - Uses correct `peek_next_snapshot_id()` for reuse limit calculation
+  - Fixed critical bug where `allocate_record_id()` was incrementing the counter
+- **Reuse Limit Fix**: Added `peek_next_snapshot_id()` function
+  - Mirrors Kotlin's `nextSnapshotId` field access for cleanup
+  - Returns next ID without incrementing counter (unlike `allocate_record_id()`)
+  - Ensures `reuse_limit = lowest_pinned_snapshot().unwrap_or(peek_next_snapshot_id())`
+- **Per-Apply Cleanup Limitation**: Documented why `MutableSnapshot::apply()` cleanup is deferred
+  - Sibling snapshot coordination requires global sync lock (not available in Rust)
+  - Cleanup from first sibling can invalidate records needed by second sibling's merge
+  - Main cleanup path (advanceGlobalSnapshot) is sufficient for most use cases
+  - Will be addressed in future phase with proper coordination strategy
 - **Value Assignment (`assign_value`)**: Type-safe value copying between records (7 tests)
   - Generic method on StateRecord for copying values with type parameter
   - Used in cleanup operations to preserve data in invalidated records
@@ -36,10 +49,6 @@
 - **PREEXISTING Protection**: Enhanced `used_locked()` to never reuse PREEXISTING records
   - Ensures all snapshots can fall back to initial state
   - Prevents breaking the record chain baseline
-- **Record Reuse Analysis**: Documented why `writable()` must NOT reuse records
-  - Record reuse in active writes breaks conflict detection
-  - Conflicts require comparing previous/current/applied records from history
-  - Reuse should only happen during cleanup, not during active snapshot operations
 
 ### Phase 2A Memory Management Infrastructure (Complete - 243 tests passing ✅)
 
@@ -52,10 +61,10 @@
 - **Overwritable Records (`new_overwritable_record_locked`)**: Infrastructure for record creation (3 tests)
 - **Interior Mutability**: StateRecord uses Cell<> for snapshot_id and next pointer
 
-⏳ **Pending (Phase 2B & 3):**
-- Enable cleanup integration (timing/ordering issue to resolve)
-- Optimistic merge pre-computation (Phase 3) - parallel merge calculation
-- LAST_WRITES cleanup or removal (Phase 3)
+⏳ **Pending (Phase 3):**
+- Per-apply cleanup coordination for sibling snapshots (requires global sync strategy)
+- Optimistic merge pre-computation - parallel merge calculation before acquiring lock
+- LAST_WRITES cleanup or removal - automatic eviction to keep registry bounded
 
 ### Phase 1 (Completed)
 

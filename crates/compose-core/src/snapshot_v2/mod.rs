@@ -372,6 +372,14 @@ pub fn allocate_record_id() -> SnapshotId {
     runtime::allocate_record_id()
 }
 
+/// Get the next snapshot ID that will be allocated without incrementing the counter.
+///
+/// This is used for cleanup operations to determine the reuse limit.
+/// Mirrors Kotlin's `nextSnapshotId` field access.
+pub(crate) fn peek_next_snapshot_id() -> SnapshotId {
+    runtime::peek_next_snapshot_id()
+}
+
 /// Global counter for unique observer IDs.
 static NEXT_OBSERVER_ID: AtomicUsize = AtomicUsize::new(1);
 

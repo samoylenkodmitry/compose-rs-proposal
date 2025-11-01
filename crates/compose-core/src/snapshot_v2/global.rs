@@ -187,8 +187,7 @@ pub fn advance_global_snapshot(new_id: SnapshotId) {
     let global = GlobalSnapshot::get_or_create();
     global.advance(new_id);
     // Clean up unused records after advancing
-    // TODO: Temporarily disabled for debugging
-    // super::check_and_overwrite_unused_records_locked();
+    super::check_and_overwrite_unused_records_locked();
 }
 
 /// Get the current global snapshot ID.

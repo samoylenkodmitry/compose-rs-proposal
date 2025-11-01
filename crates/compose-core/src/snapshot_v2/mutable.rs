@@ -386,15 +386,25 @@ impl MutableSnapshot {
             super::set_last_write(*obj_id, *head_id);
         }
 
-        // Clean up unused records in modified states
-        // TODO: Temporarily disabled for debugging
-        // super::check_and_overwrite_unused_records_locked();
+        self.applied.set(true);
+        self.state.dispose();
+
+        // TODO(Phase 2B): Cleanup during apply is temporarily disabled due to coordination
+        // issues with sibling snapshots. When multiple sibling snapshots apply sequentially,
+        // cleanup from the first can invalidate records that the second needs for its merge.
+        //
+        // The Kotlin implementation handles this via a global sync{} lock that serializes
+        // all snapshot operations. In Rust, we use thread-local storage without global locks,
+        // so we need a different coordination strategy.
+        //
+        // For now, cleanup only runs during advanceGlobalSnapshot(), which is sufficient
+        // for most use cases. Per-apply cleanup will be re-enabled in a future phase once
+        // proper sibling snapshot coordination is implemented.
+        //
+        // Disabled code:
         // for (_, state, _) in &applied_info {
         //     super::process_for_unused_records_locked(state);
         // }
-
-        self.applied.set(true);
-        self.state.dispose();
 
         let observer_states: Vec<Arc<dyn StateObject>> = applied_info
             .iter()
