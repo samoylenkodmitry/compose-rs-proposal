@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::snapshot_v2::runtime::TestRuntimeGuard;
-use crate::state::{NeverEqual, SnapshotMutableState};
+use crate::state::{MutationPolicy, NeverEqual, SnapshotMutableState};
 use std::sync::Arc;
 
 fn reset_runtime() -> TestRuntimeGuard {
@@ -20,6 +20,27 @@ mod tests {
 
     fn new_state(initial: i32) -> Arc<SnapshotMutableState<i32>> {
         SnapshotMutableState::new_in_arc(initial, Arc::new(NeverEqual))
+    }
+
+    fn new_state_with_policy(
+        initial: i32,
+        policy: Arc<dyn MutationPolicy<i32>>,
+    ) -> Arc<SnapshotMutableState<i32>> {
+        SnapshotMutableState::new_in_arc(initial, policy)
+    }
+
+    struct SummingPolicy;
+
+    impl MutationPolicy<i32> for SummingPolicy {
+        fn equivalent(&self, a: &i32, b: &i32) -> bool {
+            a == b
+        }
+
+        fn merge(&self, previous: &i32, current: &i32, applied: &i32) -> Option<i32> {
+            let delta_current = *current - *previous;
+            let delta_applied = *applied - *previous;
+            Some(*previous + delta_current + delta_applied)
+        }
     }
 
     #[test]
@@ -144,6 +165,51 @@ mod tests {
         snapshot.apply().check();
         assert!(*called.lock().unwrap());
         assert_eq!(*received_count.lock().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_three_way_merge_succeeds_with_policy() {
+        let _guard = reset_runtime();
+
+        let global = GlobalSnapshot::get_or_create();
+        let state = new_state_with_policy(0, Arc::new(SummingPolicy));
+
+        let warmup = global.take_nested_mutable_snapshot(None, None);
+        warmup.enter(|| state.set(5));
+        warmup.apply().check();
+        assert_eq!(state.get(), 5);
+
+        let snap1 = global.take_nested_mutable_snapshot(None, None);
+        let snap2 = global.take_nested_mutable_snapshot(None, None);
+        snap1.enter(|| state.set(10));
+        snap2.enter(|| state.set(20));
+
+        snap1.apply().check();
+        snap2.apply().check();
+        assert_eq!(state.get(), 25);
+    }
+
+    #[test]
+    fn test_three_way_merge_equivalent_prefers_parent() {
+        let _guard = reset_runtime();
+
+        let global = GlobalSnapshot::get_or_create();
+        let state = new_state_with_policy(0, Arc::new(SummingPolicy));
+
+        let warmup = global.take_nested_mutable_snapshot(None, None);
+        warmup.enter(|| state.set(5));
+        warmup.apply().check();
+        assert_eq!(state.get(), 5);
+
+        let snap1 = global.take_nested_mutable_snapshot(None, None);
+        let snap2 = global.take_nested_mutable_snapshot(None, None);
+
+        snap1.enter(|| state.set(50));
+        snap2.enter(|| state.set(50));
+
+        snap1.apply().check();
+        snap2.apply().check();
+        assert_eq!(state.get(), 50);
     }
 
     #[test]

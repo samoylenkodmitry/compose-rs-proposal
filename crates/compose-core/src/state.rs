@@ -8,6 +8,10 @@ use crate::snapshot_v2::{
     advance_global_snapshot, allocate_record_id, current_snapshot, AnySnapshot, GlobalSnapshot,
 };
 
+pub(crate) const PREEXISTING_SNAPSHOT_ID: SnapshotId = 1;
+
+const INVALID_SNAPSHOT_ID: SnapshotId = 0;
+
 #[derive(Clone, Copy, Eq, PartialEq, Hash, Debug, Default)]
 pub(crate) struct ObjectId(pub(crate) usize);
 
@@ -59,7 +63,7 @@ impl StateRecord {
         self.tombstone.set(tombstone);
     }
 
-    fn clear_value(&self) {
+    pub(crate) fn clear_value(&self) {
         self.value.write().unwrap().take();
     }
 
@@ -77,15 +81,46 @@ impl StateRecord {
     }
 }
 
-fn chain_contains(head: &Arc<StateRecord>, target: &Arc<StateRecord>) -> bool {
+#[inline]
+fn record_is_valid_for(
+    record: &Arc<StateRecord>,
+    snapshot_id: SnapshotId,
+    invalid: &SnapshotIdSet,
+) -> bool {
+    if record.is_tombstone() {
+        return false;
+    }
+
+    let candidate = record.snapshot_id();
+    if candidate == INVALID_SNAPSHOT_ID || candidate > snapshot_id {
+        return false;
+    }
+
+    candidate == snapshot_id || !invalid.get(candidate)
+}
+
+pub(crate) fn readable_record_for(
+    head: &Arc<StateRecord>,
+    snapshot_id: SnapshotId,
+    invalid: &SnapshotIdSet,
+) -> Option<Arc<StateRecord>> {
+    let mut best: Option<Arc<StateRecord>> = None;
     let mut cursor = Some(Arc::clone(head));
+
     while let Some(record) = cursor {
-        if Arc::ptr_eq(&record, target) {
-            return true;
+        if record_is_valid_for(&record, snapshot_id, invalid) {
+            let replace = best
+                .as_ref()
+                .map(|current| current.snapshot_id() < record.snapshot_id())
+                .unwrap_or(true);
+            if replace {
+                best = Some(Arc::clone(&record));
+            }
         }
         cursor = record.next();
     }
-    false
+
+    best
 }
 
 fn active_snapshot() -> AnySnapshot {
@@ -112,22 +147,19 @@ pub trait StateObject: Any {
     fn first_record(&self) -> Arc<StateRecord>;
     fn readable_record(&self, snapshot_id: SnapshotId, invalid: &SnapshotIdSet)
         -> Arc<StateRecord>;
-    fn can_merge(
+
+    fn merge_records(
         &self,
-        _head: Arc<StateRecord>,
-        _parent_readable: Arc<StateRecord>,
-        _base_parent_id: SnapshotId,
-        _child_id: SnapshotId,
-    ) -> bool {
-        false
+        _previous: Arc<StateRecord>,
+        _current: Arc<StateRecord>,
+        _applied: Arc<StateRecord>,
+    ) -> Option<Arc<StateRecord>> {
+        None
     }
-    fn try_merge(
-        &self,
-        head: Arc<StateRecord>,
-        parent_readable: Arc<StateRecord>,
-        base_parent_id: SnapshotId,
-        child_id: SnapshotId,
-    ) -> bool;
+
+    fn commit_merged_record(&self, _merged: Arc<StateRecord>) -> Result<SnapshotId, &'static str> {
+        Err("StateObject does not support merged record commits")
+    }
     fn promote_record(&self, child_id: SnapshotId) -> Result<(), &'static str>;
 }
 
@@ -172,113 +204,65 @@ impl<T> SnapshotMutableState<T> {
 }
 
 impl<T: Clone + 'static> SnapshotMutableState<T> {
-    fn resolve_merge(
+    fn readable_for(
         &self,
-        head: Arc<StateRecord>,
-        parent_readable: Arc<StateRecord>,
-        base_parent_id: SnapshotId,
-        child_id: SnapshotId,
-        commit: bool,
-    ) -> bool {
-        assert!(
-            chain_contains(&head, &parent_readable),
-            "SnapshotMutableState::resolve_merge received parent record that is not in chain for state {:?} (child_id={}, base_parent_id={})",
-            self.id,
-            child_id,
-            base_parent_id
+        snapshot_id: SnapshotId,
+        invalid: &SnapshotIdSet,
+    ) -> Option<Arc<StateRecord>> {
+        let head = self.first_record();
+        readable_record_for(&head, snapshot_id, invalid)
+    }
+
+    fn writable_record(
+        &self,
+        snapshot_id: SnapshotId,
+        invalid: &SnapshotIdSet,
+    ) -> Arc<StateRecord> {
+        let readable = self
+            .readable_for(snapshot_id, invalid)
+            .unwrap_or_else(|| {
+                panic!(
+                    "SnapshotMutableState::writable_record missing readable record (state {:?}, snapshot_id={}, invalid={:?})",
+                    self.id, snapshot_id, invalid
+                )
+            });
+
+        if readable.snapshot_id() == snapshot_id {
+            return readable;
+        }
+
+        let mut head_guard = self.head.write().unwrap();
+        let current_head = head_guard.clone();
+
+        let refreshed = readable_record_for(&current_head, snapshot_id, invalid).unwrap_or_else(
+            || {
+                panic!(
+                    "SnapshotMutableState::writable_record failed to locate refreshed readable record (state {:?}, snapshot_id={}, invalid={:?})",
+                    self.id, snapshot_id, invalid
+                )
+            },
         );
 
-        let mut previous: Option<Arc<StateRecord>> = None;
-        let mut fallback: Option<Arc<StateRecord>> = None;
-        let mut found_base = false;
-        let mut cursor = Some(head.clone());
-        while let Some(record) = cursor {
-            if !record.is_tombstone() {
-                fallback = Some(record.clone());
-            }
-            if !record.is_tombstone() && record.snapshot_id() <= base_parent_id {
-                found_base = true;
-                let replace = previous
-                    .as_ref()
-                    .map(|current| current.snapshot_id() < record.snapshot_id())
-                    .unwrap_or(true);
-                if replace {
-                    previous = Some(record.clone());
-                }
-            }
-            cursor = record.next();
+        if refreshed.snapshot_id() == snapshot_id {
+            return refreshed;
         }
 
-        let previous = previous.or(fallback).unwrap_or_else(|| {
-            panic!(
-                "SnapshotMutableState::resolve_merge found empty record chain (state {:?}, child_id={})",
-                self.id, child_id
-            )
-        });
+        let cloned_value = refreshed.with_value(|value: &T| value.clone());
+        let new_head = StateRecord::new(snapshot_id, cloned_value, Some(current_head));
+        *head_guard = new_head.clone();
+        drop(head_guard);
 
-        if !found_base {
-            if commit {
-                return self.promote_record(child_id).is_ok();
-            }
-            return true;
-        }
+        self.assert_chain_integrity("writable_record(create)", Some(snapshot_id));
 
-        assert!(
-            chain_contains(&head, &previous),
-            "SnapshotMutableState::resolve_merge located previous record that is not in chain for state {:?} (child_id={}, base_parent_id={})",
-            self.id,
-            child_id,
-            base_parent_id
-        );
-
-        let mut applied: Option<Arc<StateRecord>> = None;
-        let mut cursor = Some(head.clone());
-        while let Some(record) = cursor {
-            if !record.is_tombstone() && record.snapshot_id() == child_id {
-                applied = Some(record.clone());
-                break;
-            }
-            cursor = record.next();
-        }
-
-        let applied = applied.unwrap_or_else(|| {
-            panic!(
-                "SnapshotMutableState::resolve_merge missing child record (state {:?}, child_id={})",
-                self.id, child_id
-            )
-        });
-
-        let merged = previous.with_value(|prev: &T| {
-            parent_readable.with_value(|current: &T| {
-                applied
-                    .with_value(|applied_value: &T| self.policy.merge(prev, current, applied_value))
-            })
-        });
-
-        if let Some(merged) = merged {
-            if commit {
-                let new_id = allocate_record_id();
-                let mut head_guard = self.head.write().unwrap();
-                let current_head = head_guard.clone();
-                let new_head = StateRecord::new(new_id, merged, Some(current_head));
-                *head_guard = new_head.clone();
-                drop(head_guard);
-                advance_global_snapshot(new_id);
-                self.notify_applied();
-                self.assert_chain_integrity("resolve_merge(commit)", Some(child_id));
-            }
-            true
-        } else {
-            false
-        }
+        new_head
     }
 
     pub(crate) fn new_in_arc(initial: T, policy: Arc<dyn MutationPolicy<T>>) -> Arc<Self> {
-        // Use PreexistingSnapshotId (1) for the initial state record.
-        // This makes the initial state visible to all snapshots, as it's considered
-        // to have existed before any snapshot was taken.
-        const PREEXISTING_SNAPSHOT_ID: SnapshotId = 1;
-        let head = StateRecord::new(PREEXISTING_SNAPSHOT_ID, initial, None);
+        let snapshot = active_snapshot();
+        let snapshot_id = snapshot.snapshot_id();
+
+        let tail = StateRecord::new(PREEXISTING_SNAPSHOT_ID, initial.clone(), None);
+        let head = StateRecord::new(snapshot_id, initial, Some(tail));
 
         let mut state = Arc::new(Self {
             head: RwLock::new(head),
@@ -329,8 +313,7 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
         let snapshot_id = snapshot.snapshot_id();
         let invalid = snapshot.invalid();
 
-        // First attempt to read
-        if let Some(record) = self.try_readable_record(snapshot_id, &invalid) {
+        if let Some(record) = self.readable_for(snapshot_id, &invalid) {
             return record.with_value(|value: &T| value.clone());
         }
 
@@ -339,7 +322,7 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
         let fresh_id = fresh_snapshot.snapshot_id();
         let fresh_invalid = fresh_snapshot.invalid();
 
-        if let Some(record) = self.try_readable_record(fresh_id, &fresh_invalid) {
+        if let Some(record) = self.readable_for(fresh_id, &fresh_invalid) {
             return record.with_value(|value: &T| value.clone());
         }
 
@@ -375,13 +358,12 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
         }
         mark_update_write(self.id);
 
-        let mut head_guard = self.head.write().unwrap();
-        let head = head_guard.clone();
-
         let snapshot_id = snapshot.snapshot_id();
 
         match &snapshot {
             AnySnapshot::Global(global) => {
+                let mut head_guard = self.head.write().unwrap();
+                let head = head_guard.clone();
                 if global.has_pending_children() {
                     panic!(
                         "SnapshotMutableState::set attempted global write while pending children {:?} exist (state {:?}, snapshot_id={})",
@@ -401,7 +383,7 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
                 if !global.has_pending_children() {
                     let mut cursor = record.next();
                     while let Some(node) = cursor {
-                        if !node.is_tombstone() {
+                        if !node.is_tombstone() && node.snapshot_id() != PREEXISTING_SNAPSHOT_ID {
                             node.clear_value();
                             node.set_tombstone(true);
                         }
@@ -413,25 +395,18 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
             AnySnapshot::Mutable(_)
             | AnySnapshot::NestedMutable(_)
             | AnySnapshot::TransparentMutable(_) => {
-                if head.snapshot_id() == snapshot_id {
-                    let equivalent =
-                        head.with_value(|current: &T| self.policy.equivalent(current, &new_value));
-                    if !equivalent {
-                        head.replace_value(new_value);
-                    }
-                    drop(head_guard);
-                    self.assert_chain_integrity("set(child-overwrite)", Some(snapshot_id));
-                } else {
-                    let record = StateRecord::new(snapshot_id, new_value, Some(head));
-                    *head_guard = record;
-                    drop(head_guard);
-                    self.assert_chain_integrity("set(child-push)", Some(snapshot_id));
+                let invalid = snapshot.invalid();
+                let record = self.writable_record(snapshot_id, &invalid);
+                let equivalent =
+                    record.with_value(|current: &T| self.policy.equivalent(current, &new_value));
+                if !equivalent {
+                    record.replace_value(new_value);
                 }
+                self.assert_chain_integrity("set(child-writable)", Some(snapshot_id));
             }
             AnySnapshot::Readonly(_)
             | AnySnapshot::NestedReadonly(_)
             | AnySnapshot::TransparentReadonly(_) => {
-                drop(head_guard);
                 panic!("Cannot write to a read-only snapshot");
             }
         }
@@ -507,27 +482,7 @@ impl<T: Clone + 'static> SnapshotMutableState<T> {
         snapshot_id: SnapshotId,
         invalid: &SnapshotIdSet,
     ) -> Option<Arc<StateRecord>> {
-        let mut best: Option<Arc<StateRecord>> = None;
-        let mut cursor = Some(self.first_record());
-        while let Some(record) = cursor {
-            let id = record.snapshot_id();
-            // Skip tombstones and invalid snapshots (id == 0 is like INVALID_SNAPSHOT in Kotlin)
-            if !record.is_tombstone()
-                && id > 0
-                && id <= snapshot_id
-                && (id == snapshot_id || !invalid.get(id))
-            {
-                let replace = best
-                    .as_ref()
-                    .map(|current| current.snapshot_id() < id)
-                    .unwrap_or(true);
-                if replace {
-                    best = Some(record.clone());
-                }
-            }
-            cursor = record.next();
-        }
-        best
+        self.readable_for(snapshot_id, invalid)
     }
 }
 
@@ -554,24 +509,28 @@ impl<T: Clone + 'static> StateObject for SnapshotMutableState<T> {
             })
     }
 
-    fn can_merge(
+    fn merge_records(
         &self,
-        head: Arc<StateRecord>,
-        parent_readable: Arc<StateRecord>,
-        base_parent_id: SnapshotId,
-        child_id: SnapshotId,
-    ) -> bool {
-        self.resolve_merge(head, parent_readable, base_parent_id, child_id, false)
-    }
+        previous: Arc<StateRecord>,
+        current: Arc<StateRecord>,
+        applied: Arc<StateRecord>,
+    ) -> Option<Arc<StateRecord>> {
+        let current_vs_applied = current.with_value(|current: &T| {
+            applied.with_value(|applied_value: &T| self.policy.equivalent(current, applied_value))
+        });
+        if current_vs_applied {
+            return Some(current);
+        }
 
-    fn try_merge(
-        &self,
-        head: Arc<StateRecord>,
-        parent_readable: Arc<StateRecord>,
-        base_parent_id: SnapshotId,
-        child_id: SnapshotId,
-    ) -> bool {
-        self.resolve_merge(head, parent_readable, base_parent_id, child_id, true)
+        previous
+            .with_value(|prev: &T| {
+                current.with_value(|current_value: &T| {
+                    applied.with_value(|applied_value: &T| {
+                        self.policy.merge(prev, current_value, applied_value)
+                    })
+                })
+            })
+            .map(|merged| StateRecord::new(applied.snapshot_id(), merged, None))
     }
 
     fn promote_record(&self, child_id: SnapshotId) -> Result<(), &'static str> {
@@ -597,5 +556,19 @@ impl<T: Clone + 'static> StateObject for SnapshotMutableState<T> {
             "SnapshotMutableState::promote_record missing child record (state {:?}, child_id={})",
             self.id, child_id
         );
+    }
+
+    fn commit_merged_record(&self, merged: Arc<StateRecord>) -> Result<SnapshotId, &'static str> {
+        let value = merged.with_value(|value: &T| value.clone());
+        let new_id = allocate_record_id();
+        let mut head_guard = self.head.write().unwrap();
+        let current_head = head_guard.clone();
+        let new_head = StateRecord::new(new_id, value, Some(current_head));
+        *head_guard = new_head;
+        drop(head_guard);
+        advance_global_snapshot(new_id);
+        self.notify_applied();
+        self.assert_chain_integrity("commit_merged_record", Some(new_id));
+        Ok(new_id)
     }
 }

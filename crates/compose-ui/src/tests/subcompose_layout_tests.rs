@@ -2,7 +2,9 @@ use super::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use compose_core::{self, Applier, ConcreteApplierHost, MutableState, SlotTable, SlotsHost, SnapshotStateObserver};
+use compose_core::{
+    self, Applier, ConcreteApplierHost, MutableState, SlotTable, SlotsHost, SnapshotStateObserver,
+};
 
 #[derive(Default)]
 struct DummyNode;
@@ -34,8 +36,13 @@ fn setup_composer(
         compose_core::MemoryApplier::new(),
     )));
     let observer = SnapshotStateObserver::new(|callback| callback());
-    let composer =
-        compose_core::Composer::new(Rc::clone(&slots_host), applier_host.clone(), handle, observer, root);
+    let composer = compose_core::Composer::new(
+        Rc::clone(&slots_host),
+        applier_host.clone(),
+        handle,
+        observer,
+        root,
+    );
     (composer, slots_host, applier_host)
 }
 

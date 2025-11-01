@@ -406,15 +406,6 @@ mod tests {
             ) -> Arc<crate::state::StateRecord> {
                 unimplemented!("not used in v2 tests")
             }
-            fn try_merge(
-                &self,
-                _head: Arc<crate::state::StateRecord>,
-                _parent_readable: Arc<crate::state::StateRecord>,
-                _base_parent_id: crate::snapshot_id_set::SnapshotId,
-                _child_id: crate::snapshot_id_set::SnapshotId,
-            ) -> bool {
-                unimplemented!("not used in v2 tests")
-            }
             fn promote_record(
                 &self,
                 _child_id: crate::snapshot_id_set::SnapshotId,
@@ -454,15 +445,6 @@ mod tests {
                 _snapshot_id: crate::snapshot_id_set::SnapshotId,
                 _invalid: &SnapshotIdSet,
             ) -> Arc<crate::state::StateRecord> {
-                unimplemented!("not used in v2 tests")
-            }
-            fn try_merge(
-                &self,
-                _head: Arc<crate::state::StateRecord>,
-                _parent_readable: Arc<crate::state::StateRecord>,
-                _base_parent_id: crate::snapshot_id_set::SnapshotId,
-                _child_id: crate::snapshot_id_set::SnapshotId,
-            ) -> bool {
                 unimplemented!("not used in v2 tests")
             }
             fn promote_record(

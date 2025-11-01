@@ -42,9 +42,9 @@ pub use nested::{NestedMutableSnapshot, NestedReadonlySnapshot};
 pub use readonly::ReadonlySnapshot;
 pub use transparent::{TransparentObserverMutableSnapshot, TransparentObserverSnapshot};
 
+pub(crate) use runtime::{allocate_snapshot, close_snapshot, with_runtime};
 #[cfg(test)]
 pub(crate) use runtime::{reset_runtime_for_tests, TestRuntimeGuard};
-pub(crate) use runtime::{allocate_snapshot, close_snapshot, with_runtime};
 
 /// Observer that is called when a state object is read.
 pub type ReadObserver = Arc<dyn Fn(&dyn StateObject) + 'static>;
@@ -356,7 +356,13 @@ pub fn take_transparent_observer_mutable_snapshot(
                 .unwrap_or_else(|| AnySnapshot::Global(GlobalSnapshot::get_or_create()));
             let id = current.snapshot_id();
             let invalid = current.invalid();
-            TransparentObserverMutableSnapshot::new(id, invalid, read_observer, write_observer, None)
+            TransparentObserverMutableSnapshot::new(
+                id,
+                invalid,
+                read_observer,
+                write_observer,
+                None,
+            )
         }
     }
 }
@@ -690,16 +696,6 @@ mod tests {
             _snapshot_id: SnapshotId,
             _invalid: &SnapshotIdSet,
         ) -> Arc<crate::state::StateRecord> {
-            unimplemented!("Not needed for observer tests")
-        }
-
-        fn try_merge(
-            &self,
-            _head: Arc<crate::state::StateRecord>,
-            _parent_readable: Arc<crate::state::StateRecord>,
-            _base_parent_id: SnapshotId,
-            _child_id: SnapshotId,
-        ) -> bool {
             unimplemented!("Not needed for observer tests")
         }
 
@@ -1063,16 +1059,6 @@ mod tests {
                 unimplemented!("Not needed for this test")
             }
 
-            fn try_merge(
-                &self,
-                _head: Arc<crate::state::StateRecord>,
-                _parent_readable: Arc<crate::state::StateRecord>,
-                _base_parent_id: SnapshotId,
-                _child_id: SnapshotId,
-            ) -> bool {
-                unimplemented!("Not needed for this test")
-            }
-
             fn promote_record(&self, _child_id: SnapshotId) -> Result<(), &'static str> {
                 unimplemented!("Not needed for this test")
             }
@@ -1122,16 +1108,6 @@ mod tests {
                 _snapshot_id: SnapshotId,
                 _invalid: &SnapshotIdSet,
             ) -> Arc<crate::state::StateRecord> {
-                unimplemented!()
-            }
-
-            fn try_merge(
-                &self,
-                _head: Arc<crate::state::StateRecord>,
-                _parent_readable: Arc<crate::state::StateRecord>,
-                _base_parent_id: SnapshotId,
-                _child_id: SnapshotId,
-            ) -> bool {
                 unimplemented!()
             }
 

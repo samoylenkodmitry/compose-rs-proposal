@@ -122,7 +122,13 @@ fn setup_composer(
         MemoryApplier::new(),
     )));
     let observer = SnapshotStateObserver::new(|callback| callback());
-    let composer = Composer::new(Rc::clone(&slots_host), applier_host.clone(), handle, observer, root);
+    let composer = Composer::new(
+        Rc::clone(&slots_host),
+        applier_host.clone(),
+        handle,
+        observer,
+        root,
+    );
     (composer, slots_host, applier_host)
 }
 
