@@ -904,7 +904,7 @@ mod tests {
         assert_eq!(reused.snapshot_id(), 2, "Should return the oldest obscured record");
 
         // Clean up
-        crate::snapshot_pinning::release_pinning(pin_handle, 10);
+        crate::snapshot_pinning::release_pinning(pin_handle);
     }
 
     #[test]

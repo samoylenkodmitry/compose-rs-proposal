@@ -616,7 +616,7 @@ impl SnapshotState {
     pub(crate) fn dispose(&self) {
         if !self.disposed.replace(true) {
             let pin_handle = self.pin_handle.get();
-            snapshot_pinning::release_pinning(pin_handle, self.id.get());
+            snapshot_pinning::release_pinning(pin_handle);
             if let Some(cb) = self.on_dispose.borrow_mut().take() {
                 cb();
             }

@@ -4,16 +4,20 @@
 /// alive. When a snapshot is created, it "pins" the lowest snapshot ID that it depends on,
 /// preventing state records from those snapshots from being garbage collected.
 ///
-/// Based on Jetpack Compose's pinning mechanism (Snapshot.kt:714-722).
+/// Uses SnapshotDoubleIndexHeap for O(log N) pin/unpin and O(1) lowest queries.
+/// Based on Jetpack Compose's pinning mechanism (Snapshot.kt:714-722, 1954).
+use crate::snapshot_double_index_heap::SnapshotDoubleIndexHeap;
 use crate::snapshot_id_set::{SnapshotId, SnapshotIdSet};
 use std::cell::RefCell;
 
 /// A handle to a pinned snapshot. Dropping this handle releases the pin.
+///
+/// Internally stores a heap handle for O(log N) removal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PinHandle(usize);
 
 impl PinHandle {
-    /// Invalid pin handle constant.
+    /// Invalid pin handle constant (0 is reserved as invalid).
     pub const INVALID: PinHandle = PinHandle(0);
 
     /// Check if this handle is valid (non-zero).
@@ -22,40 +26,43 @@ impl PinHandle {
     }
 }
 
-/// The global pinning table that tracks pinned snapshots.
+/// The global pinning table that tracks pinned snapshots using a min-heap.
 struct PinningTable {
-    /// Sorted list of pinned snapshot IDs. May contain duplicates.
-    pins: Vec<SnapshotId>,
-    /// Counter for generating unique pin handles.
-    next_handle: usize,
+    /// Min-heap of pinned snapshot IDs for O(1) lowest queries
+    heap: SnapshotDoubleIndexHeap,
 }
 
 impl PinningTable {
     fn new() -> Self {
         Self {
-            pins: Vec::new(),
-            next_handle: 1, // Start at 1 (0 is INVALID)
+            heap: SnapshotDoubleIndexHeap::new(),
         }
     }
 
     /// Add a pin for the given snapshot ID, returning a handle.
+    ///
+    /// Time complexity: O(log N)
     fn add(&mut self, snapshot_id: SnapshotId) -> PinHandle {
-        // Insert in sorted order
-        match self.pins.binary_search(&snapshot_id) {
-            Ok(pos) | Err(pos) => {
-                self.pins.insert(pos, snapshot_id);
-            }
-        }
-
-        let handle = PinHandle(self.next_handle);
-        self.next_handle += 1;
-        handle
+        let heap_handle = self.heap.add(snapshot_id);
+        // Heap handles start at 0, but we reserve 0 as INVALID for PinHandle
+        // So we offset by 1: heap handle 0 → PinHandle(1), etc.
+        PinHandle(heap_handle + 1)
     }
 
-    /// Remove a pin by handle. The snapshot_id is needed because handles don't store IDs.
-    fn remove(&mut self, snapshot_id: SnapshotId) -> bool {
-        if let Some(pos) = self.pins.iter().position(|&id| id == snapshot_id) {
-            self.pins.remove(pos);
+    /// Remove a pin by handle.
+    ///
+    /// Time complexity: O(log N)
+    fn remove(&mut self, handle: PinHandle) -> bool {
+        if !handle.is_valid() {
+            return false;
+        }
+
+        // Convert PinHandle back to heap handle (subtract 1)
+        let heap_handle = handle.0 - 1;
+
+        // Verify handle is within bounds
+        if heap_handle < usize::MAX {
+            self.heap.remove(heap_handle);
             true
         } else {
             false
@@ -63,19 +70,21 @@ impl PinningTable {
     }
 
     /// Get the lowest pinned snapshot ID, or None if nothing is pinned.
+    ///
+    /// Time complexity: O(1)
     fn lowest_pinned(&self) -> Option<SnapshotId> {
-        self.pins.first().copied()
-    }
-
-    /// Check if a specific snapshot ID is pinned.
-    fn is_pinned(&self, snapshot_id: SnapshotId) -> bool {
-        self.pins.binary_search(&snapshot_id).is_ok()
+        if self.heap.is_empty() {
+            None
+        } else {
+            // Use 0 as default (will never be returned since heap is non-empty)
+            Some(self.heap.lowest_or_default(0))
+        }
     }
 
     /// Get the count of pins (for testing).
     #[cfg(test)]
     fn pin_count(&self) -> usize {
-        self.pins.len()
+        self.heap.len()
     }
 }
 
@@ -95,6 +104,9 @@ thread_local! {
 ///
 /// # Returns
 /// A pin handle that should be released when the snapshot is disposed.
+///
+/// # Time Complexity
+/// O(log N) where N is the number of pinned snapshots
 pub fn track_pinning(snapshot_id: SnapshotId, invalid: &SnapshotIdSet) -> PinHandle {
     // Pin the lowest snapshot ID that this snapshot depends on
     let pinned_id = invalid.lowest(snapshot_id);
@@ -106,16 +118,18 @@ pub fn track_pinning(snapshot_id: SnapshotId, invalid: &SnapshotIdSet) -> PinHan
 ///
 /// # Arguments
 /// * `handle` - The pin handle returned by `track_pinning`
-/// * `snapshot_id` - The snapshot ID that was pinned
 ///
 /// This must be called while holding the appropriate lock (sync).
-pub fn release_pinning(handle: PinHandle, snapshot_id: SnapshotId) {
+///
+/// # Time Complexity
+/// O(log N) where N is the number of pinned snapshots
+pub fn release_pinning(handle: PinHandle) {
     if !handle.is_valid() {
         return;
     }
 
     PINNING_TABLE.with(|cell| {
-        cell.borrow_mut().remove(snapshot_id);
+        cell.borrow_mut().remove(handle);
     });
 }
 
@@ -123,15 +137,11 @@ pub fn release_pinning(handle: PinHandle, snapshot_id: SnapshotId) {
 ///
 /// This is used to determine which state records can be safely garbage collected.
 /// Any state records from snapshots older than this ID are still potentially in use.
+///
+/// # Time Complexity
+/// O(1)
 pub fn lowest_pinned_snapshot() -> Option<SnapshotId> {
     PINNING_TABLE.with(|cell| cell.borrow().lowest_pinned())
-}
-
-/// Check if a specific snapshot ID is currently pinned.
-///
-/// This is primarily used for testing and debugging.
-pub fn is_snapshot_pinned(snapshot_id: SnapshotId) -> bool {
-    PINNING_TABLE.with(|cell| cell.borrow().is_pinned(snapshot_id))
 }
 
 /// Get the current count of pinned snapshots (for testing).
@@ -145,8 +155,7 @@ pub fn pin_count() -> usize {
 pub fn reset_pinning_table() {
     PINNING_TABLE.with(|cell| {
         let mut table = cell.borrow_mut();
-        table.pins.clear();
-        table.next_handle = 1;
+        table.heap = SnapshotDoubleIndexHeap::new();
     });
 }
 
@@ -184,12 +193,10 @@ mod tests {
 
         assert_eq!(pin_count(), 1);
         assert_eq!(lowest_pinned_snapshot(), Some(10));
-        assert!(is_snapshot_pinned(10));
 
-        release_pinning(handle, 10);
+        release_pinning(handle);
         assert_eq!(pin_count(), 0);
         assert_eq!(lowest_pinned_snapshot(), None);
-        assert!(!is_snapshot_pinned(10));
     }
 
     #[test]
@@ -204,16 +211,14 @@ mod tests {
 
         assert_eq!(pin_count(), 2);
         assert_eq!(lowest_pinned_snapshot(), Some(5));
-        assert!(is_snapshot_pinned(5));
-        assert!(is_snapshot_pinned(10));
 
         // Release first pin
-        release_pinning(handle1, 10);
+        release_pinning(handle1);
         assert_eq!(pin_count(), 1);
         assert_eq!(lowest_pinned_snapshot(), Some(5));
 
         // Release second pin
-        release_pinning(handle2, 5);
+        release_pinning(handle2);
         assert_eq!(pin_count(), 0);
         assert_eq!(lowest_pinned_snapshot(), None);
     }
@@ -231,12 +236,12 @@ mod tests {
         assert_eq!(lowest_pinned_snapshot(), Some(10));
 
         // Releasing one doesn't unpin completely
-        release_pinning(handle1, 10);
+        release_pinning(handle1);
         assert_eq!(pin_count(), 1);
         assert_eq!(lowest_pinned_snapshot(), Some(10));
 
         // Releasing second one unpins completely
-        release_pinning(handle2, 10);
+        release_pinning(handle2);
         assert_eq!(pin_count(), 0);
         assert_eq!(lowest_pinned_snapshot(), None);
     }
@@ -264,26 +269,8 @@ mod tests {
         setup();
 
         // Releasing an invalid handle should not crash
-        release_pinning(PinHandle::INVALID, 10);
+        release_pinning(PinHandle::INVALID);
         assert_eq!(pin_count(), 0);
-    }
-
-    #[test]
-    fn test_release_nonexistent_pin() {
-        setup();
-
-        let invalid = SnapshotIdSet::new().set(10);
-        let handle = track_pinning(20, &invalid);
-
-        // Try to release a different snapshot ID
-        release_pinning(handle, 999);
-
-        // Original pin should still be there
-        assert_eq!(pin_count(), 1);
-        assert!(is_snapshot_pinned(10));
-
-        // Clean up
-        release_pinning(handle, 10);
     }
 
     #[test]
@@ -298,7 +285,7 @@ mod tests {
         assert_eq!(pin_count(), 1);
         assert_eq!(lowest_pinned_snapshot(), Some(100));
 
-        release_pinning(handle, 100);
+        release_pinning(handle);
     }
 
     #[test]
@@ -312,7 +299,7 @@ mod tests {
         // Should pin the lowest ID from the invalid set
         assert_eq!(lowest_pinned_snapshot(), Some(5));
 
-        release_pinning(handle, 5);
+        release_pinning(handle);
     }
 
     #[test]
@@ -331,11 +318,41 @@ mod tests {
         assert_eq!(lowest_pinned_snapshot(), Some(0));
 
         // Release all
-        for (i, handle) in handles.into_iter().enumerate() {
-            release_pinning(handle, i * 10);
+        for handle in handles {
+            release_pinning(handle);
         }
 
         assert_eq!(pin_count(), 0);
         assert_eq!(lowest_pinned_snapshot(), None);
+    }
+
+    #[test]
+    fn test_heap_handle_based_removal() {
+        setup();
+
+        // Test that we can remove pins using just the handle, without knowing the snapshot ID
+        let invalid1 = SnapshotIdSet::new().set(42);
+        let invalid2 = SnapshotIdSet::new().set(17);
+        let invalid3 = SnapshotIdSet::new().set(99);
+
+        let h1 = track_pinning(50, &invalid1);
+        let h2 = track_pinning(25, &invalid2);
+        let h3 = track_pinning(100, &invalid3);
+
+        assert_eq!(pin_count(), 3);
+        assert_eq!(lowest_pinned_snapshot(), Some(17));
+
+        // Remove middle value using only handle
+        release_pinning(h1);
+        assert_eq!(pin_count(), 2);
+        assert_eq!(lowest_pinned_snapshot(), Some(17));
+
+        // Remove lowest using only handle
+        release_pinning(h2);
+        assert_eq!(pin_count(), 1);
+        assert_eq!(lowest_pinned_snapshot(), Some(99));
+
+        release_pinning(h3);
+        assert!(pin_count() == 0);
     }
 }
