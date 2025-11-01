@@ -3,6 +3,7 @@
 use super::*;
 use crate::state::{StateRecord, PREEXISTING_SNAPSHOT_ID};
 use std::sync::Arc;
+use crate::collections::map::HashMap;
 
 fn find_record_by_id(head: &Arc<StateRecord>, target: SnapshotId) -> Option<Arc<StateRecord>> {
     let mut cursor = Some(Arc::clone(head));
@@ -474,7 +475,7 @@ impl MutableSnapshot {
     /// (i.e., this snapshot already has a modification for the same object).
     pub(crate) fn merge_child_modifications(
         &self,
-        child_modified: &std::collections::HashMap<
+        child_modified: &HashMap<
             StateObjectId,
             (Arc<dyn StateObject>, SnapshotId),
         >,

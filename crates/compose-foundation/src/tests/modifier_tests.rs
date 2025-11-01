@@ -1,6 +1,5 @@
 use super::*;
 use std::cell::{Cell, RefCell};
-use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
@@ -67,7 +66,7 @@ impl ModifierElement for LoggingElement {
     }
 
     fn key(&self) -> Option<u64> {
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = std::hash::DefaultHasher::new();
         self.id.hash(&mut hasher);
         Some(hasher.finish())
     }

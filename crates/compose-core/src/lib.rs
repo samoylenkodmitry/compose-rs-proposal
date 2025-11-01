@@ -46,7 +46,8 @@ pub use runtime::{TestRuntime, TestScheduler};
 
 use std::any::Any;
 use std::cell::{Cell, Ref, RefCell, RefMut};
-use std::collections::{hash_map::DefaultHasher, HashMap, HashSet}; // FUTURE(no_std): replace HashMap/HashSet with arena-backed maps.
+use crate::collections::map::HashMap;
+use crate::collections::map::HashSet;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
@@ -3682,8 +3683,7 @@ impl<A: Applier + 'static> Drop for Composition<A> {
     }
 }
 pub fn location_key(file: &str, line: u32, column: u32) -> Key {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut hasher = hash::default::new();
     file.hash(&mut hasher);
     line.hash(&mut hasher);
     column.hash(&mut hasher);
@@ -3691,7 +3691,7 @@ pub fn location_key(file: &str, line: u32, column: u32) -> Key {
 }
 
 fn hash_key<K: Hash>(key: &K) -> Key {
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = hash::default::new();
     key.hash(&mut hasher);
     hasher.finish()
 }
@@ -3703,3 +3703,5 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/recursive_decrease_increase_test.rs"]
 mod recursive_decrease_increase_test;
+mod collections;
+mod hash;

@@ -22,7 +22,8 @@ use crate::snapshot_id_set::{SnapshotId, SnapshotIdSet};
 use crate::snapshot_pinning::{self, PinHandle};
 use crate::state::StateObject;
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use crate::collections::map::HashMap;// FUTURE(no_std): replace HashMap/HashSet with arena-backed maps.
+use crate::collections::map::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 

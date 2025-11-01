@@ -6,8 +6,9 @@ license = "Apache-2.0"
 description = "Core runtime for a Jetpack Compose inspired UI framework in Rust"
 
 [dependencies]
-anyhow = "1.0"
 futures-task = "0.3"
+ahash = "0.8.12"
+hashbrown = "0.16.0"
 
 [features]
 default = []
