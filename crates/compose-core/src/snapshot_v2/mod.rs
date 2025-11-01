@@ -391,6 +391,12 @@ thread_local! {
     static LAST_WRITES: RefCell<HashMap<StateObjectId, SnapshotId>> = RefCell::new(HashMap::new());
 }
 
+/// Thread-local weak set of state objects with multiple records for periodic garbage collection.
+/// Mirrors Kotlin's `extraStateObjects` WeakSet.
+thread_local! {
+    static EXTRA_STATE_OBJECTS: RefCell<crate::snapshot_weak_set::SnapshotWeakSet> = RefCell::new(crate::snapshot_weak_set::SnapshotWeakSet::new());
+}
+
 /// Register an apply observer.
 ///
 /// Returns a handle that will automatically unregister the observer when dropped.
@@ -458,6 +464,36 @@ pub(crate) fn clear_last_writes() {
     LAST_WRITES.with(|cell| {
         cell.borrow_mut().clear();
     });
+}
+
+/// Check and overwrite unused records for all tracked state objects.
+///
+/// Mirrors Kotlin's `checkAndOverwriteUnusedRecordsLocked()`. This method:
+/// 1. Iterates through all state objects in `EXTRA_STATE_OBJECTS`
+/// 2. Calls `overwrite_unused_records_locked()` on each
+/// 3. Removes states that no longer need tracking (down to 1 or fewer records)
+/// 4. Automatically cleans up dead weak references
+pub(crate) fn check_and_overwrite_unused_records_locked() {
+    EXTRA_STATE_OBJECTS.with(|cell| {
+        cell.borrow_mut().remove_if(|state| {
+            // Returns true to keep, false to remove
+            crate::state::overwrite_unused_records_locked(state)
+        });
+    });
+}
+
+/// Process a state object for unused record cleanup, tracking it if needed.
+///
+/// Mirrors Kotlin's `processForUnusedRecordsLocked()`. After a state is modified:
+/// 1. Calls `overwrite_unused_records_locked()` to clean up old records
+/// 2. If the state has multiple records, adds it to `EXTRA_STATE_OBJECTS` for future cleanup
+pub(crate) fn process_for_unused_records_locked(state: &Arc<dyn crate::state::StateObject>) {
+    if crate::state::overwrite_unused_records_locked(&**state) {
+        // State has multiple records - track it for future cleanup
+        EXTRA_STATE_OBJECTS.with(|cell| {
+            cell.borrow_mut().add_trait_object(state);
+        });
+    }
 }
 
 /// Merge two read observers into one.
@@ -699,9 +735,15 @@ mod tests {
             unimplemented!("Not needed for observer tests")
         }
 
+        fn prepend_state_record(&self, _record: Arc<crate::state::StateRecord>) {
+            unimplemented!("Not needed for observer tests")
+        }
+
         fn promote_record(&self, _child_id: SnapshotId) -> Result<(), &'static str> {
             unimplemented!("Not needed for observer tests")
         }
+
+        fn as_any(&self) -> &dyn std::any::Any { self }
     }
 
     #[test]
@@ -1059,9 +1101,15 @@ mod tests {
                 unimplemented!("Not needed for this test")
             }
 
+            fn prepend_state_record(&self, _record: Arc<crate::state::StateRecord>) {
+                unimplemented!("Not needed for this test")
+            }
+
             fn promote_record(&self, _child_id: SnapshotId) -> Result<(), &'static str> {
                 unimplemented!("Not needed for this test")
             }
+
+        fn as_any(&self) -> &dyn std::any::Any { self }
         }
 
         let state = SnapshotState::new(1, SnapshotIdSet::new(), None, None, false);
@@ -1111,9 +1159,15 @@ mod tests {
                 unimplemented!()
             }
 
+            fn prepend_state_record(&self, _record: Arc<crate::state::StateRecord>) {
+                unimplemented!()
+            }
+
             fn promote_record(&self, _child_id: SnapshotId) -> Result<(), &'static str> {
                 unimplemented!()
             }
+
+        fn as_any(&self) -> &dyn std::any::Any { self }
         }
 
         let state = SnapshotState::new(1, SnapshotIdSet::new(), None, None, false);

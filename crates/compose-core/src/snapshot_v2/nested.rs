@@ -406,11 +406,18 @@ mod tests {
             ) -> Arc<crate::state::StateRecord> {
                 unimplemented!("not used in v2 tests")
             }
+            fn prepend_state_record(&self, _record: Arc<crate::state::StateRecord>) {
+                unimplemented!("not used in v2 tests")
+            }
             fn promote_record(
                 &self,
                 _child_id: crate::snapshot_id_set::SnapshotId,
             ) -> Result<(), &'static str> {
                 unimplemented!("not used in v2 tests")
+            }
+
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
             }
         }
 
@@ -447,11 +454,18 @@ mod tests {
             ) -> Arc<crate::state::StateRecord> {
                 unimplemented!("not used in v2 tests")
             }
+            fn prepend_state_record(&self, _record: Arc<crate::state::StateRecord>) {
+                unimplemented!("not used in v2 tests")
+            }
             fn promote_record(
                 &self,
                 _child_id: crate::snapshot_id_set::SnapshotId,
             ) -> Result<(), &'static str> {
                 unimplemented!("not used in v2 tests")
+            }
+
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
             }
         }
 

@@ -8,10 +8,12 @@ mod launched_effect;
 pub mod owned;
 pub mod platform;
 pub mod runtime;
+pub mod snapshot_double_index_heap;
 pub mod snapshot_id_set;
 pub mod snapshot_pinning;
 pub mod snapshot_state_observer;
 pub mod snapshot_v2;
+mod snapshot_weak_set;
 mod state;
 pub mod subcompose;
 

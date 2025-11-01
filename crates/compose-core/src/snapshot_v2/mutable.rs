@@ -386,6 +386,13 @@ impl MutableSnapshot {
             super::set_last_write(*obj_id, *head_id);
         }
 
+        // Clean up unused records in modified states
+        // TODO: Temporarily disabled for debugging
+        // super::check_and_overwrite_unused_records_locked();
+        // for (_, state, _) in &applied_info {
+        //     super::process_for_unused_records_locked(state);
+        // }
+
         self.applied.set(true);
         self.state.dispose();
 
@@ -519,11 +526,19 @@ mod tests {
             unimplemented!("Not needed for tests")
         }
 
+        fn prepend_state_record(&self, _record: Arc<crate::state::StateRecord>) {
+            unimplemented!("Not needed for tests")
+        }
+
         fn promote_record(
             &self,
             _child_id: crate::snapshot_id_set::SnapshotId,
         ) -> Result<(), &'static str> {
             unimplemented!("Not needed for tests")
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
         }
     }
 

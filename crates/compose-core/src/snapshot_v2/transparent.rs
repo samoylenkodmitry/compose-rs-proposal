@@ -365,11 +365,19 @@ mod tests {
                 unimplemented!("Not needed for tests")
             }
 
+            fn prepend_state_record(&self, _record: Arc<crate::state::StateRecord>) {
+                unimplemented!("Not needed for tests")
+            }
+
             fn promote_record(
                 &self,
                 _child_id: crate::snapshot_id_set::SnapshotId,
             ) -> Result<(), &'static str> {
                 unimplemented!("Not needed for tests")
+            }
+
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
             }
         }
 
